@@ -9,18 +9,15 @@
 #include <sycl/sycl.hpp>
 
 namespace syclex = sycl::ext::oneapi::experimental;
+using gpu_arch = sycl::ext::oneapi::experimental::architecture;
 
-// TODO: currently not used
-/*
 struct sycl_hw_info {
   syclex::architecture arch;
+  const char* arch_name;
   int32_t device_id;
+  std::string name;
 };
 
-bool is_in_vector(std::vector<int> &vec, int item);
-
 sycl_hw_info get_device_hw_info(sycl::device *device_ptr);
-*/
-
 
 #endif // SYCL_HW_HPP

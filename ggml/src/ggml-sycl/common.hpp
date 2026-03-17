@@ -216,7 +216,8 @@ struct sycl_device_info {
                        // cudaOccupancyMaxActiveBlocksPerMultiprocessor
     bool    vmm;                // virtual memory support
     size_t  total_vram;
-    //sycl_hw_info hw_info;     \\ device id and aarch, currently not used
+    int max_work_group_sizes;
+    sycl_hw_info hw_info;
     optimize_feature opt_feature;
 };
 
@@ -692,15 +693,20 @@ static __dpct_inline__ float get_alibi_slope(const float    max_bias,
     return dpct::pow(base, exph);
 }
 
-static const sycl::uint3 init_fastdiv_values(uint32_t d) {
-    GGML_ASSERT(d != 0);
+static const sycl::uint3 init_fastdiv_values(uint64_t d_64) {
+    GGML_ASSERT(d_64 != 0);
+    GGML_ASSERT(d_64 <= std::numeric_limits<uint32_t>::max());
 
+    uint32_t d = (uint32_t)d_64;
+
+    // compute L = ceil(log2(d));
     uint32_t L = 0;
     while (L < 32 && (uint32_t{ 1 } << L) < d) {
         L++;
     }
 
     uint32_t mp = (uint32_t) ((uint64_t{ 1 } << 32) * ((uint64_t{ 1 } << L) - d) / d + 1);
+    // pack divisor as well to reduce error surface
     return sycl::uint3(mp, L, d);
 }
 
@@ -963,6 +969,25 @@ static T block_reduce(T val, T * shared_vals, int block_size_template) {
         return block_reduce_policy<reduce_method_t, T, warp_size>::reduce(tmp);
     }
     return val;
+}
+
+/*
+ * for Debug
+ */
+static int get_thread_id() {
+  auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+  int blockId = item_ct1.get_group(2) +
+      item_ct1.get_group(1) * item_ct1.get_group_range(2) +
+      item_ct1.get_group(0) * item_ct1.get_group_range(2) *
+          item_ct1.get_group_range(1);
+  int threadsPerBlock = item_ct1.get_local_range(2) *
+      item_ct1.get_local_range(1) * item_ct1.get_local_range(0);
+  int threadInBlockId = item_ct1.get_local_id(2) +
+      item_ct1.get_local_id(1) * item_ct1.get_local_range(2) +
+      item_ct1.get_local_id(0) * item_ct1.get_local_range(2) *
+          item_ct1.get_local_range(1);
+  int id = blockId * threadsPerBlock + threadInBlockId;
+  return id;
 }
 
 #endif // GGML_SYCL_COMMON_HPP
