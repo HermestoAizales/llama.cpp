@@ -46,14 +46,17 @@
 	let hasMore = $derived(tokens.length > 100);
 </script>
 
-<div class="token-inspector border rounded-md border-border bg-muted/30 mt-2">
+<div class="border rounded-md border-border bg-muted/30 mt-2">
 	<button
 		onclick={() => (expanded = !expanded)}
 		class="flex w-full items-center justify-between px-3 py-2 text-sm hover:bg-muted/50 rounded-md"
 	>
 		<div class="flex items-center gap-2">
-			<ChevronDown class="h-4 w-4" class:hidden={!expanded} />
-			<ChevronUp class="h-4 w-4" class:hidden={expanded} />
+			{#if expanded}
+				<ChevronDown class="h-4 w-4" />
+			{:else}
+				<ChevronUp class="h-4 w-4" />
+			{/if}
 			<span class="font-medium">Token Inspection</span>
 			<span class="text-xs text-muted-foreground">
 				{tokens.length} tokens
@@ -77,13 +80,13 @@
 						<span class="font-mono font-semibold truncate max-w-[120px]" title={t.token}>
 							{formatToken(t.token)}
 						</span>
-						<span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium {probColor(mainProb)} text-white tabular-nums">
+						<span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium text-white tabular-nums" class:probColor={mainProb >= 0.7}>
 							{(mainProb * 100).toFixed(1)}%
 						</span>
 						<span class="text-muted-foreground tabular-nums ml-auto">
 							logprob: {t.logprob.toFixed(3)}
 						</span>
-						<span class="tabular-nums font-medium {getEntropyColor(entropy)}">
+						<span class="tabular-nums font-medium" class:getEntropyColor={true}>
 							H={entropy.toFixed(2)}
 						</span>
 					</div>
@@ -99,7 +102,10 @@
 									</span>
 									<div class="flex-1 h-3 bg-muted/40 rounded overflow-hidden">
 										<div
-											class="h-full rounded-sm {probColor(altProb)}"
+											class="h-full rounded-sm"
+											class:bg-green-500={altProb >= 0.7}
+											class:bg-yellow-500={altProb >= 0.3 && altProb < 0.7}
+											class:bg-red-500={altProb < 0.3}
 											style={"width: " + Math.min(altProb * 100, 100) + "%;"}
 										></div>
 									</div>
