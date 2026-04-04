@@ -1624,8 +1624,8 @@ class ChatStore {
 		if (currentConfig.custom) apiOptions.custom = currentConfig.custom;
 
 		if (currentConfig.enableTokenInspection) {
-			apiOptions.logprobs=true;
-			apiOptions.top_logprobs=10;
+			apiOptions.logprobs = true;
+			apiOptions.top_logprobs = 10;
 		}
 
 		return apiOptions;

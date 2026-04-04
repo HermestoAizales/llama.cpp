@@ -13,7 +13,11 @@ import {
 	ReasoningFormat,
 	UrlProtocol
 } from '$lib/enums';
-import type { ApiChatMessageContentPart, ApiChatCompletionToolCall } from '$lib/types/api';
+import type {
+	ApiChatMessageContentPart,
+	ApiChatCompletionToolCall,
+	ApiTopLogprob
+} from '$lib/types/api';
 import type { DatabaseMessageExtraMcpPrompt, DatabaseMessageExtraMcpResource } from '$lib/types';
 import { modelsStore } from '$lib/stores/models.svelte';
 
@@ -74,15 +78,15 @@ export class ChatService {
 			dry_base,
 			dry_allowed_length,
 			dry_penalty_last_n,
-		// Other parameters
-		samplers,
-		backend_sampling,
-		custom,
-		timings_per_token,
-		// Token inspection
-		logprobs,
-		top_logprobs,
-		// Config options
+			// Other parameters
+			samplers,
+			backend_sampling,
+			custom,
+			timings_per_token,
+			// Token inspection
+			logprobs,
+			top_logprobs,
+			// Config options
 			disableReasoningParsing,
 			excludeReasoningFromContext
 		} = options;
@@ -337,7 +341,7 @@ export class ChatService {
 		let modelEmitted = false;
 		let toolCallIndexOffset = 0;
 		let hasOpenToolCallBatch = false;
-		let aggregatedLogprobs: Array<{
+		const aggregatedLogprobs: Array<{
 			token: string;
 			logprob: number;
 			top_logprobs: Array<{ token: string; logprob: number }>;
