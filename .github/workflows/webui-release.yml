@@ -4,15 +4,17 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-server-windows:
+  build-webui-windows:
     runs-on: windows-2025
-    timeout-minutes: 25
+    timeout-minutes: 50
+
+    env:
+      CUDA_VERSION: 13.1.1
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
+        id: checkout
+        uses: actions/checkout@v6
 
       - name: Setup Node.js 22
         uses: actions/setup-node@v6
@@ -27,72 +29,51 @@ jobs:
           npm ci
           npm run build
 
-      - name: Install ccache
+      - name: ccache
         uses: ggml-org/ccache-action@v1.2.21
         with:
-          key: windows-latest-cuda-x64-v1
+          key: windows-latest-cuda-x64-v2
           variant: ccache
           evict-old-files: 1d
 
-      - name: Setup CUDA 13.1
+      - name: Install CUDA
+        id: install_cuda
+        shell: pwsh
         run: |
-          choco install cuda --version=13.1.0.94 -y --no-progress
+          choco install cuda --version=$env:CUDA_VERSION.94-yy --no-progress
 
       - name: Install Ninja
+        id: install_ninja
         run: choco install ninja --no-progress
 
-      - name: Build llama-server (CUDA)
-        shell: cmd
+      - name: Build
+        shell: pwsh
         run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
-          cmake -S . -B build -G "Ninja Multi-Config" ^
-            -D CMAKE_C_COMPILER=clang-cl.exe ^
-            -D CMAKE_CXX_COMPILER=clang-cl.exe ^
-            -DLLAMA_BUILD_BORINGSSL=ON ^
-            -DGGML_CUDA=ON ^
-            -DCMAKE_CUDA_COMPILER=nvcc.exe ^
-            -DCMAKE_CUDA_ARCHITECTURES=86 ^
-            -DGGML_NATIVE=OFF ^
-            -DGGML_BACKEND_DL=ON ^
-            -DGGML_CPU_ALL_VARIANTS=ON ^
-            -DGGML_OPENMP=ON ^
-            -DLLAMA_BUILD_SERVER=ON ^
-            -DLLAMA_BUILD_EXAMPLES=OFF ^
-            -DLLAMA_BUILD_TESTS=OFF ^
-            -DLLAMA_BUILD_TOOLS=OFF ^
+          cmake -S . -B build -G "Ninja Multi-Config" ``
+            -D CMAKE_C_COMPILER=clang-cl.exe ``
+            -D CMAKE_CXX_COMPILER=clang-cl.exe ``
+            -DLLAMA_BUILD_BORINGSSL=ON ``
+            -DGGML_CUDA=ON ``
+            -DCMAKE_CUDA_COMPILER=nvcc.exe ``
+            -DCMAKE_CUDA_ARCHITECTURES=86;89;120 ``
+            -DGGML_NATIVE=OFF ``
+            -DGGML_BACKEND_DL=ON ``
+            -DGGML_CPU_ALL_VARIANTS=ON ``
+            -DGGML_OPENMP=ON ``
+            -DLLAMA_BUILD_SERVER=ON ``
+            -DLLAMA_BUILD_EXAMPLES=OFF ``
+            -DLLAMA_BUILD_TESTS=OFF ``
+            -DLLAMA_BUILD_TOOLS=OFF ``
             -DGGML_RPC=ON
           cmake --build build --config Release
 
-      - name: Collect release package
+      - name: Pack artifacts
         shell: pwsh
         run: |
-          $releaseDir = Join-Path $env:GITHUB_WORKSPACE "release-package"
-          New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
-          $cudaRelease = "build\bin\Release"
-          @("llama-server.exe", "llama.dll", "mtmd.dll", "ggml-cuda.dll") | ForEach-Object {
-            $src = Join-Path $cudaRelease $_
-            if (Test-Path $src) { Copy-Item $src $releaseDir; Write-Host "Added $_" }
-          }
-          Get-ChildItem $cudaRelease -Filter "ggml-*.dll" | ForEach-Object {
-            Copy-Item $_.FullName (Join-Path $releaseDir $_.Name)
-          }
-          Get-ChildItem "build\bin\Release\libcurl*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
-            Copy-Item $_.FullName $releaseDir
-          }
-          if (Test-Path "C:\Program Files\OpenSSL\bin") {
-            @("libcrypto-3-x64.dll","libssl-3-x64.dll") | ForEach-Object {
-              $src = "C:\Program Files\OpenSSL\bin\$_"; $dest = Join-Path $releaseDir $_
-              if ((Test-Path $src) -and -not (Test-Path $dest)) {
-                Copy-Item $src $dest; Write-Host "Added OpenSSL: $_"
-              }
-            }
-          }
-          Write-Host "`n=== Final package ==="
-          Get-ChildItem $releaseDir | Select-Object Name, @{N="SizeMB";E={[math]::Round($_.Length/1MB,2)}} | Format-Table
+          7z a -snl llama-server-win-cuda13-x64.zip .\build\bin\Release\*
 
-      - name: Upload release package
-        uses: actions/upload-artifact@v4
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
         with:
-          name: llama-server-win-cuda13.1-x64
-          path: release-package/
-          retention-days: 30
+          name: llama-server-win-cuda13-x64
+          path: llama-server-win-cuda13-x64.zip
