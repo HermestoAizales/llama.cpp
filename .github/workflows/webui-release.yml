@@ -4,12 +4,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-server-windows-cuda:
+  build-server-windows:
     runs-on: windows-2022
-    timeout-minutes: 90
-    strategy:
-      matrix:
-        cuda: ['12.4']
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -20,36 +17,49 @@ jobs:
       - name: Install ccache
         uses: ggml-org/ccache-action@v1.2.21
         with:
-          key: windows-cuda-${{ matrix.cuda }}
+          key: windows-cpu-x64
           variant: ccache
           evict-old-files: 1d
-
-      - name: Install CUDA Toolkit ${{ matrix.cuda }}
-        uses: ./.github/actions/windows-setup-cuda
-        with:
-          cuda_version: ${{ matrix.cuda }}
 
       - name: Install Ninja
         run: choco install ninja --no-progress
 
-      - name: Build llama-server (CUDA)
-        shell: cmd
+      - name: Build llama-server (CPU, all variants)
+        shell: pwsh
         run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+          # Build with all CPU variants matching official release
+          # The CUDA DLL is taken from the official release separately
+          cmake -S . -B build -G "Ninja Multi-Config" `
+            -DLLAMA_BUILD_SERVER=ON `
+            -DLLAMA_BUILD_EXAMPLES=OFF `
+            -DLLAMA_BUILD_TESTS=OFF `
+            -DLLAMA_BUILD_TOOLS=ON `
+            -DLLAMA_BUILD_BORINGSSL=ON `
+            -DGGML_RPC=ON `
+            -DGGML_VULKAN=ON `
+            -DGGML_NATIVE=OFF `
+            -DGGML_CPU_ALL_VARIANTS=ON
           
-          cmake -S . -B build -G "Ninja Multi-Config" ^
-            -DGGML_BACKEND_DL=ON ^
-            -DGGML_NATIVE=OFF ^
-            -DGGML_CPU=OFF ^
-            -DGGML_CUDA=ON ^
-            -DLLAMA_BUILD_SERVER=ON ^
-            -DLLAMA_BUILD_EXAMPLES=OFF ^
-            -DLLAMA_BUILD_TESTS=OFF ^
-            -DLLAMA_BUILD_BORINGSSL=ON ^
-            -DGGML_CUDA_CUB_3DOT2=ON
+          cmake --build build --config Release --target llama-server -j $(($env:NUMBER_OF_PROCESSORS - 1))
+
+      - name: Download official ggml-cuda DLL
+        shell: pwsh
+        run: |
+          # Download CUDA DLL from latest official release
+          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+          $cudaAsset = $release.assets | Where-Object { $_.name -match "cuda-13.1" }
+          if ($cudaAsset) {
+            Write-Host "Downloading $($cudaAsset.name)..."
+            Invoke-WebRequest -Uri $cudaAsset.browser_download_url -OutFile "cuda-release.zip"
             
-          set /A NINJA_JOBS=%NUMBER_OF_PROCESSORS%-1
-          cmake --build build --config Release --target llama-server -j %NINJA_JOBS%
+            # Extract only the DLLs we need
+            Expand-Archive -Path "cuda-release.zip" -DestinationPath "cuda-extract" -Force
+            Get-ChildItem "cuda-extract" -Recurse -Filter "*.dll" | ForEach-Object {
+              Write-Host "Found CUDA DLL: $($_.Name)"
+            }
+          } else {
+            Write-Host "WARNING: No CUDA 13.1 asset found in latest release"
+          }
 
       - name: Collect release package
         shell: pwsh
@@ -57,19 +67,27 @@ jobs:
           $releaseDir = Join-Path $env:GITHUB_WORKSPACE "release-package"
           New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
           
+          # Main binary
           Copy-Item "build\bin\Release\llama-server.exe" $releaseDir
           Get-ChildItem "build\bin\Release\*.dll" | ForEach-Object {
             Copy-Item $_.FullName $releaseDir
             Write-Host "Copied $($_.Name) from build"
           }
           
-          $cudaBinPath = "$env:CUDA_PATH\bin"
-          Write-Host "CUDA_PATH: $cudaBinPath"
-          Get-ChildItem "$cudaBinPath\cudart64_*.dll","$cudaBinPath\cublas64_*.dll","$cudaBinPath\cublasLt64_*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
-            Copy-Item $_.FullName $releaseDir
-            Write-Host "Copied $($_.Name) from CUDA"
+          # CUDA DLL from official release
+          if (Test-Path "cuda-extract") {
+            Get-ChildItem "cuda-extract" -Recurse -Filter "ggml-cuda*.dll" | ForEach-Object {
+              Copy-Item $_.FullName $releaseDir
+              Write-Host "Copied CUDA DLL: $($_.Name)"
+            }
+            # Also grab CUDA runtime if included
+            Get-ChildItem "cuda-extract" -Recurse -Filter "cudart*.dll","cublas*.dll" | ForEach-Object {
+              Copy-Item $_.FullName $releaseDir
+              Write-Host "Copied CUDA runtime: $($_.Name)"
+            }
           }
           
+          # OpenSSL DLLs
           if (Test-Path "C:\Program Files\OpenSSL\bin") {
             Get-ChildItem "C:\Program Files\OpenSSL\bin\libcrypto-3-x64.dll","C:\Program Files\OpenSSL\bin\libssl-3-x64.dll" -ErrorAction SilentlyContinue | ForEach-Object {
               Copy-Item $_.FullName $releaseDir
@@ -83,6 +101,6 @@ jobs:
       - name: Upload release package
         uses: actions/upload-artifact@v4
         with:
-          name: llama-server-win-cuda12.4-x64
+          name: llama-server-win-x64
           path: release-package/
           retention-days: 30
