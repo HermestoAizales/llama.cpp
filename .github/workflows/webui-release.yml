@@ -6,7 +6,7 @@ on:
 jobs:
   build-server-windows:
     runs-on: windows-2025
-    timeout-minutes: 25
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -30,7 +30,7 @@ jobs:
       - name: Install ccache
         uses: ggml-org/ccache-action@v1.2.21
         with:
-          key: windows-latest-cpu-x64-v5
+          key: windows-latest-cpu-x64-v6
           variant: ccache
           evict-old-files: 1d
 
@@ -55,17 +55,6 @@ jobs:
             -DGGML_RPC=ON
           cmake --build build --config Release
 
-      - name: Download official CUDA 13.1 artifact
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path "cuda-dlls" | Out-Null
-          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
-          $cudaAsset = $release.assets | Where-Object { $_.name -match "llama-bin-win-cuda-13.1-x64.zip" }
-          if ($cudaAsset) {
-            Invoke-WebRequest -Uri $cudaAsset.browser_download_url -OutFile "cuda-dlls\cuda.zip"
-            Expand-Archive -Path "cuda-dlls\cuda.zip" -DestinationPath "cuda-dlls" -Force
-          }
-
       - name: Collect release package
         shell: pwsh
         run: |
@@ -78,15 +67,6 @@ jobs:
           }
           Get-ChildItem $cpuRelease -Filter "*.dll" | ForEach-Object {
             Copy-Item $_.FullName (Join-Path $releaseDir $_.Name)
-          }
-          if (Test-Path "cuda-dlls") {
-            Get-ChildItem "cuda-dlls" -Recurse -Filter "*.dll" | ForEach-Object {
-              $dest = Join-Path $releaseDir $_.Name
-              if (-not (Test-Path $dest)) {
-                Copy-Item $_.FullName $dest
-                Write-Host "Added from official: $($_.Name)"
-              }
-            }
           }
           Get-ChildItem "build\bin\Release\libcurl*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
             Copy-Item $_.FullName $releaseDir
@@ -105,6 +85,6 @@ jobs:
       - name: Upload release package
         uses: actions/upload-artifact@v4
         with:
-          name: llama-server-win-cuda13.1-x64
+          name: llama-server-win-cpu-x64
           path: release-package/
           retention-days: 30
