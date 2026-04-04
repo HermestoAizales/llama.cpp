@@ -70,6 +70,7 @@ class ChatStore {
 		| null = null;
 	private _pendingDraftMessage = $state<string>('');
 	private _pendingDraftFiles = $state<ChatUploadedFile[]>([]);
+	private _promptPrefillText = $state<string>('');
 
 	private setChatLoading(convId: string, loading: boolean): void {
 		this.touchConversationState(convId);
@@ -219,6 +220,18 @@ class ChatStore {
 
 	hasPendingDraft(): boolean {
 		return Boolean(this._pendingDraftMessage) || this._pendingDraftFiles.length > 0;
+	}
+
+	setPromptPrefillText(text: string): void {
+		this._promptPrefillText = text;
+	}
+
+	getPromptPrefillText(): string {
+		return this._promptPrefillText;
+	}
+
+	clearPromptPrefillText(): void {
+		this._promptPrefillText = '';
 	}
 
 	getAllLoadingChats(): string[] {
@@ -503,10 +516,16 @@ class ChatStore {
 				await conversationsStore.updateConversationName(currentConv.id, content.trim());
 			const assistantMessage = await this.createAssistantMessage(userMessage.id);
 			conversationsStore.addMessageToActive(assistantMessage);
-			await this.streamChatCompletion(
-				conversationsStore.activeMessages.slice(0, -1),
-				assistantMessage
-			);
+			const prefillText = this._promptPrefillText;
+			this.clearPromptPrefillText();
+			let apiMessages = conversationsStore.activeMessages.slice(0, -1);
+			if (prefillText) {
+				apiMessages = [
+					...apiMessages,
+					{ role: MessageRole.ASSISTANT, content: prefillText } as DatabaseMessage
+				];
+			}
+			await this.streamChatCompletion(apiMessages, assistantMessage);
 		} catch (error) {
 			if (isAbortError(error)) {
 				this.setChatLoading(currentConv.id, false);
@@ -1646,3 +1665,4 @@ export const isChatStreaming = () => chatStore.isStreaming();
 export const isEditing = () => chatStore.isEditing();
 export const isLoading = () => chatStore.isLoading;
 export const pendingEditMessageId = () => chatStore.pendingEditMessageId;
+export const promptPrefillText = () => chatStore.getPromptPrefillText();
