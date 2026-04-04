@@ -97,7 +97,7 @@ jobs:
           $releaseDir = Join-Path $env:GITHUB_WORKSPACE "release-package"
           New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
           $cpuRelease = "build\bin\Release"
-          
+
           @("llama-server.exe", "llama.dll", "mtmd.dll") | ForEach-Object {
             $src = Join-Path $cpuRelease $_
             if (Test-Path $src) { Copy-Item $src $releaseDir; Write-Host "Added $_" }
