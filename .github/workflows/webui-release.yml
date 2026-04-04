@@ -17,12 +17,6 @@ jobs:
       - name: Configure MSVC
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Install OpenSSL (vcpkg)
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgGitCommitId: latest
-          vcpkgJsonGlob: ''
-
       - name: Build llama-server.exe (WebUI embedded)
         shell: bash
         run: |
@@ -36,49 +30,28 @@ jobs:
           cmake --build build --config Release \
             --target llama-server \
             --parallel
-
-      - name: Verify build
-        shell: bash
-        run: |
-          ls -la build/bin/Release/llama-server.exe
-          file build/bin/Release/llama-server.exe
-
-      - name: Find SSL DLLs
-        shell: bash
-        run: |
-          find /c -name "libcrypto-3-x64.dll" 2>/dev/null | head -10
-          echo "---"
-          find /c -name "libssl-3-x64.dll" 2>/dev/null | head -10
-
-      - name: Collect all Windows binaries
-        shell: bash
-        run: |
-          mkdir -p webui-release
-          cp build/bin/Release/llama-server.exe webui-release/
           
-          # Copy libcurl and all its dependencies
-          find build/bin/Release -name "*.dll" -exec cp {} webui-release/ \; 2>/dev/null || true
+          # Copy all dependencies to the output directory
+          # Find and copy OpenSSL DLLs from the runner (usually in vcpkg or system)
+          find C:/vcpkg/installed -name "libcrypto-3-x64.dll" -exec cp {} build/bin/Release/ \; 2>/dev/null || true
+          find C:/vcpkg/installed -name "libssl-3-x64.dll" -exec cp {} build/bin/Release/ \; 2>/dev/null || true
           
-          # Copy system/MSVC runtime DLLs that might be needed
-          for dll in libcrypto-3-x64.dll libssl-3-x64.dll libcurl.dll vcruntime*.dll ucrtbase*.dll ms*.dll libxml2*.dll zlib*.dll; do
-            for dir in C:/ \
-                     C:/Windows/System32/ \
-                     C:/vcpkg/installed/x64-windows/bin \
-                     C:/vcpkg/installed/x64-windows-release/bin \
-                     build/bin/Release/; do
-              if [ -f "$dir/$dll" ]; then
-                cp "$dir/$dll" webui-release/
-                echo "Copied $dir/$dll"
-              fi
-            done
-          done
+          # Copy libcurl.dll if not already there
+          find C:/vcpkg/installed -name "libcurl-x64.dll" -exec cp {} build/bin/Release/ \; 2>/dev/null || true
+          find C:/vcpkg/installed -name "libcurl.dll" -exec cp {} build/bin/Release/ \; 2>/dev/null || true
           
-          echo "=== Package contents ==="
-          ls -la webui-release/
+          echo "=== Release directory contents ==="
+          ls -la build/bin/Release/
 
-      - name: Upload release package
+      - name: Upload llama-server.exe with dependencies
         uses: actions/upload-artifact@v4
         with:
           name: llama-server-win-x64
-          path: webui-release/
+          path: |
+            build/bin/Release/llama-server.exe
+            build/bin/Release/libcrypto-3-x64.dll
+            build/bin/Release/libssl-3-x64.dll
+            build/bin/Release/libcurl.dll
+            build/bin/Release/libcurl-x64.dll
           retention-days: 30
+          if-no-files-found: ignore
