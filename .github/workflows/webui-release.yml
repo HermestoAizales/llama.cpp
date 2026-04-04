@@ -6,7 +6,7 @@ on:
 jobs:
   build-server-windows-cuda:
     runs-on: windows-2022
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       matrix:
         cuda: ['12.4']
@@ -17,13 +17,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install Ninja
-        run: choco install ninja --no-progress
+      - name: Install ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: windows-cuda-${{ matrix.cuda }}
+          variant: ccache
+          evict-old-files: 1d
 
       - name: Install CUDA Toolkit ${{ matrix.cuda }}
         uses: ./.github/actions/windows-setup-cuda
         with:
           cuda_version: ${{ matrix.cuda }}
+
+      - name: Install Ninja
+        run: choco install ninja --no-progress
 
       - name: Build llama-server (CUDA)
         shell: cmd
@@ -38,9 +45,11 @@ jobs:
             -DLLAMA_BUILD_SERVER=ON ^
             -DLLAMA_BUILD_EXAMPLES=OFF ^
             -DLLAMA_BUILD_TESTS=OFF ^
-            -DLLAMA_BUILD_BORINGSSL=ON
+            -DLLAMA_BUILD_BORINGSSL=ON ^
+            -DGGML_CUDA_CUB_3DOT2=ON
             
-          cmake --build build --config Release --target llama-server --parallel
+          set /A NINJA_JOBS=%NUMBER_OF_PROCESSORS%-1
+          cmake --build build --config Release --target llama-server -j %NINJA_JOBS%
 
       - name: Collect release package
         shell: pwsh
@@ -48,14 +57,12 @@ jobs:
           $releaseDir = Join-Path $env:GITHUB_WORKSPACE "release-package"
           New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
           
-          # Copy main binary and all build DLLs
           Copy-Item "build\bin\Release\llama-server.exe" $releaseDir
           Get-ChildItem "build\bin\Release\*.dll" | ForEach-Object {
             Copy-Item $_.FullName $releaseDir
             Write-Host "Copied $($_.Name) from build"
           }
           
-          # Copy CUDA runtime DLLs
           $cudaBinPath = "$env:CUDA_PATH\bin"
           Write-Host "CUDA_PATH: $cudaBinPath"
           Get-ChildItem "$cudaBinPath\cudart64_*.dll","$cudaBinPath\cublas64_*.dll","$cudaBinPath\cublasLt64_*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
@@ -63,7 +70,6 @@ jobs:
             Write-Host "Copied $($_.Name) from CUDA"
           }
           
-          # Copy OpenSSL DLLs
           if (Test-Path "C:\Program Files\OpenSSL\bin") {
             Get-ChildItem "C:\Program Files\OpenSSL\bin\libcrypto-3-x64.dll","C:\Program Files\OpenSSL\bin\libssl-3-x64.dll" -ErrorAction SilentlyContinue | ForEach-Object {
               Copy-Item $_.FullName $releaseDir
