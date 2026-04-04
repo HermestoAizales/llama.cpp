@@ -30,28 +30,47 @@ jobs:
           cmake --build build --config Release \
             --target llama-server \
             --parallel
-          
-          # Copy all dependencies to the output directory
-          # Find and copy OpenSSL DLLs from the runner (usually in vcpkg or system)
-          find C:/vcpkg/installed -name "libcrypto-3-x64.dll" -exec cp {} build/bin/Release/ \; 2>/dev/null || true
-          find C:/vcpkg/installed -name "libssl-3-x64.dll" -exec cp {} build/bin/Release/ \; 2>/dev/null || true
-          
-          # Copy libcurl.dll if not already there
-          find C:/vcpkg/installed -name "libcurl-x64.dll" -exec cp {} build/bin/Release/ \; 2>/dev/null || true
-          find C:/vcpkg/installed -name "libcurl.dll" -exec cp {} build/bin/Release/ \; 2>/dev/null || true
-          
-          echo "=== Release directory contents ==="
-          ls -la build/bin/Release/
 
-      - name: Upload llama-server.exe with dependencies
+      - name: Collect ALL dependencies
+        shell: bash
+        run: |
+          mkdir -p release-package
+          cp build/bin/Release/llama-server.exe release-package/
+          
+          echo "=== Finding DLLs ==="
+          
+          # Search common locations for OpenSSL and CURL DLLs
+          SEARCH_PATHS=(
+            "C:/Program Files/OpenSSL/bin"
+            "C:/OpenSSL/bin"
+            "C:/Program Files (x86)/OpenSSL/bin"
+          )
+          
+          for dll in libcrypto-3-x64.dll libssl-3-x64.dll libcurl-x64.dll libcurl.dll; do
+            FOUND=false
+            for path in "${SEARCH_PATHS[@]}"; do
+              if [ -f "$path/$dll" ]; then
+                cp "$path/$dll" release-package/
+                echo "Copied $dll from $path"
+                FOUND=true
+                break
+              fi
+            done
+            if [ "$FOUND" = false ]; then
+              echo "WARNING: $dll not found in expected locations"
+            fi
+          done
+          
+          # Also copy any DLLs that are already in the build output (like libwinpthread, etc.)
+          find build/bin/Release -name "*.dll" -exec cp {} release-package/ \; 2>/dev/null || true
+          
+          echo ""
+          echo "=== Final package contents ==="
+          ls -la release-package/
+
+      - name: Upload release package
         uses: actions/upload-artifact@v4
         with:
           name: llama-server-win-x64
-          path: |
-            build/bin/Release/llama-server.exe
-            build/bin/Release/libcrypto-3-x64.dll
-            build/bin/Release/libssl-3-x64.dll
-            build/bin/Release/libcurl.dll
-            build/bin/Release/libcurl-x64.dll
+          path: release-package/
           retention-days: 30
-          if-no-files-found: ignore
