@@ -21,11 +21,9 @@ jobs:
         run: choco install ninja --no-progress
 
       - name: Install CUDA Toolkit ${{ matrix.cuda }}
-        uses: Jimver/cuda-toolkit@v0.2.29
-        id: cuda-toolkit
+        uses: ./.github/actions/windows-setup-cuda
         with:
-          cuda: ${{ matrix.cuda }}
-          method: network
+          cuda_version: ${{ matrix.cuda }}
 
       - name: Build llama-server (CUDA)
         shell: cmd
@@ -47,43 +45,30 @@ jobs:
       - name: Collect release package
         shell: pwsh
         run: |
-          # Create release directory
           $releaseDir = Join-Path $env:GITHUB_WORKSPACE "release-package"
           New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
           
-          # Copy main binary
+          # Copy main binary and all build DLLs
           Copy-Item "build\bin\Release\llama-server.exe" $releaseDir
-          
-          # Copy all DLLs from build output
           Get-ChildItem "build\bin\Release\*.dll" | ForEach-Object {
             Copy-Item $_.FullName $releaseDir
             Write-Host "Copied $($_.Name) from build"
           }
           
           # Copy CUDA runtime DLLs
-          $cudaBinPath = "${{ env.CUDA_PATH }}\bin"
-          $cudaDlls = @("cudart64_*", "cublas64_*", "cublasLt64_*")
-          foreach ($pattern in $cudaDlls) {
-            Get-ChildItem "$cudaBinPath\$pattern" -ErrorAction SilentlyContinue | ForEach-Object {
-              Copy-Item $_.FullName $releaseDir
-              Write-Host "Copied $($_.Name) from CUDA"
-            }
+          $cudaBinPath = "$env:CUDA_PATH\bin"
+          Write-Host "CUDA_PATH: $cudaBinPath"
+          Get-ChildItem "$cudaBinPath\cudart64_*.dll","$cudaBinPath\cublas64_*.dll","$cudaBinPath\cublasLt64_*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item $_.FullName $releaseDir
+            Write-Host "Copied $($_.Name) from CUDA"
           }
           
           # Copy OpenSSL DLLs
-          $opensslPaths = @("C:\Program Files\OpenSSL\bin")
-          foreach ($path in $opensslPaths) {
-            if (Test-Path $path) {
-              Get-ChildItem "$path\libcrypto-3-x64.dll","$path\libssl-3-x64.dll" -ErrorAction SilentlyContinue | ForEach-Object {
-                Copy-Item $_.FullName $releaseDir
-                Write-Host "Copied $($_.Name) from OpenSSL"
-              }
+          if (Test-Path "C:\Program Files\OpenSSL\bin") {
+            Get-ChildItem "C:\Program Files\OpenSSL\bin\libcrypto-3-x64.dll","C:\Program Files\OpenSSL\bin\libssl-3-x64.dll" -ErrorAction SilentlyContinue | ForEach-Object {
+              Copy-Item $_.FullName $releaseDir
+              Write-Host "Copied $($_.Name) from OpenSSL"
             }
-          }
-          
-          # Copy CURL DLL if needed
-          Get-ChildItem "build\bin\Release\libcurl*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
-            Copy-Item $_.FullName $releaseDir
           }
           
           Write-Host "`n=== Release package contents ==="
@@ -92,6 +77,6 @@ jobs:
       - name: Upload release package
         uses: actions/upload-artifact@v4
         with:
-          name: llama-server-win-cuda-x64
+          name: llama-server-win-cuda12.4-x64
           path: release-package/
           retention-days: 30
