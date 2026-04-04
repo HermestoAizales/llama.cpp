@@ -1,25 +1,54 @@
-name: WebUI Release (Windows)
+name: WebUI Release Build (Windows x64)
 
 on:
   workflow_dispatch:
 
 jobs:
-  llama-server-win:
+  build-server-windows:
     runs-on: windows-2022
+    timeout-minutes: 20
 
     steps:
-      - name: Clone
-        uses: actions/checkout@v6
+      - name: Checkout
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - name: Build
+      - name: Configure MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Download prebuilt ggml-cuda.dll
+        shell: bash
         run: |
-          cmake -B build -DLLAMA_BUILD_BORINGSSL=ON -DGGML_SCHED_NO_REALLOC=ON
-          cmake --build build --config Release -j ${env:NUMBER_OF_PROCESSORS} --target llama-server
+          mkdir -p build/bin/Release
+          # Download CUDA DLL from latest upstream release
+          # For now, we'll use the one from the build artifacts or user provides it locally
+          # The user can copy the CUDA DLL from their local build or upstream release
+          echo "Note: CUDA DLL must be provided separately"
+
+      - name: Build llama-server.exe (WebUI embedded)
+        shell: bash
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A x64 \
+            -DLLAMA_BUILD_SERVER=ON \
+            -DLLAMA_CURL=ON \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DCMAKE_BUILD_TYPE=Release
+          
+          cmake --build build --config Release \
+            --target llama-server \
+            --parallel
+
+      - name: Verify build
+        shell: bash
+        run: |
+          ls -la build/bin/Release/llama-server.exe
+          file build/bin/Release/llama-server.exe
 
       - name: Upload llama-server.exe
         uses: actions/upload-artifact@v4
         with:
           name: llama-server-win-x64
           path: build/bin/Release/llama-server.exe
+          retention-days: 30
