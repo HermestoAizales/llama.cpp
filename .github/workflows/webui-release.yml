@@ -18,88 +18,70 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Build llama-server.exe (WebUI embedded)
-        shell: pwsh
+        shell: bash
         run: |
-          cmake -B build -G "Visual Studio 17 2022" -A x64 `
-            -DLLAMA_BUILD_SERVER=ON `
-            -DLLAMA_CURL=ON `
-            -DLLAMA_BUILD_EXAMPLES=OFF `
-            -DLLAMA_BUILD_TESTS=OFF `
+          cmake -B build -G "Visual Studio 17 2022" -A x64 \
+            -DLLAMA_BUILD_SERVER=ON \
+            -DLLAMA_CURL=ON \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_TESTS=OFF \
             -DCMAKE_BUILD_TYPE=Release
           
-          cmake --build build --config Release `
-            --target llama-server `
+          cmake --build build --config Release \
+            --target llama-server \
             --parallel
 
-      - name: Collect all runtime dependencies
-        shell: pwsh
+      - name: Find and collect all DLLs
+        shell: bash
         run: |
-          $releaseDir = Join-Path $env:GITHUB_WORKSPACE "release-package"
-          $buildDir = Join-Path $env:GITHUB_WORKSPACE "build\bin\Release"
+          mkdir -p release-package
           
-          # Create release directory
-          New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
+          # Copy main binary
+          cp build/bin/Release/llama-server.exe release-package/
           
-          # Copy llama-server.exe
-          Copy-Item "$buildDir\llama-server.exe" $releaseDir
+          # Copy all DLLs from build output directory
+          cp build/bin/Release/*.dll release-package/ 2>/dev/null || true
           
-          # Copy all DLLs from build output (llama.dll, ggml.dll, etc.)
-          Get-ChildItem "$buildDir\*.dll" | ForEach-Object {
-            Copy-Item $_.FullName $releaseDir
-            Write-Host "Copied $($_.Name) from build"
-          }
+          # Find OpenSSL DLLs - they could be in various locations
+          for dir in \
+            "C:/Program Files/OpenSSL/bin" \
+            "C:/OpenSSL/bin" \
+            "C:/vcpkg/installed/x64-windows/bin" \
+            "C:/vcpkg/installed/x64-windows-static/bin"; do
+            if [ -d "$dir" ]; then
+              echo "Searching: $dir"
+              for dll in libcrypto-3-x64.dll libssl-3-x64.dll; do
+                if [ -f "$dir/$dll" ]; then
+                  cp "$dir/$dll" release-package/
+                  echo "Copied $dll from $dir"
+                fi
+              done
+            fi
+          done
           
-          # Copy OpenSSL DLLs (3.x format)
-          $opensslBinPaths = @(
-            "C:\Program Files\OpenSSL\bin",
-            "C:\OpenSSL-Win64\bin",
-            "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin",
-            "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static\bin"
-          )
+          # Find CURL DLLs
+          for dir in \
+            "C:/vcpkg/installed/x64-windows/bin" \
+            "C:/vcpkg/installed/x64-windows-static/bin" \
+            "C:/Windows/System32"; do
+            if [ -d "$dir" ]; then
+              for dll in libcurl-x64.dll libcurl.dll; do
+                if [ -f "$dir/$dll" ]; then
+                  cp "$dir/$dll" release-package/ 2>/dev/null || true
+                  echo "Copied $dll from $dir"
+                fi
+              done
+            fi
+          done
+
+          # Debug: Show what we found
+          echo ""
+          echo "=== Release package contents ==="
+          ls -la release-package/
           
-          foreach ($path in $opensslBinPaths) {
-            if (Test-Path $path) {
-              Get-ChildItem "$path\libcrypto-3-x64.dll","$path\libssl-3-x64.dll" -ErrorAction SilentlyContinue | ForEach-Object {
-                Copy-Item $_.FullName $releaseDir
-                Write-Host "Copied $($_.Name) from $path"
-              }
-            }
-          }
-          
-          # Copy libcurl and its dependencies
-          $curlPaths = @(
-            "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin",
-            "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static\bin",
-            "C:\Windows\System32"
-          )
-          
-          foreach ($path in $curlPaths) {
-            if (Test-Path $path) {
-              Get-ChildItem "$path\libcurl*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
-                if (-not (Test-Path "$releaseDir\$($_.Name)")) {
-                  Copy-Item $_.FullName $releaseDir
-                  Write-Host "Copied $($_.Name) from $path"
-                }
-              }
-            }
-          }
-          
-          # Copy runtime DLLs from vcpkg if they exist
-          if ($env:VCPKG_INSTALLATION_ROOT) {
-            $runtimeDlls = @("zlib*.dll", "libxml2*.dll", "nghttp2*.dll", "zstd*.dll")
-            foreach ($dll in $runtimeDlls) {
-              Get-ChildItem "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin\$dll" -ErrorAction SilentlyContinue | ForEach-Object {
-                if (-not (Test-Path "$releaseDir\$($_.Name)")) {
-                  Copy-Item $_.FullName $releaseDir
-                  Write-Host "Copied $($_.Name) from vcpkg"
-                }
-              }
-            }
-          }
-          
-          # Final listing
-          Write-Host "`n=== Release package contents ==="
-          Get-ChildItem $releaseDir | Select-Object Name, @{Name="SizeMB";Expression={[math]::Round($_.Length/1MB,2)}} | Format-Table
+          echo ""
+          echo "=== Checking if OpenSSL DLLs found ==="
+          ls -la release-package/libcrypto-3-x64.dll release-package/libssl-3-x64.dll 2>/dev/null || echo "OpenSSL DLLs NOT FOUND"
 
       - name: Upload release package
         uses: actions/upload-artifact@v4
