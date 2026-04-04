@@ -31,53 +31,75 @@ jobs:
             --target llama-server `
             --parallel
 
-      - name: Copy all runtime dependencies
+      - name: Collect all runtime dependencies
         shell: pwsh
         run: |
-          # Create release folder
-          $releaseDir = "release-package"
+          $releaseDir = Join-Path $env:GITHUB_WORKSPACE "release-package"
+          $buildDir = Join-Path $env:GITHUB_WORKSPACE "build\bin\Release"
+          
+          # Create release directory
           New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
           
           # Copy llama-server.exe
-          Copy-Item "build\bin\Release\llama-server.exe" $releaseDir
+          Copy-Item "$buildDir\llama-server.exe" $releaseDir
           
-          # Copy all DLLs from build output
-          Get-ChildItem "build\bin\Release\*.dll" | ForEach-Object {
+          # Copy all DLLs from build output (llama.dll, ggml.dll, etc.)
+          Get-ChildItem "$buildDir\*.dll" | ForEach-Object {
             Copy-Item $_.FullName $releaseDir
+            Write-Host "Copied $($_.Name) from build"
           }
           
-          # Copy OpenSSL DLLs from Windows system path
-          $opensslPaths = @(
-            "C:\Program Files\OpenSSL\bin"
+          # Copy OpenSSL DLLs (3.x format)
+          $opensslBinPaths = @(
+            "C:\Program Files\OpenSSL\bin",
+            "C:\OpenSSL-Win64\bin",
+            "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin",
+            "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static\bin"
           )
           
-          $neededDlls = @("libcrypto-3-x64.dll", "libssl-3-x64.dll", "libcurl.dll")
-          
-          foreach ($dll in $neededDlls) {
-            foreach ($path in $opensslPaths) {
-              $fullPath = Join-Path $path $dll
-              if (Test-Path $fullPath) {
-                Copy-Item $fullPath $releaseDir
-                Write-Host "Copied $dll from $path"
-                break
+          foreach ($path in $opensslBinPaths) {
+            if (Test-Path $path) {
+              Get-ChildItem "$path\libcrypto-3-x64.dll","$path\libssl-3-x64.dll" -ErrorAction SilentlyContinue | ForEach-Object {
+                Copy-Item $_.FullName $releaseDir
+                Write-Host "Copied $($_.Name) from $path"
               }
             }
           }
           
-          # Copy CURL DLL (usually in vcpkg or system)
-          Get-ChildItem -Recurse -Path "C:\" -Filter "libcurl*.dll" -ErrorAction SilentlyContinue -Depth 3 | ForEach-Object {
-            if ($_.DirectoryName -notmatch "Windows\\WinSxS") {
-              $dest = Join-Path $releaseDir $_.Name
-              if (-not (Test-Path $dest)) {
-                Copy-Item $_.FullName $dest
-                Write-Host "Copied $($_.Name) from $($_.DirectoryName)"
+          # Copy libcurl and its dependencies
+          $curlPaths = @(
+            "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin",
+            "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static\bin",
+            "C:\Windows\System32"
+          )
+          
+          foreach ($path in $curlPaths) {
+            if (Test-Path $path) {
+              Get-ChildItem "$path\libcurl*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
+                if (-not (Test-Path "$releaseDir\$($_.Name)")) {
+                  Copy-Item $_.FullName $releaseDir
+                  Write-Host "Copied $($_.Name) from $path"
+                }
               }
             }
           }
           
-          # Show contents
+          # Copy runtime DLLs from vcpkg if they exist
+          if ($env:VCPKG_INSTALLATION_ROOT) {
+            $runtimeDlls = @("zlib*.dll", "libxml2*.dll", "nghttp2*.dll", "zstd*.dll")
+            foreach ($dll in $runtimeDlls) {
+              Get-ChildItem "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin\$dll" -ErrorAction SilentlyContinue | ForEach-Object {
+                if (-not (Test-Path "$releaseDir\$($_.Name)")) {
+                  Copy-Item $_.FullName $releaseDir
+                  Write-Host "Copied $($_.Name) from vcpkg"
+                }
+              }
+            }
+          }
+          
+          # Final listing
           Write-Host "`n=== Release package contents ==="
-          Get-ChildItem $releaseDir | Select-Object Name, Length | Format-Table
+          Get-ChildItem $releaseDir | Select-Object Name, @{Name="SizeMB";Expression={[math]::Round($_.Length/1MB,2)}} | Format-Table
 
       - name: Upload release package
         uses: actions/upload-artifact@v4
