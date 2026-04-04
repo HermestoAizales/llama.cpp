@@ -1,4 +1,4 @@
-name: WebUI Release Build (Windows x64)
+name: WebUI Release Build
 
 on:
   workflow_dispatch:
