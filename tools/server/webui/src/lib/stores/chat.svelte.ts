@@ -552,6 +552,7 @@ class ChatStore {
 		let currentMessageId = assistantMessage.id;
 		let streamedContent = '';
 		let streamedReasoningContent = '';
+		let streamedLogprobs = '';
 		let resolvedModel: string | null = null;
 		let modelPersisted = false;
 		const convId = assistantMessage.convId;
@@ -642,7 +643,8 @@ class ChatStore {
 				content: string,
 				reasoningContent: string | undefined,
 				timings: ChatMessageTimings | undefined,
-				toolCalls: import('$lib/types/api').ApiChatCompletionToolCall[] | undefined
+				toolCalls: import('$lib/types/api').ApiChatCompletionToolCall[] | undefined,
+				logprobs?: string
 			) => {
 				const updateData: Record<string, unknown> = {
 					content,
@@ -651,6 +653,7 @@ class ChatStore {
 					timings
 				};
 				if (resolvedModel && !modelPersisted) updateData.model = resolvedModel;
+				if (logprobs) updateData.logprobs = logprobs;
 				await DatabaseService.updateMessage(currentMessageId, updateData);
 				const idx = conversationsStore.findMessageIndex(currentMessageId);
 				const uiUpdate: Partial<DatabaseMessage> = {
@@ -660,6 +663,7 @@ class ChatStore {
 				};
 				if (timings) uiUpdate.timings = timings;
 				if (resolvedModel) uiUpdate.model = resolvedModel;
+				if (logprobs) uiUpdate.logprobs = logprobs;
 				conversationsStore.updateMessageAtIndex(idx, uiUpdate);
 				await conversationsStore.updateCurrentNode(currentMessageId);
 			},
@@ -780,10 +784,12 @@ class ChatStore {
 					finalContent?: string,
 					reasoningContent?: string,
 					timings?: ChatMessageTimings,
-					toolCalls?: string
+					toolCalls?: string,
+					logprobs?: string
 				) => {
 					const content = streamedContent || finalContent || '';
 					const reasoning = streamedReasoningContent || reasoningContent;
+					streamedLogprobs = logprobs || '';
 					const updateData: Record<string, unknown> = {
 						content,
 						reasoningContent: reasoning || undefined,
@@ -791,6 +797,7 @@ class ChatStore {
 						timings
 					};
 					if (resolvedModel && !modelPersisted) updateData.model = resolvedModel;
+					if (streamedLogprobs) updateData.logprobs = streamedLogprobs;
 					await DatabaseService.updateMessage(currentMessageId, updateData);
 					const idx = conversationsStore.findMessageIndex(currentMessageId);
 					const uiUpdate: Partial<DatabaseMessage> = {
@@ -800,6 +807,7 @@ class ChatStore {
 					};
 					if (timings) uiUpdate.timings = timings;
 					if (resolvedModel) uiUpdate.model = resolvedModel;
+					if (streamedLogprobs) uiUpdate.logprobs = streamedLogprobs;
 					conversationsStore.updateMessageAtIndex(idx, uiUpdate);
 					await conversationsStore.updateCurrentNode(currentMessageId);
 					cleanupStreamingState();

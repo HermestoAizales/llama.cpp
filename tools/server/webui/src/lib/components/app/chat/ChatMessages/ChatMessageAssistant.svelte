@@ -4,8 +4,10 @@
 		ChatMessageActions,
 		ChatMessageStatistics,
 		ModelBadge,
-		ModelsSelector
+		ModelsSelector,
+		TokenInspector
 	} from '$lib/components/app';
+	import type { TokenLogprobData } from './TokenInspector.svelte';
 	import { getMessageEditContext } from '$lib/contexts';
 	import { useProcessingState } from '$lib/hooks/use-processing-state.svelte';
 	import { isLoading, isChatStreaming } from '$lib/stores/chat.svelte';
@@ -150,6 +152,11 @@
 		isAgentic &&
 			(currentConfig.alwaysShowAgenticTurns || activeStatsView === ChatMessageStatsView.SUMMARY)
 	);
+
+	let messageLogprobs = $derived<TokenLogprobData[]>(
+		message.logprobs ? JSON.parse(message.logprobs) : []
+	);
+	let hasLogprobs = $derived(Array.isArray(messageLogprobs) && messageLogprobs.length > 0);
 
 	let displayedModel = $derived(message.model ?? null);
 
@@ -357,6 +364,10 @@
 			rawOutputEnabled={showRawOutput}
 			onRawOutputToggle={(enabled) => (showRawOutput = enabled)}
 		/>
+	{/if}
+
+	{#if hasLogprobs && !editCtx.isEditing}
+		<TokenInspector tokens={messageLogprobs} />
 	{/if}
 </div>
 

@@ -102,6 +102,8 @@ export interface DatabaseMessage {
 	extra?: DatabaseMessageExtra[];
 	timings?: ChatMessageTimings;
 	model?: string;
+	/** Serialized JSON array of per-token logprobs (when token inspection enabled) */
+	logprobs?: string;
 }
 
 export type ExportedConversation = {

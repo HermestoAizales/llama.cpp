@@ -311,7 +311,8 @@ export class ChatService {
 			response: string,
 			reasoningContent?: string,
 			timings?: ChatMessageTimings,
-			toolCalls?: string
+			toolCalls?: string,
+			logprobs?: string
 		) => void,
 		onError?: (error: Error) => void,
 		onReasoningChunk?: (chunk: string) => void,
@@ -336,6 +337,11 @@ export class ChatService {
 		let modelEmitted = false;
 		let toolCallIndexOffset = 0;
 		let hasOpenToolCallBatch = false;
+		let aggregatedLogprobs: Array<{
+			token: string;
+			logprob: number;
+			top_logprobs: Array<{ token: string; logprob: number }>;
+		}> = [];
 
 		const finalizeOpenToolCallBatch = () => {
 			if (!hasOpenToolCallBatch) {
@@ -434,6 +440,21 @@ export class ChatService {
 								}
 							}
 
+							// Collect logprobs from stream chunks
+							const logprobs = parsed.choices[0]?.logprobs;
+							if (logprobs && logprobs.content) {
+								for (const lp of logprobs.content) {
+									aggregatedLogprobs.push({
+										token: lp.token,
+										logprob: lp.logprob,
+										top_logprobs: (lp.top_logprobs || []).map((t: ApiTopLogprob) => ({
+											token: t.token,
+											logprob: t.logprob
+										}))
+									});
+								}
+							}
+
 							if (reasoningContent) {
 								finalizeOpenToolCallBatch();
 								fullReasoningContent += reasoningContent;
@@ -464,7 +485,8 @@ export class ChatService {
 					aggregatedContent,
 					fullReasoningContent || undefined,
 					lastTimings,
-					finalToolCalls
+					finalToolCalls,
+					aggregatedLogprobs.length > 0 ? JSON.stringify(aggregatedLogprobs) : undefined
 				);
 			}
 		} catch (error) {
