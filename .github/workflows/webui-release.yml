@@ -27,20 +27,15 @@ jobs:
         working-directory: tools/server/webui
         run: |
           npm ci
-          npm run build
+          npx vite build
+          bash ./scripts/post-build.sh
 
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.21
         with:
-          key: windows-latest-cuda-x64-v2
+          key: windows-latest-cuda-x64-v3
           variant: ccache
           evict-old-files: 1d
-
-      - name: Install CUDA
-        id: install_cuda
-        shell: pwsh
-        run: |
-          choco install cuda --version=$env:CUDA_VERSION.94-yy --no-progress
 
       - name: Install Ninja
         id: install_ninja
