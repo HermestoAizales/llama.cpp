@@ -4,9 +4,10 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-webui:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+  build-server-windows:
+    runs-on: windows-2025
+    timeout-minutes: 25
+
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -17,46 +18,26 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: "22"
+          cache: "npm"
+          cache-dependency-path: "tools/server/webui/package-lock.json"
 
-      - name: Install and build WebUI
+      - name: Build WebUI
         working-directory: tools/server/webui
         run: |
           npm ci
           npm run build
-          ls -la public/
-
-      - name: Upload built WebUI
-        uses: actions/upload-artifact@v4
-        with:
-          name: webui-built
-          path: |
-            tools/server/webui/public/index.html
-            tools/server/webui/public/bundle.js
-            tools/server/webui/public/bundle.css
-            tools/server/webui/public/loading.html
-
-  build-server-windows:
-    runs-on: windows-2025
-    needs: build-webui
-    timeout-minutes: 20
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
 
       - name: Install ccache
         uses: ggml-org/ccache-action@v1.2.21
         with:
-          key: windows-latest-cpu-x64-v4
+          key: windows-latest-cpu-x64-v5
           variant: ccache
           evict-old-files: 1d
 
       - name: Install Ninja
         run: choco install ninja --no-progress
 
-      - name: Build
+      - name: Build llama-server
         shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
@@ -73,12 +54,6 @@ jobs:
             -DLLAMA_BUILD_TOOLS=OFF ^
             -DGGML_RPC=ON
           cmake --build build --config Release
-
-      - name: Download WebUI built assets
-        uses: actions/download-artifact@v4
-        with:
-          name: webui-built
-          path: tools/server/webui/public/
 
       - name: Download official CUDA 13.1 artifact
         shell: pwsh
@@ -97,7 +72,6 @@ jobs:
           $releaseDir = Join-Path $env:GITHUB_WORKSPACE "release-package"
           New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
           $cpuRelease = "build\bin\Release"
-
           @("llama-server.exe", "llama.dll", "mtmd.dll") | ForEach-Object {
             $src = Join-Path $cpuRelease $_
             if (Test-Path $src) { Copy-Item $src $releaseDir; Write-Host "Added $_" }
