@@ -14,17 +14,30 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: "tools/server/webui/package-lock.json"
+
+      - name: Build WebUI
+        working-directory: tools/server/webui
+        run: |
+          npm ci
+          npm run build
+
       - name: Install ccache
         uses: ggml-org/ccache-action@v1.2.21
         with:
-          key: windows-latest-cpu-x64
+          key: windows-latest-cpu-x64-v3
           variant: ccache
           evict-old-files: 1d
 
       - name: Install Ninja
         run: choco install ninja --no-progress
 
-      - name: Build
+      - name: Build llama-server (CPU only)
         shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
@@ -64,7 +77,6 @@ jobs:
           $cpuRelease = "build\bin\Release"
           $cudaExtracted = "cuda-dlls"
           
-          # 1. llama-server.exe + llama.dll + mtmd.dll
           @("llama-server.exe", "llama.dll", "mtmd.dll") | ForEach-Object {
             $src = Join-Path $cpuRelease $_
             if (Test-Path $src) {
@@ -73,14 +85,10 @@ jobs:
             }
           }
 
-          # 2. All DLLs from our build (CPU backends, ggml.dll, ggml-base.dll, libomp140, etc.)
           Get-ChildItem $cpuRelease -Filter "*.dll" | ForEach-Object {
-            $dest = Join-Path $releaseDir $_.Name
-            Copy-Item $_.FullName $dest
+            Copy-Item $_.FullName (Join-Path $releaseDir $_.Name)
           }
 
-          # 3. CUDA backend DLLs + CUDA runtime from official release
-          #    Already contains: ggml-cuda.dll, cublas64_13.dll, cublasLt64_13.dll, cudart64_13.dll
           Get-ChildItem $cudaExtracted -Recurse -Filter "*.dll" | ForEach-Object {
             $dest = Join-Path $releaseDir $_.Name
             if (-not (Test-Path $dest)) {
@@ -89,6 +97,20 @@ jobs:
             }
           }
           
+          # libcurl + OpenSSL for CURL support
+          Get-ChildItem "build\bin\Release\libcurl*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item $_.FullName $releaseDir
+          }
+          if (Test-Path "C:\Program Files\OpenSSL\bin") {
+            Get-ChildItem "C:\Program Files\OpenSSL\bin\libcrypto-3-x64.dll","C:\Program Files\OpenSSL\bin\libssl-3-x64.dll" -ErrorAction SilentlyContinue | ForEach-Object {
+              $dest = Join-Path $releaseDir $_.Name
+              if (-not (Test-Path $dest)) {
+                Copy-Item $_.FullName $dest
+                Write-Host "Added OpenSSL: $($_.Name)"
+              }
+            }
+          }
+                
           Write-Host "`n=== Final package ==="
           Get-ChildItem $releaseDir | Select-Object Name, @{N="SizeMB";E={[math]::Round($_.Length/1MB,2)}} | Format-Table
 
