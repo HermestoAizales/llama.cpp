@@ -24,11 +24,10 @@ jobs:
       - name: Install Ninja
         run: choco install ninja --no-progress
 
-      - name: Build llama-server (CPU, all variants)
+      - name: Build llama-server (CPU only)
         shell: pwsh
         run: |
-          # Build with all CPU variants matching official release
-          # The CUDA DLL is taken from the official release separately
+          # Build matching official CPU release strategy
           cmake -S . -B build -G "Ninja Multi-Config" `
             -DLLAMA_BUILD_SERVER=ON `
             -DLLAMA_BUILD_EXAMPLES=OFF `
@@ -36,7 +35,6 @@ jobs:
             -DLLAMA_BUILD_TOOLS=ON `
             -DLLAMA_BUILD_BORINGSSL=ON `
             -DGGML_RPC=ON `
-            -DGGML_VULKAN=ON `
             -DGGML_NATIVE=OFF `
             -DGGML_CPU_ALL_VARIANTS=ON
           
@@ -45,20 +43,17 @@ jobs:
       - name: Download official ggml-cuda DLL
         shell: pwsh
         run: |
-          # Download CUDA DLL from latest official release
+          # Download ggml-cuda.dll from latest official release (CUDA 13.1)
           $release = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
           $cudaAsset = $release.assets | Where-Object { $_.name -match "cuda-13.1" }
           if ($cudaAsset) {
             Write-Host "Downloading $($cudaAsset.name)..."
             Invoke-WebRequest -Uri $cudaAsset.browser_download_url -OutFile "cuda-release.zip"
-            
-            # Extract only the DLLs we need
             Expand-Archive -Path "cuda-release.zip" -DestinationPath "cuda-extract" -Force
-            Get-ChildItem "cuda-extract" -Recurse -Filter "*.dll" | ForEach-Object {
-              Write-Host "Found CUDA DLL: $($_.Name)"
-            }
+            # Show what we got
+            Get-ChildItem "cuda-extract" -Recurse | ForEach-Object { Write-Host "  $($_.FullName)" }
           } else {
-            Write-Host "WARNING: No CUDA 13.1 asset found in latest release"
+            Write-Host "WARNING: No CUDA 13.1 asset found"
           }
 
       - name: Collect release package
@@ -67,31 +62,33 @@ jobs:
           $releaseDir = Join-Path $env:GITHUB_WORKSPACE "release-package"
           New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
           
-          # Main binary
+          # Main binary and all DLLs from build
           Copy-Item "build\bin\Release\llama-server.exe" $releaseDir
           Get-ChildItem "build\bin\Release\*.dll" | ForEach-Object {
             Copy-Item $_.FullName $releaseDir
             Write-Host "Copied $($_.Name) from build"
           }
           
-          # CUDA DLL from official release
+          # CUDA DLL and runtime from official release
           if (Test-Path "cuda-extract") {
-            Get-ChildItem "cuda-extract" -Recurse -Filter "ggml-cuda*.dll" | ForEach-Object {
-              Copy-Item $_.FullName $releaseDir
-              Write-Host "Copied CUDA DLL: $($_.Name)"
-            }
-            # Also grab CUDA runtime if included
-            Get-ChildItem "cuda-extract" -Recurse -Filter "cudart*.dll","cublas*.dll" | ForEach-Object {
-              Copy-Item $_.FullName $releaseDir
-              Write-Host "Copied CUDA runtime: $($_.Name)"
+            Get-ChildItem "cuda-extract" -Recurse -Filter "*.dll" | ForEach-Object {
+              # Only copy DLLs that aren't already present from build
+              $destPath = Join-Path $releaseDir $_.Name
+              if (-not (Test-Path $destPath)) {
+                Copy-Item $_.FullName $releaseDir
+                Write-Host "Copied from official release: $($_.Name)"
+              }
             }
           }
           
           # OpenSSL DLLs
           if (Test-Path "C:\Program Files\OpenSSL\bin") {
             Get-ChildItem "C:\Program Files\OpenSSL\bin\libcrypto-3-x64.dll","C:\Program Files\OpenSSL\bin\libssl-3-x64.dll" -ErrorAction SilentlyContinue | ForEach-Object {
-              Copy-Item $_.FullName $releaseDir
-              Write-Host "Copied $($_.Name) from OpenSSL"
+              $destPath = Join-Path $releaseDir $_.Name
+              if (-not (Test-Path $destPath)) {
+                Copy-Item $_.FullName $releaseDir
+                Write-Host "Copied $($_.Name) from OpenSSL"
+              }
             }
           }
           
