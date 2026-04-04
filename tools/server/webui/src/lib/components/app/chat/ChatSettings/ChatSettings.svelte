@@ -7,7 +7,8 @@
 		Monitor,
 		ChevronLeft,
 		ChevronRight,
-		Database
+		Database,
+		Search
 	} from '@lucide/svelte';
 	import {
 		ChatSettingsFooter,
@@ -284,6 +285,18 @@
 					key: SETTINGS_KEYS.SHOW_TOOL_CALL_IN_PROGRESS,
 					label: 'Show tool call in progress',
 					type: SettingsFieldType.CHECKBOX
+				}
+			]
+		},
+		{
+			title: SETTINGS_SECTION_TITLES.INSPECT,
+			icon: Search,
+			fields: [
+				{
+					key: SETTINGS_KEYS.ENABLE_TOKEN_INSPECTION,
+					label: 'Enable token inspection',
+					type: SettingsFieldType.CHECKBOX,
+					isExperimental: true
 				}
 			]
 		},
