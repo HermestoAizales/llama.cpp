@@ -29,18 +29,6 @@
 		return h;
 	}
 
-	function getEntropyColor(v: number): string {
-		if (v < 1) return 'text-green-500';
-		if (v < 3) return 'text-yellow-500';
-		return 'text-red-500';
-	}
-
-	function probColor(p: number): string {
-		if (p >= 0.7) return 'bg-green-500';
-		if (p >= 0.3) return 'bg-yellow-500';
-		return 'bg-red-500';
-	}
-
 	function formatToken(t: string): string {
 		return t.replace(/\n/g, '\\n').replace(/\t/g, '\\t');
 	}
@@ -69,11 +57,17 @@
 
 	{#if expanded}
 		<div class="max-h-96 space-y-1 overflow-y-auto px-3 pb-3">
-			{#each displayTokens as t, idx}
+			{#each displayTokens as t, idx (t.token + idx)}
 				{@const items =
 					t.top_logprobs.length > 0 ? t.top_logprobs : [{ token: t.token, logprob: t.logprob }]}
 				{@const mainProb = Math.exp(t.logprob)}
 				{@const entropy = computeEntropy(t)}
+				{@const probClass =
+					mainProb >= 0.7
+						? 'bg-green-500 text-white'
+						: mainProb >= 0.3
+							? 'bg-yellow-500 text-white'
+							: 'bg-red-500 text-white'}
 				<div
 					class="cursor-default rounded border border-border/50 bg-background/50 px-2 py-1.5 text-xs transition-colors hover:bg-muted/30"
 				>
@@ -85,22 +79,26 @@
 							{formatToken(t.token)}
 						</span>
 						<span
-							class="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium text-white tabular-nums"
-							class:probColor={mainProb >= 0.7}
+							class="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium tabular-nums {probClass}"
 						>
 							{(mainProb * 100).toFixed(1)}%
 						</span>
 						<span class="ml-auto text-muted-foreground tabular-nums">
 							logprob: {t.logprob.toFixed(3)}
 						</span>
-						<span class="font-medium tabular-nums" class:getEntropyColor={true}>
+						<span
+							class="font-medium tabular-nums"
+							class:text-green-500={entropy < 1}
+							class:text-yellow-500={entropy >= 1 && entropy < 3}
+							class:text-red-500={entropy >= 3}
+						>
 							H={entropy.toFixed(2)}
 						</span>
 					</div>
 
 					{#if items.length > 1}
 						<div class="mt-1 space-y-0.5 border-t border-border/30 pt-1">
-							{#each items.slice(0, 5) as alt, ai}
+							{#each items.slice(0, 5) as alt, ai (alt.token + ai)}
 								{@const altProb = Math.exp(alt.logprob)}
 								<div class="flex items-center gap-1">
 									<span class="w-3 text-right text-[10px] text-muted-foreground">{ai + 1}.</span>
