@@ -74,12 +74,15 @@ export class ChatService {
 			dry_base,
 			dry_allowed_length,
 			dry_penalty_last_n,
-			// Other parameters
-			samplers,
-			backend_sampling,
-			custom,
-			timings_per_token,
-			// Config options
+		// Other parameters
+		samplers,
+		backend_sampling,
+		custom,
+		timings_per_token,
+		// Token inspection
+		logprobs,
+		top_logprobs,
+		// Config options
 			disableReasoningParsing,
 			excludeReasoningFromContext
 		} = options;
@@ -190,6 +193,9 @@ export class ChatService {
 		if (backend_sampling !== undefined) requestBody.backend_sampling = backend_sampling;
 
 		if (timings_per_token !== undefined) requestBody.timings_per_token = timings_per_token;
+
+		if (logprobs !== undefined) requestBody.logprobs = logprobs;
+		if (top_logprobs !== undefined) requestBody.top_logprobs = top_logprobs;
 
 		if (custom) {
 			try {

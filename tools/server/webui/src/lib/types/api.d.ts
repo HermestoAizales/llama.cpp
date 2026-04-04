@@ -239,6 +239,9 @@ export interface ApiChatCompletionRequest {
 	// Custom parameters (JSON string)
 	custom?: Record<string, unknown>;
 	timings_per_token?: boolean;
+	// Token inspection
+	logprobs?: boolean;
+	top_logprobs?: number;
 }
 
 export interface ApiChatCompletionToolCallFunctionDelta {
@@ -257,6 +260,21 @@ export interface ApiChatCompletionToolCall extends ApiChatCompletionToolCallDelt
 	function?: ApiChatCompletionToolCallFunctionDelta & { arguments?: string };
 }
 
+export interface ApiTopLogprob {
+	token: string;
+	logprob: number;
+	bytes?: number[];
+}
+
+export interface ApiLogprobs {
+	content: Array<{
+		token: string;
+		logprob: number;
+		bytes?: number[];
+		top_logprobs: ApiTopLogprob[];
+	}>;
+}
+
 export interface ApiChatCompletionStreamChunk {
 	object?: string;
 	model?: string;
@@ -269,6 +287,7 @@ export interface ApiChatCompletionStreamChunk {
 			model?: string;
 			tool_calls?: ApiChatCompletionToolCallDelta[];
 		};
+		logprobs?: ApiLogprobs;
 		finish_reason?: string | null;
 	}>;
 	timings?: {
@@ -292,6 +311,7 @@ export interface ApiChatCompletionResponse {
 			model?: string;
 			tool_calls?: ApiChatCompletionToolCall[];
 		};
+		logprobs?: ApiLogprobs;
 		finish_reason?: string | null;
 	}>;
 }
