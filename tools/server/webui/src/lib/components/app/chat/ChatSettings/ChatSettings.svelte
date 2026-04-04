@@ -288,6 +288,17 @@
 			]
 		},
 		{
+			title: SETTINGS_SECTION_TITLES.PREFILL,
+			icon: Code,
+			fields: [
+				{
+					key: SETTINGS_KEYS.ENABLE_PROMPT_PREFILLING,
+					label: 'Enable prompt prefilling',
+					type: SettingsFieldType.CHECKBOX
+				}
+			]
+		},
+		{
 			title: SETTINGS_SECTION_TITLES.DEVELOPER,
 			icon: Code,
 			fields: [

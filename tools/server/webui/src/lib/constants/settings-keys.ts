@@ -52,6 +52,10 @@ export const SETTINGS_KEYS = {
 	ALWAYS_SHOW_AGENTIC_TURNS: 'alwaysShowAgenticTurns',
 	AGENTIC_MAX_TOOL_PREVIEW_LINES: 'agenticMaxToolPreviewLines',
 	SHOW_TOOL_CALL_IN_PROGRESS: 'showToolCallInProgress',
+	// Token Inspection
+	ENABLE_TOKEN_INSPECTION: 'enableTokenInspection',
+	// Prefill
+	ENABLE_PROMPT_PREFILLING: 'enablePromptPrefilling',
 	// Developer
 	DISABLE_REASONING_PARSING: 'disableReasoningParsing',
 	EXCLUDE_REASONING_FROM_CONTEXT: 'excludeReasoningFromContext',

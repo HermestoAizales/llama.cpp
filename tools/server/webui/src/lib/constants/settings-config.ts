@@ -2,6 +2,8 @@ import { ColorMode } from '$lib/enums/ui';
 import { Monitor, Moon, Sun } from '@lucide/svelte';
 
 export const SETTING_CONFIG_DEFAULT: Record<string, string | number | boolean | undefined> = {
+	// prompt prefilling
+	enablePromptPrefilling: false,
 	// Note: in order not to introduce breaking changes, please keep the same data type (number, string, etc) if you want to change the default value.
 	// Do not use nested objects, keep it single level. Prefix the key if you need to group them.
 	apiKey: '',
@@ -144,7 +146,9 @@ export const SETTING_CONFIG_INFO: Record<string, string> = {
 	pyInterpreterEnabled:
 		'Enable Python interpreter using Pyodide. Allows running Python code in markdown code blocks.',
 	enableContinueGeneration:
-		'Enable "Continue" button for assistant messages. Currently works only with non-reasoning models.'
+		'Enable "Continue" button for assistant messages. Currently works only with non-reasoning models.',
+	enablePromptPrefilling:
+		'Show a text field to prefill the assistant\'s response. The model will start generation from the provided text, useful for enforcing output formats or skipping preambles.'
 };
 
 export const SETTINGS_COLOR_MODES_CONFIG = [

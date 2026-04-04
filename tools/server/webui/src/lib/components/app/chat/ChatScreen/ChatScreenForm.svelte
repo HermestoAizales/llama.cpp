@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { afterNavigate } from '$app/navigation';
 	import { ChatFormHelperText, ChatForm } from '$lib/components/app';
+	import { chatStore, promptPrefillText } from '$lib/stores/chat.svelte';
+	import { config } from '$lib/stores/settings.svelte';
 	import { onMount } from 'svelte';
 
 	interface Props {
@@ -35,6 +37,14 @@
 	let message = $derived(initialMessage);
 	let previousIsLoading = $derived(isLoading);
 	let previousInitialMessage = $derived(initialMessage);
+
+	// Prompt Prefill
+	let showPrefill = $derived(Boolean(config().enablePromptPrefilling));
+	let prefillText = $derived(promptPrefillText());
+
+	function handlePrefillChange(text: string) {
+		chatStore.setPromptPrefillText(text);
+	}
 
 	// Sync message when initialMessage prop changes (e.g., after draft restoration)
 	$effect(() => {
@@ -116,6 +126,9 @@
 		onSubmit={handleSubmit}
 		onSystemPromptClick={handleSystemPromptClick}
 		onUploadedFileRemove={handleUploadedFileRemove}
+		{showPrefill}
+		prefillText={prefillText}
+		onPrefillChange={handlePrefillChange}
 	/>
 </div>
 
