@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-server-windows:
-    runs-on: windows-2025
-    timeout-minutes: 20
+  build-webui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -18,26 +18,52 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: "22"
-          cache: "npm"
-          cache-dependency-path: "tools/server/webui/package-lock.json"
 
-      - name: Build WebUI
+      - name: Install & Build WebUI
         working-directory: tools/server/webui
         run: |
           npm ci
           npm run build
+          ls -lh public/
+
+      - name: Upload built WebUI
+        uses: actions/upload-artifact@v4
+        with:
+          name: webui-assets
+          path: |
+            tools/server/webui/public/index.html
+            tools/server/webui/public/bundle.js
+            tools/server/webui/public/bundle.css
+            tools/server/webui/public/loading.html
+
+  build-server-windows:
+    needs: build-webui
+    runs-on: windows-2025
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Download WebUI assets
+        uses: actions/download-artifact@v4
+        with:
+          name: webui-assets
+          path: tools/server/webui/public/
 
       - name: Install ccache
         uses: ggml-org/ccache-action@v1.2.21
         with:
-          key: windows-latest-cpu-x64-v3
+          key: windows-latest-cpu-x64-v2
           variant: ccache
           evict-old-files: 1d
 
       - name: Install Ninja
         run: choco install ninja --no-progress
 
-      - name: Build llama-server (CPU only)
+      - name: Build llama-server (CPU + WebUI, no tools)
         shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
@@ -59,7 +85,6 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path "cuda-dlls" | Out-Null
-          
           $release = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
           $cudaAsset = $release.assets | Where-Object { $_.name -match "llama-bin-win-cuda-13.1-x64.zip" }
           if ($cudaAsset) {
@@ -73,44 +98,35 @@ jobs:
         run: |
           $releaseDir = Join-Path $env:GITHUB_WORKSPACE "release-package"
           New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
-          
           $cpuRelease = "build\bin\Release"
-          $cudaExtracted = "cuda-dlls"
-          
           @("llama-server.exe", "llama.dll", "mtmd.dll") | ForEach-Object {
             $src = Join-Path $cpuRelease $_
-            if (Test-Path $src) {
-              Copy-Item $src $releaseDir
-              Write-Host "Added $_ from our build"
-            }
+            if (Test-Path $src) { Copy-Item $src $releaseDir; Write-Host "Added $_" }
           }
-
           Get-ChildItem $cpuRelease -Filter "*.dll" | ForEach-Object {
             Copy-Item $_.FullName (Join-Path $releaseDir $_.Name)
           }
-
-          Get-ChildItem $cudaExtracted -Recurse -Filter "*.dll" | ForEach-Object {
-            $dest = Join-Path $releaseDir $_.Name
-            if (-not (Test-Path $dest)) {
-              Copy-Item $_.FullName $dest
-              Write-Host "Added from official: $($_.Name)"
+          if (Test-Path "cuda-dlls") {
+            Get-ChildItem "cuda-dlls" -Recurse -Filter "*.dll" | ForEach-Object {
+              $dest = Join-Path $releaseDir $_.Name
+              if (-not (Test-Path $dest)) {
+                Copy-Item $_.FullName $dest
+                Write-Host "Added from official: $($_.Name)"
+              }
             }
           }
-          
-          # libcurl + OpenSSL for CURL support
           Get-ChildItem "build\bin\Release\libcurl*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
             Copy-Item $_.FullName $releaseDir
           }
           if (Test-Path "C:\Program Files\OpenSSL\bin") {
-            Get-ChildItem "C:\Program Files\OpenSSL\bin\libcrypto-3-x64.dll","C:\Program Files\OpenSSL\bin\libssl-3-x64.dll" -ErrorAction SilentlyContinue | ForEach-Object {
-              $dest = Join-Path $releaseDir $_.Name
-              if (-not (Test-Path $dest)) {
-                Copy-Item $_.FullName $dest
-                Write-Host "Added OpenSSL: $($_.Name)"
+            @("libcrypto-3-x64.dll","libssl-3-x64.dll") | ForEach-Object {
+              $src = "C:\Program Files\OpenSSL\bin\$_"
+              $dest = Join-Path $releaseDir $_
+              if ((Test-Path $src) -and -not (Test-Path $dest)) {
+                Copy-Item $src $dest; Write-Host "Added OpenSSL: $_"
               }
             }
           }
-                
           Write-Host "`n=== Final package ==="
           Get-ChildItem $releaseDir | Select-Object Name, @{N="SizeMB";E={[math]::Round($_.Length/1MB,2)}} | Format-Table
 
