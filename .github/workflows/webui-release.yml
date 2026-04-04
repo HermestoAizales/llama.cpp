@@ -6,7 +6,7 @@ on:
 jobs:
   build-server-windows:
     runs-on: windows-2025
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -30,20 +30,28 @@ jobs:
       - name: Install ccache
         uses: ggml-org/ccache-action@v1.2.21
         with:
-          key: windows-latest-cpu-x64-v6
+          key: windows-latest-cuda-x64-v1
           variant: ccache
           evict-old-files: 1d
+
+      - name: Setup CUDA 13.1
+        run: |
+          choco install cuda --version=13.1.0.94 -y --no-progress
 
       - name: Install Ninja
         run: choco install ninja --no-progress
 
-      - name: Build llama-server
+      - name: Build llama-server (CUDA)
         shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
           cmake -S . -B build -G "Ninja Multi-Config" ^
-            -D CMAKE_TOOLCHAIN_FILE=cmake/x64-windows-llvm.cmake ^
+            -D CMAKE_C_COMPILER=clang-cl.exe ^
+            -D CMAKE_CXX_COMPILER=clang-cl.exe ^
             -DLLAMA_BUILD_BORINGSSL=ON ^
+            -DGGML_CUDA=ON ^
+            -DCMAKE_CUDA_COMPILER=nvcc.exe ^
+            -DCMAKE_CUDA_ARCHITECTURES=86 ^
             -DGGML_NATIVE=OFF ^
             -DGGML_BACKEND_DL=ON ^
             -DGGML_CPU_ALL_VARIANTS=ON ^
@@ -60,12 +68,12 @@ jobs:
         run: |
           $releaseDir = Join-Path $env:GITHUB_WORKSPACE "release-package"
           New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
-          $cpuRelease = "build\bin\Release"
-          @("llama-server.exe", "llama.dll", "mtmd.dll") | ForEach-Object {
-            $src = Join-Path $cpuRelease $_
+          $cudaRelease = "build\bin\Release"
+          @("llama-server.exe", "llama.dll", "mtmd.dll", "ggml-cuda.dll") | ForEach-Object {
+            $src = Join-Path $cudaRelease $_
             if (Test-Path $src) { Copy-Item $src $releaseDir; Write-Host "Added $_" }
           }
-          Get-ChildItem $cpuRelease -Filter "*.dll" | ForEach-Object {
+          Get-ChildItem $cudaRelease -Filter "ggml-*.dll" | ForEach-Object {
             Copy-Item $_.FullName (Join-Path $releaseDir $_.Name)
           }
           Get-ChildItem "build\bin\Release\libcurl*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
@@ -85,6 +93,6 @@ jobs:
       - name: Upload release package
         uses: actions/upload-artifact@v4
         with:
-          name: llama-server-win-cpu-x64
+          name: llama-server-win-cuda13.1-x64
           path: release-package/
           retention-days: 30
