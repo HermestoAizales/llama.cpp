@@ -1,0 +1,25 @@
+name: WebUI Release (Windows)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  llama-server-win:
+    runs-on: windows-2022
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Build
+        run: |
+          cmake -B build -DLLAMA_BUILD_BORINGSSL=ON -DGGML_SCHED_NO_REALLOC=ON
+          cmake --build build --config Release -j ${env:NUMBER_OF_PROCESSORS} --target llama-server
+
+      - name: Upload llama-server.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-server-win-x64
+          path: build/bin/Release/llama-server.exe
