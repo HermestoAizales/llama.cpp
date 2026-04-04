@@ -18,55 +18,66 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Build llama-server.exe (WebUI embedded)
-        shell: bash
+        shell: pwsh
         run: |
-          cmake -B build -G "Visual Studio 17 2022" -A x64 \
-            -DLLAMA_BUILD_SERVER=ON \
-            -DLLAMA_CURL=ON \
-            -DLLAMA_BUILD_EXAMPLES=OFF \
-            -DLLAMA_BUILD_TESTS=OFF \
+          cmake -B build -G "Visual Studio 17 2022" -A x64 `
+            -DLLAMA_BUILD_SERVER=ON `
+            -DLLAMA_CURL=ON `
+            -DLLAMA_BUILD_EXAMPLES=OFF `
+            -DLLAMA_BUILD_TESTS=OFF `
             -DCMAKE_BUILD_TYPE=Release
           
-          cmake --build build --config Release \
-            --target llama-server \
+          cmake --build build --config Release `
+            --target llama-server `
             --parallel
 
-      - name: Collect ALL dependencies
-        shell: bash
+      - name: Copy all runtime dependencies
+        shell: pwsh
         run: |
-          mkdir -p release-package
-          cp build/bin/Release/llama-server.exe release-package/
+          # Create release folder
+          $releaseDir = "release-package"
+          New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
           
-          echo "=== Finding DLLs ==="
+          # Copy llama-server.exe
+          Copy-Item "build\bin\Release\llama-server.exe" $releaseDir
           
-          # Search common locations for OpenSSL and CURL DLLs
-          SEARCH_PATHS=(
-            "C:/Program Files/OpenSSL/bin"
-            "C:/OpenSSL/bin"
-            "C:/Program Files (x86)/OpenSSL/bin"
+          # Copy all DLLs from build output
+          Get-ChildItem "build\bin\Release\*.dll" | ForEach-Object {
+            Copy-Item $_.FullName $releaseDir
+          }
+          
+          # Copy OpenSSL DLLs from Windows system path
+          $opensslPaths = @(
+            "C:\Program Files\OpenSSL\bin"
           )
           
-          for dll in libcrypto-3-x64.dll libssl-3-x64.dll libcurl-x64.dll libcurl.dll; do
-            FOUND=false
-            for path in "${SEARCH_PATHS[@]}"; do
-              if [ -f "$path/$dll" ]; then
-                cp "$path/$dll" release-package/
-                echo "Copied $dll from $path"
-                FOUND=true
+          $neededDlls = @("libcrypto-3-x64.dll", "libssl-3-x64.dll", "libcurl.dll")
+          
+          foreach ($dll in $neededDlls) {
+            foreach ($path in $opensslPaths) {
+              $fullPath = Join-Path $path $dll
+              if (Test-Path $fullPath) {
+                Copy-Item $fullPath $releaseDir
+                Write-Host "Copied $dll from $path"
                 break
-              fi
-            done
-            if [ "$FOUND" = false ]; then
-              echo "WARNING: $dll not found in expected locations"
-            fi
-          done
+              }
+            }
+          }
           
-          # Also copy any DLLs that are already in the build output (like libwinpthread, etc.)
-          find build/bin/Release -name "*.dll" -exec cp {} release-package/ \; 2>/dev/null || true
+          # Copy CURL DLL (usually in vcpkg or system)
+          Get-ChildItem -Recurse -Path "C:\" -Filter "libcurl*.dll" -ErrorAction SilentlyContinue -Depth 3 | ForEach-Object {
+            if ($_.DirectoryName -notmatch "Windows\\WinSxS") {
+              $dest = Join-Path $releaseDir $_.Name
+              if (-not (Test-Path $dest)) {
+                Copy-Item $_.FullName $dest
+                Write-Host "Copied $($_.Name) from $($_.DirectoryName)"
+              }
+            }
+          }
           
-          echo ""
-          echo "=== Final package contents ==="
-          ls -la release-package/
+          # Show contents
+          Write-Host "`n=== Release package contents ==="
+          Get-ChildItem $releaseDir | Select-Object Name, Length | Format-Table
 
       - name: Upload release package
         uses: actions/upload-artifact@v4
