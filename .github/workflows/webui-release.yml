@@ -64,27 +64,25 @@ jobs:
           $cpuRelease = "build\bin\Release"
           $cudaExtracted = "cuda-dlls"
           
-          # 1. Copy llama-server.exe + llama.dll + mtmd.dll from our build
+          # 1. llama-server.exe + llama.dll + mtmd.dll
           @("llama-server.exe", "llama.dll", "mtmd.dll") | ForEach-Object {
             $src = Join-Path $cpuRelease $_
             if (Test-Path $src) {
               Copy-Item $src $releaseDir
-              Write-Host "Copied $_ from our build"
+              Write-Host "Added $_ from our build"
             }
           }
 
-          # 2. Copy all DLLs from our build (CPU backends, ggml.dll, ggml-base.dll, ggml-rpc.dll, OpenMP)
+          # 2. All DLLs from our build (CPU backends, ggml.dll, ggml-base.dll, libomp140, etc.)
           Get-ChildItem $cpuRelease -Filter "*.dll" | ForEach-Object {
             $dest = Join-Path $releaseDir $_.Name
             Copy-Item $_.FullName $dest
-            Write-Host "Added $_"
           }
 
-          # 3. Add CUDA-related DLLs from official release (ggml-cuda.dll, CUDA runtime)
-          #    The official zip already contains: ggml-cuda.dll + cublas64_13.dll + cublasLt64_13.dll + cudart64_13.dll
+          # 3. CUDA backend DLLs + CUDA runtime from official release
+          #    Already contains: ggml-cuda.dll, cublas64_13.dll, cublasLt64_13.dll, cudart64_13.dll
           Get-ChildItem $cudaExtracted -Recurse -Filter "*.dll" | ForEach-Object {
             $dest = Join-Path $releaseDir $_.Name
-            # Only add if not already present from our build (avoids duplicate ggml.dll etc.)
             if (-not (Test-Path $dest)) {
               Copy-Item $_.FullName $dest
               Write-Host "Added from official: $($_.Name)"
