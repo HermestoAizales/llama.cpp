@@ -6,7 +6,7 @@ on:
 jobs:
   build-webui-windows:
     runs-on: windows-2025
-    timeout-minutes: 50
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -31,9 +31,13 @@ jobs:
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.21
         with:
-          key: windows-cuda-13.1-webui-v1
+          key: windows-cuda-13.1-webui
+          restore-keys: |
+            windows-cuda-13.1
+            windows-cuda-
           variant: ccache
-          evict-old-files: 1d
+          max-size: 2G
+          save: true
 
       - name: Install Cuda Toolkit
         uses: ./.github/actions/windows-setup-cuda
