@@ -214,6 +214,152 @@
 		return h;
 	}
 
+	// --- Token inspection: markdown-aware segmentation ---
+	interface TokenSegment {
+		type: 'text' | 'bold' | 'italic' | 'code' | 'reasoning';
+		tokens: Array<{ token: string; logprob: number; idx: number }>;
+	}
+
+	function getTokenClass(logprob: number, idx: number): string {
+		const prob = Math.exp(logprob);
+		const base = 'cursor-help transition-colors';
+		const ring = activePopup?.idx === idx ? 'ring-1 ring-blue-400' : '';
+		const conf =
+			prob >= 0.5
+				? 'underline-high'
+				: prob >= 0.25
+					? 'underline-med'
+					: 'underline-low';
+		return `inline-block rounded-t px-0.5 ${base} ${ring} ${conf}`;
+	}
+
+	function tokenizeMarkdown(msg: DatabaseMessage, tools: DatabaseMessage[]): TokenSegment[] {
+		const segments: TokenSegment[] = [];
+		const logprobs = messageLogprobs;
+		if (!Array.isArray(logprobs) || logprobs.length === 0) {
+			segments.push({ type: 'text', tokens: [] });
+			return segments;
+		}
+
+		let i = 0;
+
+		// Skip reasoning tokens (tokens before the main content)
+		// We look for tokens that appear after reasoning markers like <think> or <think>
+		let startIdx = 0;
+		let content = '';
+		for (let idx = 0; idx < logprobs.length; idx++) {
+			content += logprobs[idx].token;
+		}
+
+		// Detect reasoning section: <think>...</think> and split
+		const thinkMatch = content.match(/<think>[\s\S]*?<\/think>/);
+		let reasoningTokens: TokenSegment | null = null;
+
+		if (thinkMatch) {
+			const thinkStart = thinkMatch.index ?? 0;
+			const thinkEnd = thinkStart + thinkMatch[0].length;
+
+			// Count chars to determine token indices
+			let charCount = 0;
+			let thinkTokenStart = -1;
+			let thinkTokenEnd = -1;
+			for (let idx = 0; idx < logprobs.length; idx++) {
+				const charBefore = charCount;
+				charCount += logprobs[idx].token.length;
+				if (charBefore <= thinkStart && thinkTokenStart === -1) {
+					thinkTokenStart = idx;
+				}
+				if (charCount >= thinkEnd && thinkTokenEnd === -1) {
+					thinkTokenEnd = idx + 1;
+					break;
+				}
+			}
+
+			if (thinkTokenStart >= 0 && thinkTokenEnd > thinkTokenStart) {
+				const tokens = logprobs.slice(thinkTokenStart, thinkTokenEnd).map((t, localIdx) => ({
+					token: t.token,
+					logprob: t.logprob,
+					idx: thinkTokenStart + localIdx
+				}));
+				reasoningTokens = { type: 'reasoning', tokens };
+				startIdx = thinkTokenEnd;
+			}
+		}
+
+		// Parse remaining content for markdown
+		let currentIdx = startIdx;
+		while (currentIdx < logprobs.length) {
+			const token = logprobs[currentIdx].token;
+
+			// Bold: **text**
+			if (token === '**' && currentIdx + 1 < logprobs.length) {
+				let j = currentIdx + 1;
+				const tokens: TokenSegment['tokens'] = [];
+				while (j < logprobs.length && logprobs[j].token !== '**') {
+					tokens.push({ token: logprobs[j].token, logprob: logprobs[j].logprob, idx: j });
+					j++;
+				}
+				if (j < logprobs.length && tokens.length > 0) {
+					segments.push({ type: 'bold', tokens });
+					currentIdx = j + 1;
+					continue;
+				}
+			}
+
+			// Italic: *text*
+			if (token === '*' && currentIdx + 1 < logprobs.length && logprobs[currentIdx + 1].token !== '*') {
+				let j = currentIdx + 1;
+				const tokens: TokenSegment['tokens'] = [];
+				while (j < logprobs.length && logprobs[j].token !== '*') {
+					tokens.push({ token: logprobs[j].token, logprob: logprobs[j].logprob, idx: j });
+					j++;
+				}
+				if (j < logprobs.length && tokens.length > 0) {
+					segments.push({ type: 'italic', tokens });
+					currentIdx = j + 1;
+					continue;
+				}
+			}
+
+			// Inline code: `text`
+			if (token === '`' && currentIdx + 1 < logprobs.length && logprobs[currentIdx + 1].token !== '`') {
+				let j = currentIdx + 1;
+				const tokens: TokenSegment['tokens'] = [];
+				while (j < logprobs.length && logprobs[j].token !== '`') {
+					tokens.push({ token: logprobs[j].token, logprob: logprobs[j].logprob, idx: j });
+					j++;
+				}
+				if (j < logprobs.length && tokens.length > 0) {
+					segments.push({ type: 'code', tokens });
+					currentIdx = j + 1;
+					continue;
+				}
+			}
+
+			// Regular text token
+			segments.push({ type: 'text', tokens: [{ token, logprob: logprobs[currentIdx].logprob, idx: currentIdx }] });
+			currentIdx++;
+		}
+
+		// Prepend reasoning if found
+		if (reasoningTokens) {
+			segments.unshift(reasoningTokens);
+		}
+
+		return segments;
+	}
+
+	// Token hover handlers for popup
+	function handleTokenHover(e: MouseEvent) {
+		const idx = parseInt((e.currentTarget as HTMLElement).getAttribute('data-token-index') ?? '-1');
+		if (idx >= 0) showPopup(e, idx);
+	}
+	function handleTokenLeave() { hidePopup(); }
+	function handleTokenClick(e: MouseEvent) {
+		const idx = parseInt((e.currentTarget as HTMLElement).getAttribute('data-token-index') ?? '-1');
+		if (idx >= 0) showPopup(e, idx);
+	}
+
 	let displayedModel = $derived(message.model ?? null);
 
 	let isCurrentlyLoading = $derived(isLoading());
@@ -316,26 +462,70 @@
 	{:else if message.role === MessageRole.ASSISTANT}
 		{#if showRawOutput}
 			<pre class="raw-output">{messageContent || ''}</pre>
-		{:else if tokenInspectionActive && hasLogprobs}
-			<div class="mt-3 text-base leading-7">
-				{#each messageLogprobs as t, idx (t.token + idx)}
-					{@const mainProb = Math.exp(t.logprob)}
-					<span
-						onmouseenter={(e) => showPopup(e, idx)}
-						onmouseleave={hidePopup}
-						onclick={(e) => {
-							e.stopPropagation();
-							showPopup(e, idx);
-						}}
-						class={`inline rounded px-0.5 cursor-help transition-colors ${
-							activePopup?.idx === idx ? 'ring-1 ring-blue-400' : ''
-						} ${mainProb >= 0.5
-							? 'bg-green-500/15 dark:bg-green-400/20'
-							: mainProb >= 0.25
-								? 'bg-yellow-500/15 dark:bg-yellow-400/20'
-								: 'bg-red-500/15 dark:bg-red-400/20'
-						}`}
-					>{t.token}</span>
+			{:else if tokenInspectionActive && hasLogprobs}
+			<div class="token-inspection">
+				<!-- Markdown-aware token rendering with confidence underlines -->
+				{#each tokenizeMarkdown(message, toolMessages) as segment, segIdx}
+					{#if segment.type === 'bold'}
+						<strong>
+							{#each segment.tokens as t}
+								<span
+									class="{getTokenClass(t.logprob, t.idx)}"
+									data-token-index={t.idx}
+									onmouseenter={handleTokenHover}
+									onmouseleave={handleTokenLeave}
+									onclick={handleTokenClick}
+								>{t.token}</span>
+							{/each}
+						</strong>
+					{:else if segment.type === 'italic'}
+						<em>
+							{#each segment.tokens as t}
+								<span
+									class="{getTokenClass(t.logprob, t.idx)}"
+									data-token-index={t.idx}
+									onmouseenter={handleTokenHover}
+									onmouseleave={handleTokenLeave}
+									onclick={handleTokenClick}
+								>{t.token}</span>
+							{/each}
+						</em>
+					{:else if segment.type === 'code'}
+						<code class="token-code">
+							{#each segment.tokens as t}
+								<span
+									class="{getTokenClass(t.logprob, t.idx)}"
+									data-token-index={t.idx}
+									onmouseenter={handleTokenHover}
+									onmouseleave={handleTokenLeave}
+									onclick={handleTokenClick}
+								>{t.token}</span>
+							{/each}
+						</code>
+					{:else if segment.type === 'reasoning'}
+						<div class="reasoning-section">
+							<span class="reasoning-label">Reasoning:</span>
+							{#each segment.tokens as t}
+								<span
+									class="{getTokenClass(t.logprob, t.idx)}"
+									data-token-index={t.idx}
+									onmouseenter={handleTokenHover}
+									onmouseleave={handleTokenLeave}
+									onclick={handleTokenClick}
+								>{t.token}</span>
+							{/each}
+						</div>
+					{:else if segment.type === 'text'}
+						{#each segment.tokens as t}
+							<span
+								class="{getTokenClass(t.logprob, t.idx)}"
+								data-token-index={t.idx}
+								onmouseenter={handleTokenHover}
+								onmouseleave={handleTokenLeave}
+								onclick={handleTokenClick}
+							>{t.token}</span>
+						{/each}
+					{/if}
 				{/each}
 			</div>
 		{:else}
@@ -486,6 +676,92 @@
 		to {
 			background-position: -200% 0;
 		}
+	}
+
+	/* Token inspection - confidence underlines (Approach 4) */
+	.token-inspection {
+		font-size: 0.875rem;
+		line-height: 1.75;
+	}
+
+	.token-span {
+		position: relative;
+		display: inline;
+		border-radius: 2px;
+		padding: 0 1px;
+		cursor: help;
+	}
+
+	.token-span::after {
+		content: '';
+		position: absolute;
+		bottom: -1px;
+		left: 0;
+		right: 0;
+		height: 2px;
+		border-radius: 1px;
+		opacity: 0.4;
+	}
+
+	.underline-high::after {
+		background-color: #22c55e;
+	}
+
+	.underline-med::after {
+		background-color: #eab308;
+		opacity: 0.5;
+	}
+
+	.underline-low::after {
+		background-color: #ef4444;
+		opacity: 0.5;
+	}
+
+	/* Dark mode adjustments */
+	:global(.dark) .underline-high::after {
+		background-color: #4ade80;
+		opacity: 0.35;
+	}
+
+	:global(.dark) .underline-med::after {
+		background-color: #facc15;
+		opacity: 0.45;
+	}
+
+	:global(.dark) .underline-low::after {
+		background-color: #f87171;
+		opacity: 0.45;
+	}
+
+	/* Token hover effect */
+	.token-span:hover {
+		background-color: hsl(var(--muted) / 0.3);
+	}
+
+	/* Reasoning section styling */
+	.reasoning-section {
+		margin-bottom: 0.75rem;
+		padding: 0.5rem;
+		border-left: 2px solid hsl(var(--muted-foreground) / 0.3);
+	}
+
+	.reasoning-label {
+		font-size: 0.7rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: hsl(var(--muted-foreground));
+		display: block;
+		margin-bottom: 0.25rem;
+	}
+
+	/* Code block styling in token inspection */
+	.token-code {
+		font-family: ui-monospace, SFMono-Regular, 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+		font-size: 0.82em;
+		background-color: hsl(var(--muted) / 0.4);
+		border-radius: 4px;
+		padding: 1px 4px;
 	}
 
 	.raw-output {
