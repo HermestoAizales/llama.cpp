@@ -4,11 +4,8 @@
 		ChatMessageActions,
 		ChatMessageStatistics,
 		ModelBadge,
-		ModelsSelector,
-		TokenInspector,
-		InlineTokenText
+		ModelsSelector
 	} from '$lib/components/app';
-	import type { TokenLogprobData } from './TokenInspector.svelte';
 	import { getMessageEditContext } from '$lib/contexts';
 	import { useProcessingState } from '$lib/hooks/use-processing-state.svelte';
 	import { isLoading, isChatStreaming } from '$lib/stores/chat.svelte';
@@ -98,6 +95,7 @@
 	let currentConfig = $derived(config());
 	let isRouter = $derived(isRouterMode());
 	let showRawOutput = $state(false);
+	let tokenInspectionActive = $state(false);
 	let activeStatsView = $state<ChatMessageStatsView>(ChatMessageStatsView.GENERATION);
 	let statsContainerEl: HTMLDivElement | undefined = $state();
 
@@ -154,7 +152,13 @@
 			(currentConfig.alwaysShowAgenticTurns || activeStatsView === ChatMessageStatsView.SUMMARY)
 	);
 
-	let messageLogprobs = $derived<TokenLogprobData[]>(
+	interface LogprobEntry {
+		token: string;
+		logprob: number;
+		top_logprobs?: Array<{ token: string; logprob: number }>;
+	}
+
+	let messageLogprobs = $derived<LogprobEntry[]>(
 		message.logprobs ? JSON.parse(message.logprobs) : []
 	);
 	let hasLogprobs = $derived(Array.isArray(messageLogprobs) && messageLogprobs.length > 0);
@@ -196,12 +200,11 @@
 		return t.replace(/\n/g, '\\n').replace(/\t/g, '\\t');
 	}
 
-	function computeEntropy(data: TokenLogprobData): number {
+	function computeEntropy(data: LogprobEntry): number {
 		let h = 0;
+		const topLogprobs = data.top_logprobs ?? [];
 		const items =
-			data.top_logprobs.length > 0
-				? data.top_logprobs
-				: [{ token: data.token, logprob: data.logprob }];
+			topLogprobs.length > 0 ? topLogprobs : [{ token: data.token, logprob: data.logprob }];
 		for (const t of items) {
 			const p = Math.exp(t.logprob);
 			if (p > 0 && p <= 1) {
@@ -313,7 +316,7 @@
 	{:else if message.role === MessageRole.ASSISTANT}
 		{#if showRawOutput}
 			<pre class="raw-output">{messageContent || ''}</pre>
-		{:else if currentConfig.enableTokenInspection && hasLogprobs}
+		{:else if tokenInspectionActive && hasLogprobs}
 			<div class="mt-3 mb-6 flex flex-wrap gap-x-0">
 				{#each messageLogprobs as t, idx (t.token + idx)}
 					{@const mainProb = Math.exp(t.logprob)}
@@ -455,7 +458,20 @@
 			{onShowDeleteDialogChange}
 			showRawOutputSwitch={currentConfig.showRawOutputSwitch}
 			rawOutputEnabled={showRawOutput}
-			onRawOutputToggle={(enabled) => (showRawOutput = enabled)}
+			onRawOutputToggle={(enabled) => {
+				showRawOutput = enabled;
+				if (enabled && tokenInspectionActive) {
+					tokenInspectionActive = false;
+				}
+			}}
+			showTokenInspectionSwitch={hasLogprobs}
+			tokenInspectionEnabled={tokenInspectionActive}
+			onTokenInspectionToggle={(enabled) => {
+				tokenInspectionActive = enabled;
+				if (enabled && showRawOutput) {
+					showRawOutput = false;
+				}
+			}}
 		/>
 	{/if}
 </div>

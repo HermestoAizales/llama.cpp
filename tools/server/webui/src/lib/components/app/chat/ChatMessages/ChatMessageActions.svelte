@@ -36,6 +36,9 @@
 		showRawOutputSwitch?: boolean;
 		rawOutputEnabled?: boolean;
 		onRawOutputToggle?: (enabled: boolean) => void;
+		showTokenInspectionSwitch?: boolean;
+		tokenInspectionEnabled?: boolean;
+		onTokenInspectionToggle?: (enabled: boolean) => void;
 	}
 
 	let {
@@ -56,7 +59,10 @@
 		showDeleteDialog,
 		showRawOutputSwitch = false,
 		rawOutputEnabled = false,
-		onRawOutputToggle
+		onRawOutputToggle,
+		showTokenInspectionSwitch = false,
+		tokenInspectionEnabled = false,
+		onTokenInspectionToggle
 	}: Props = $props();
 
 	let showForkDialog = $state(false);
@@ -123,6 +129,16 @@
 			<Switch
 				checked={rawOutputEnabled}
 				onCheckedChange={(checked) => onRawOutputToggle?.(checked)}
+			/>
+		</div>
+	{/if}
+
+	{#if showTokenInspectionSwitch}
+		<div class="flex items-center gap-2">
+			<span class="text-xs text-muted-foreground">Token inspection</span>
+			<Switch
+				checked={tokenInspectionEnabled}
+				onCheckedChange={(checked) => onTokenInspectionToggle?.(checked)}
 			/>
 		</div>
 	{/if}
