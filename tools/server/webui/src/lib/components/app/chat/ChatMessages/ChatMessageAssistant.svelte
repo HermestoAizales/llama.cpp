@@ -443,6 +443,17 @@
 			processingState.startMonitoring();
 		}
 	});
+
+	// Track mouse movement for token inspection popup (follows cursor)
+	$effect(() => {
+		if (!tokenInspectionActive || !hasLogprobs) return;
+
+		function onMove(e: MouseEvent) {
+			movePopup(e);
+		}
+		window.addEventListener('mousemove', onMove);
+		return () => window.removeEventListener('mousemove', onMove);
+	});
 </script>
 
 <div
