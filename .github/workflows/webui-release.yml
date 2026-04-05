@@ -1,0 +1,58 @@
+name: WebUI Release Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-webui-windows:
+    runs-on: windows-2025
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: "tools/server/webui/package-lock.json"
+
+      - name: Build WebUI
+        working-directory: tools/server/webui
+        shell: bash
+        run: |
+          npm ci
+          npx vite build
+          bash ./scripts/post-build.sh
+
+      - name: Build C++
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+          cmake -S . -B build -G "Ninja Multi-Config" ^
+            -D CMAKE_TOOLCHAIN_FILE=cmake/x64-windows-llvm.cmake ^
+            -DLLAMA_BUILD_BORINGSSL=ON ^
+            -DGGML_NATIVE=OFF ^
+            -DGGML_BACKEND_DL=ON ^
+            -DGGML_CPU_ALL_VARIANTS=ON ^
+            -DGGML_OPENMP=ON ^
+            -DGGML_RPC=ON ^
+            -DLLAMA_BUILD_SERVER=ON ^
+            -DLLAMA_BUILD_EXAMPLES=OFF ^
+            -DLLAMA_BUILD_TESTS=OFF ^
+            -DLLAMA_BUILD_TOOLS=ON
+          cmake --build build --config Release
+
+      - name: Collect to release dir
+        run: |
+          New-Item -ItemType Directory -Force -Path ".\release"
+          Copy-Item ".\build\bin\Release\*" ".\release\" -Recurse -Force
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: llama-server-win-cpu-x64
+          path: release/
+          include-hidden-files: false
