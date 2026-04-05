@@ -588,7 +588,7 @@
 					{@const popupIdx = activePopup.idx}
 					<div
 						class="token-popup"
-						style="left: {activePopup.x + 12}px; top: {activePopup.y - 10}px;"
+						style="left: {activePopup.x + 12}px; top: {activePopup.y + 12}px;"
 						onmouseenter={() => { popupHoverActive = true; }}
 						onmouseleave={() => { popupHoverActive = false; hidePopup(); }}
 					>

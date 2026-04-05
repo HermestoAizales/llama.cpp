@@ -164,11 +164,10 @@ export class ChatService {
 			? ReasoningFormat.NONE
 			: ReasoningFormat.AUTO;
 
-		// Server reads enable_thinking from chat_template_kwargs as a STRING
-		// Default in server is true, so we only need to send "false" to disable
+		// Server expects enable_thinking as a BOOLEAN in chat_template_kwargs
 		if (enableThinking !== undefined) {
 			if (!requestBody.chat_template_kwargs) requestBody.chat_template_kwargs = {};
-			requestBody.chat_template_kwargs.enable_thinking = enableThinking ? 'true' : 'false';
+			requestBody.chat_template_kwargs.enable_thinking = enableThinking;
 		}
 
 		if (temperature !== undefined) requestBody.temperature = temperature;
