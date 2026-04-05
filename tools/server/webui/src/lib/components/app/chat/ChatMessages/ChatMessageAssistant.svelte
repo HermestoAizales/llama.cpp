@@ -317,7 +317,7 @@
 		{#if showRawOutput}
 			<pre class="raw-output">{messageContent || ''}</pre>
 		{:else if tokenInspectionActive && hasLogprobs}
-			<div class="mt-3 mb-6 flex flex-wrap gap-x-0">
+			<div class="mt-3 text-base leading-7">
 				{#each messageLogprobs as t, idx (t.token + idx)}
 					{@const mainProb = Math.exp(t.logprob)}
 					<span
@@ -327,35 +327,17 @@
 							e.stopPropagation();
 							showPopup(e, idx);
 						}}
-						class={`inline rounded px-0.5 font-mono text-[13px] leading-relaxed transition-colors ${
+						class={`inline rounded px-0.5 cursor-help transition-colors ${
 							activePopup?.idx === idx ? 'ring-1 ring-blue-400' : ''
-						}						${
-				mainProb >= 0.5
-							? 'bg-green-500/30 dark:bg-green-400/35'
-						: mainProb >= 0.25
-							? 'bg-yellow-500/30 dark:bg-yellow-400/35'
-							: 'bg-red-500/30 dark:bg-red-400/35'
-			}`}>{t.token}</span
-					>
+						} ${mainProb >= 0.5
+							? 'bg-green-500/15 dark:bg-green-400/20'
+							: mainProb >= 0.25
+								? 'bg-yellow-500/15 dark:bg-yellow-400/20'
+								: 'bg-red-500/15 dark:bg-red-400/20'
+						}`}
+					>{t.token}</span>
 				{/each}
 			</div>
-			{#if !isLastAssistantMessage || (isLastAssistantMessage && !isChatStreaming())}
-				<div class="mt-2 mb-4 flex items-center gap-3 text-[10px] text-muted-foreground">
-					<span class="flex items-center gap-1">
-						<span class="inline-block h-2 w-2 rounded bg-green-600/50 dark:bg-green-500/60"></span>
-						High (>=50%)
-					</span>
-					<span class="flex items-center gap-1">
-						<span class="inline-block h-2 w-2 rounded bg-yellow-600/50 dark:bg-yellow-500/60"
-						></span>
-						Medium (25-49%)
-					</span>
-					<span class="flex items-center gap-1">
-						<span class="inline-block h-2 w-2 rounded bg-red-600/50 dark:bg-red-500/60"></span>
-						Low (&lt;25%)
-					</span>
-				</div>
-			{/if}
 		{:else}
 			<ChatMessageAgenticContent
 				{message}
