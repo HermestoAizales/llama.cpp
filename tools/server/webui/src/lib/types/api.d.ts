@@ -212,6 +212,8 @@ export interface ApiChatCompletionRequest {
 	tools?: ApiChatCompletionTool[];
 	// Reasoning parameters
 	reasoning_format?: string;
+	// Template kwargs (contains enable_thinking as string)
+	chat_template_kwargs?: Record<string, string>;
 	// Generation parameters
 	temperature?: number;
 	max_tokens?: number;

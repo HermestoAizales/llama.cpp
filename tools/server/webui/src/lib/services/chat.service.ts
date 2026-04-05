@@ -164,12 +164,12 @@ export class ChatService {
 			? ReasoningFormat.NONE
 			: ReasoningFormat.AUTO;
 
-		if (enableThinking === true) {
-			requestBody.enable_thinking = true;
-		} else if (enableThinking === false) {
-			requestBody.enable_thinking = false;
+		// Server reads enable_thinking from chat_template_kwargs as a STRING
+		// Default in server is true, so we only need to send "false" to disable
+		if (enableThinking !== undefined) {
+			if (!requestBody.chat_template_kwargs) requestBody.chat_template_kwargs = {};
+			requestBody.chat_template_kwargs.enable_thinking = enableThinking ? 'true' : 'false';
 		}
-		// If enableThinking is undefined, let the server use its default
 
 		if (temperature !== undefined) requestBody.temperature = temperature;
 		if (max_tokens !== undefined) {

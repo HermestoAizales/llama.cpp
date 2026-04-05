@@ -329,13 +329,13 @@
 						}}
 						class={`inline rounded px-0.5 font-mono text-[13px] leading-relaxed transition-colors ${
 							activePopup?.idx === idx ? 'ring-1 ring-blue-400' : ''
-						} ${
-							mainProb >= 0.5
-								? 'bg-green-600/20 dark:bg-green-500/25'
-								: mainProb >= 0.25
-									? 'bg-yellow-600/20 dark:bg-yellow-500/25'
-									: 'bg-red-600/20 dark:bg-red-500/25'
-						}`}>{t.token}</span
+						}						${
+				mainProb >= 0.5
+							? 'bg-green-500/30 dark:bg-green-400/35'
+						: mainProb >= 0.25
+							? 'bg-yellow-500/30 dark:bg-yellow-400/35'
+							: 'bg-red-500/30 dark:bg-red-400/35'
+			}`}>{t.token}</span
 					>
 				{/each}
 			</div>
