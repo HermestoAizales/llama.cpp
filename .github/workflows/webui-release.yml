@@ -10,7 +10,6 @@ jobs:
 
     steps:
       - name: Checkout
-        id: checkout
         uses: actions/checkout@v6
 
       - name: Setup Node.js 22
@@ -31,9 +30,7 @@ jobs:
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.21
         with:
-          key: windows-cpu-x64-webui-v3
-          restore-keys: |
-            windows-cpu-x64-
+          key: windows-cpu-x64-webui-v5
           variant: ccache
           max-size: 1G
           save: true
@@ -52,11 +49,11 @@ jobs:
             -DGGML_BACKEND_DL=ON ^
             -DGGML_CPU_ALL_VARIANTS=ON ^
             -DGGML_OPENMP=ON ^
+            -DGGML_RPC=ON ^
             -DLLAMA_BUILD_SERVER=ON ^
             -DLLAMA_BUILD_EXAMPLES=OFF ^
             -DLLAMA_BUILD_TESTS=OFF ^
-            -DLLAMA_BUILD_TOOLS=OFF ^
-            -DGGML_RPC=ON
+            -DLLAMA_BUILD_TOOLS=OFF
           cmake --build build --config Release
 
       - name: Collect to release dir
