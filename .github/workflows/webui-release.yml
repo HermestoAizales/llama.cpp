@@ -27,17 +27,6 @@ jobs:
           npx vite build
           bash ./scripts/post-build.sh
 
-      - name: ccache
-        uses: ggml-org/ccache-action@v1.2.21
-        with:
-          key: windows-cpu-x64-webui-v5
-          variant: ccache
-          max-size: 1G
-          save: true
-
-      - name: Install Ninja
-        run: choco install ninja --no-progress
-
       - name: Build
         shell: cmd
         run: |
@@ -53,7 +42,7 @@ jobs:
             -DLLAMA_BUILD_SERVER=ON ^
             -DLLAMA_BUILD_EXAMPLES=OFF ^
             -DLLAMA_BUILD_TESTS=OFF ^
-            -DLLAMA_BUILD_TOOLS=OFF
+            -DLLAMA_BUILD_TOOLS=ON
           cmake --build build --config Release
 
       - name: Collect to release dir
