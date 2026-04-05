@@ -88,7 +88,8 @@ export class ChatService {
 			top_logprobs,
 			// Config options
 			disableReasoningParsing,
-			excludeReasoningFromContext
+			excludeReasoningFromContext,
+			enableThinking
 		} = options;
 
 		const normalizedMessages: ApiChatMessageData[] = messages
@@ -162,6 +163,8 @@ export class ChatService {
 		requestBody.reasoning_format = disableReasoningParsing
 			? ReasoningFormat.NONE
 			: ReasoningFormat.AUTO;
+
+		if (enableThinking) requestBody.enable_thinking = true;
 
 		if (temperature !== undefined) requestBody.temperature = temperature;
 		if (max_tokens !== undefined) {

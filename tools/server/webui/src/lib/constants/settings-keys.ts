@@ -54,6 +54,8 @@ export const SETTINGS_KEYS = {
 	SHOW_TOOL_CALL_IN_PROGRESS: 'showToolCallInProgress',
 	// Token Inspection
 	ENABLE_TOKEN_INSPECTION: 'enableTokenInspection',
+	// Thinking
+	ENABLE_THINKING: 'enableThinking',
 	// Developer
 	DISABLE_REASONING_PARSING: 'disableReasoningParsing',
 	EXCLUDE_REASONING_FROM_CONTEXT: 'excludeReasoningFromContext',

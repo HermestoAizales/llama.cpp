@@ -32,6 +32,7 @@ export const SETTING_CONFIG_DEFAULT: Record<string, string | number | boolean | 
 	showToolCallInProgress: false,
 	alwaysShowAgenticTurns: false,
 	enableTokenInspection: false,
+	enableThinking: false,
 	// sampling params: empty means "use server default"
 	// the server / preset is the source of truth
 	// empty values are shown as placeholders from /props in the UI
@@ -147,7 +148,9 @@ export const SETTING_CONFIG_INFO: Record<string, string> = {
 	enableContinueGeneration:
 		'Enable "Continue" button for assistant messages. Currently works only with non-reasoning models.',
 	enableTokenInspection:
-		'Add logprobs and top-token probabilities to API responses for token-level inspection.'
+		'Add logprobs and top-token probabilities to API responses for token-level inspection.',
+	enableThinking:
+		'Enable model thinking/reasoning. May increase response time but improves reasoning quality.'
 };
 
 export const SETTINGS_COLOR_MODES_CONFIG = [

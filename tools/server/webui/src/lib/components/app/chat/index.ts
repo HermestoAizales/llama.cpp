@@ -456,6 +456,7 @@ export { default as ChatMessage } from './ChatMessages/ChatMessage.svelte';
  * ```
  */
 export { default as TokenInspector } from './ChatMessages/TokenInspector.svelte';
+export { default as InlineTokenText } from './ChatMessages/InlineTokenText.svelte';
 export { default as ChatMessageAgenticContent } from './ChatMessages/ChatMessageAgenticContent.svelte';
 
 /**

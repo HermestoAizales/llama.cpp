@@ -5,7 +5,8 @@
 		ChatMessageStatistics,
 		ModelBadge,
 		ModelsSelector,
-		TokenInspector
+		TokenInspector,
+		InlineTokenText
 	} from '$lib/components/app';
 	import type { TokenLogprobData } from './TokenInspector.svelte';
 	import { getMessageEditContext } from '$lib/contexts';
@@ -14,7 +15,7 @@
 	import { autoResizeTextarea, copyToClipboard, isIMEComposing } from '$lib/utils';
 	import { tick } from 'svelte';
 	import { fade } from 'svelte/transition';
-	import { Check, X } from '@lucide/svelte';
+	import { Check, X, Pin } from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Checkbox } from '$lib/components/ui/checkbox';
 	import { INPUT_CLASSES } from '$lib/constants';
@@ -158,6 +159,58 @@
 	);
 	let hasLogprobs = $derived(Array.isArray(messageLogprobs) && messageLogprobs.length > 0);
 
+	// Token inspection popup state (follows mouse cursor, Google Maps style)
+	let activePopup = $state<{ idx: number; x: number; y: number; pinned: boolean } | null>(null);
+	let popupHoverActive = $state(false);
+
+	function showPopup(e: MouseEvent, idx: number) {
+		if (popupHoverActive && activePopup?.pinned) return;
+		activePopup = { idx, x: e.clientX, y: e.clientY, pinned: false };
+		popupHoverActive = true;
+	}
+
+	function movePopup(e: MouseEvent) {
+		if (!popupHoverActive || !activePopup || activePopup.pinned) return;
+		activePopup = { ...activePopup, x: e.clientX, y: e.clientY };
+	}
+
+	function hidePopup() {
+		popupHoverActive = false;
+		if (activePopup && !activePopup.pinned) {
+			activePopup = null;
+		}
+	}
+
+	function togglePin() {
+		if (activePopup) {
+			const newPinned = !activePopup.pinned;
+			activePopup = { ...activePopup, pinned: newPinned };
+			if (!newPinned && !popupHoverActive) {
+				activePopup = null;
+			}
+		}
+	}
+
+	function formatToken(t: string): string {
+		if (t === ' ') return '\u2423';
+		return t.replace(/\n/g, '\\n').replace(/\t/g, '\\t');
+	}
+
+	function computeEntropy(data: TokenLogprobData): number {
+		let h = 0;
+		const items =
+			data.top_logprobs.length > 0
+				? data.top_logprobs
+				: [{ token: data.token, logprob: data.logprob }];
+		for (const t of items) {
+			const p = Math.exp(t.logprob);
+			if (p > 0 && p <= 1) {
+				h -= p * Math.log2(p);
+			}
+		}
+		return h;
+	}
+
 	let displayedModel = $derived(message.model ?? null);
 
 	let isCurrentlyLoading = $derived(isLoading());
@@ -260,6 +313,46 @@
 	{:else if message.role === MessageRole.ASSISTANT}
 		{#if showRawOutput}
 			<pre class="raw-output">{messageContent || ''}</pre>
+		{:else if currentConfig.enableTokenInspection && hasLogprobs}
+			<div class="mt-3 mb-6 flex flex-wrap gap-x-0">
+				{#each messageLogprobs as t, idx (t.token + idx)}
+					{@const mainProb = Math.exp(t.logprob)}
+					<span
+						onmouseenter={(e) => showPopup(e, idx)}
+						onmouseleave={hidePopup}
+						onclick={(e) => {
+							e.stopPropagation();
+							showPopup(e, idx);
+						}}
+						class={`inline rounded px-0.5 font-mono text-[13px] leading-relaxed transition-colors ${
+							activePopup?.idx === idx ? 'ring-1 ring-blue-400' : ''
+						} ${
+							mainProb >= 0.5
+								? 'bg-green-600/20 dark:bg-green-500/25'
+								: mainProb >= 0.25
+									? 'bg-yellow-600/20 dark:bg-yellow-500/25'
+									: 'bg-red-600/20 dark:bg-red-500/25'
+						}`}>{t.token}</span
+					>
+				{/each}
+			</div>
+			{#if !isLastAssistantMessage || (isLastAssistantMessage && !isChatStreaming())}
+				<div class="mt-2 mb-4 flex items-center gap-3 text-[10px] text-muted-foreground">
+					<span class="flex items-center gap-1">
+						<span class="inline-block h-2 w-2 rounded bg-green-600/50 dark:bg-green-500/60"></span>
+						High (>=50%)
+					</span>
+					<span class="flex items-center gap-1">
+						<span class="inline-block h-2 w-2 rounded bg-yellow-600/50 dark:bg-yellow-500/60"
+						></span>
+						Medium (25-49%)
+					</span>
+					<span class="flex items-center gap-1">
+						<span class="inline-block h-2 w-2 rounded bg-red-600/50 dark:bg-red-500/60"></span>
+						Low (&lt;25%)
+					</span>
+				</div>
+			{/if}
 		{:else}
 			<ChatMessageAgenticContent
 				{message}
@@ -364,10 +457,6 @@
 			rawOutputEnabled={showRawOutput}
 			onRawOutputToggle={(enabled) => (showRawOutput = enabled)}
 		/>
-	{/if}
-
-	{#if hasLogprobs && !editCtx.isEditing}
-		<TokenInspector tokens={messageLogprobs} />
 	{/if}
 </div>
 

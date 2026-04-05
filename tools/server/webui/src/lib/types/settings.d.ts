@@ -54,7 +54,9 @@ export interface SettingsChatServiceOptions {
 	// Token inspection
 	logprobs?: boolean;
 	top_logprobs?: number;
-	// Custom parameters
+	// Thinking
+	enableThinking?: boolean;
+	// Config options
 	custom?: string;
 	timings_per_token?: boolean;
 	// Callbacks

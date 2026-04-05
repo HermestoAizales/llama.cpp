@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Square } from '@lucide/svelte';
+	import { Square, Brain } from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
 	import {
 		ChatFormActionAttachmentsDropdown,
@@ -15,7 +15,7 @@
 	import { getChatSettingsDialogContext } from '$lib/contexts';
 	import { FileTypeCategory } from '$lib/enums';
 	import { getFileTypeCategory } from '$lib/utils';
-	import { config } from '$lib/stores/settings.svelte';
+	import { config, settingsStore } from '$lib/stores/settings.svelte';
 	import { modelsStore, modelOptions, selectedModelId } from '$lib/stores/models.svelte';
 	import { isRouterMode, serverError } from '$lib/stores/server.svelte';
 	import { chatStore } from '$lib/stores/chat.svelte';
@@ -221,6 +221,23 @@
 	</div>
 
 	<div class="ml-auto flex items-center gap-1.5">
+		<!-- Thinking toggle -- Ollama style -->
+		<button
+			type="button"
+			disabled={isLoading}
+			title={currentConfig.enableThinking ? 'Thinking enabled' : 'Enable thinking'}
+			onclick={() =>
+				settingsStore.updateConfig('enableThinking', !currentConfig.enableThinking)
+			}
+			class={`flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
+				currentConfig.enableThinking
+					? 'bg-primary/20 text-primary hover:bg-primary/30'
+					: 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
+			} disabled:opacity-50 disabled:cursor-not-allowed`}
+		>
+			<Brain class="h-4 w-4" />
+		</button>
+
 		{#if isMobile.current}
 			<ModelsSelectorSheet
 				disabled={disabled || isOffline}

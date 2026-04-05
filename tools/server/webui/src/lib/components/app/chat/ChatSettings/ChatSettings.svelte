@@ -297,6 +297,11 @@
 					label: 'Enable token inspection',
 					type: SettingsFieldType.CHECKBOX,
 					isExperimental: true
+				},
+				{
+					key: SETTINGS_KEYS.ENABLE_THINKING,
+					label: 'Enable thinking (reasoning)',
+					type: SettingsFieldType.CHECKBOX
 				}
 			]
 		},

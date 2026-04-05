@@ -1628,6 +1628,10 @@ class ChatStore {
 			apiOptions.top_logprobs = 10;
 		}
 
+		if (currentConfig.enableThinking) {
+			apiOptions.enableThinking = true;
+		}
+
 		return apiOptions;
 	}
 }
