@@ -31,7 +31,7 @@ jobs:
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.21
         with:
-          key: windows-cpu-x64-webui-v2
+          key: windows-cpu-x64-webui-v3
           restore-keys: |
             windows-cpu-x64-
           variant: ccache
@@ -59,13 +59,14 @@ jobs:
             -DGGML_RPC=ON
           cmake --build build --config Release
 
-      - name: Pack artifacts
+      - name: Collect to release dir
         run: |
-          Copy-Item "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Redist\MSVC\14.44.35112\debug_nonredist\x64\Microsoft.VC143.OpenMP.LLVM\libomp140.x86_64.dll" .\build\bin\Release\
-          7z a -snl llama-server-win-cpu-x64.zip .\build\bin\Release\*
+          New-Item -ItemType Directory -Force -Path ".\release"
+          Copy-Item ".\build\bin\Release\*" ".\release\" -Recurse -Force
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
         with:
           name: llama-server-win-cpu-x64
-          path: llama-server-win-cpu-x64.zip
+          path: release/
+          include-hidden-files: false
