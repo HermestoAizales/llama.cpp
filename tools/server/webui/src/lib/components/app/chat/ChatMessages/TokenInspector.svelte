@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { ChevronDown, ChevronUp } from '@lucide/svelte';
+	import { ChevronDown, ChevronUp, Pin } from '@lucide/svelte';
 
 	export interface TokenLogprobData {
 		token: string;
@@ -30,15 +30,54 @@
 	}
 
 	function formatToken(t: string): string {
+		if (t === ' ') return '\u2423'; // ␡ for space
 		return t.replace(/\n/g, '\\n').replace(/\t/g, '\\t');
 	}
 
 	let displayTokens = $derived(tokens.slice(0, 100));
 	let hasMore = $derived(tokens.length > 100);
+
+	// Popup state: follows mouse cursor like Google Maps
+	let activePopup = $state<{
+		idx: number;
+		x: number;
+		y: number;
+		pinned: boolean;
+	} | null>(null);
+	let popupHoverActive = $state(false);
+
+	function showPopup(e: MouseEvent, idx: number) {
+		if (popupHoverActive && activePopup?.pinned) return;
+		activePopup = { idx, x: e.clientX, y: e.clientY, pinned: false };
+		popupHoverActive = true;
+	}
+
+	function movePopup(e: MouseEvent) {
+		if (!popupHoverActive || !activePopup || activePopup.pinned) return;
+		activePopup = { ...activePopup, x: e.clientX, y: e.clientY };
+	}
+
+	function hidePopup() {
+		popupHoverActive = false;
+		if (activePopup && !activePopup.pinned) {
+			activePopup = null;
+		}
+	}
+
+	function togglePin() {
+		if (activePopup) {
+			const newPinned = !activePopup.pinned;
+			activePopup = { ...activePopup, pinned: newPinned };
+			if (!newPinned && !popupHoverActive) {
+				activePopup = null;
+			}
+		}
+	}
 </script>
 
 <div class="mt-2 rounded-md border border-border bg-muted/30">
 	<button
+		type="button"
 		onclick={() => (expanded = !expanded)}
 		class="flex w-full items-center justify-between rounded-md px-3 py-2 text-sm hover:bg-muted/50"
 	>
@@ -56,83 +95,146 @@
 	</button>
 
 	{#if expanded}
-		<div class="max-h-96 space-y-1 overflow-y-auto px-3 pb-3">
-			{#each displayTokens as t, idx (t.token + idx)}
-				{@const items =
-					t.top_logprobs.length > 0 ? t.top_logprobs : [{ token: t.token, logprob: t.logprob }]}
-				{@const mainProb = Math.exp(t.logprob)}
-				{@const entropy = computeEntropy(t)}
-				{@const probClass =
-					mainProb >= 0.7
-						? 'bg-green-500 text-white'
-						: mainProb >= 0.3
-							? 'bg-yellow-500 text-white'
-							: 'bg-red-500 text-white'}
-				<div
-					class="cursor-default rounded border border-border/50 bg-background/50 px-2 py-1.5 text-xs transition-colors hover:bg-muted/30"
-				>
-					<div class="mb-1 flex items-center gap-2">
-						<span class="w-7 text-right font-mono font-bold text-muted-foreground select-none">
-							#{idx + 1}
-						</span>
-						<span class="max-w-[120px] truncate font-mono font-semibold" title={t.token}>
-							{formatToken(t.token)}
-						</span>
-						<span
-							class="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium tabular-nums {probClass}"
-						>
-							{(mainProb * 100).toFixed(1)}%
-						</span>
-						<span class="ml-auto text-muted-foreground tabular-nums">
-							logprob: {t.logprob.toFixed(3)}
-						</span>
-						<span
-							class="font-medium tabular-nums"
-							class:text-green-500={entropy < 1}
-							class:text-yellow-500={entropy >= 1 && entropy < 3}
-							class:text-red-500={entropy >= 3}
-						>
-							H={entropy.toFixed(2)}
-						</span>
-					</div>
-
-					{#if items.length > 1}
-						<div class="mt-1 space-y-0.5 border-t border-border/30 pt-1">
-							{#each items.slice(0, 5) as alt, ai (alt.token + ai)}
-								{@const altProb = Math.exp(alt.logprob)}
-								<div class="flex items-center gap-1">
-									<span class="w-3 text-right text-[10px] text-muted-foreground">{ai + 1}.</span>
-									<span class="w-16 truncate font-mono text-[11px]" title={alt.token}>
-										{formatToken(alt.token)}
-									</span>
-									<div class="h-3 flex-1 overflow-hidden rounded bg-muted/40">
-										<div
-											class="h-full rounded-sm"
-											class:bg-green-500={altProb >= 0.7}
-											class:bg-yellow-500={altProb >= 0.3 && altProb < 0.7}
-											class:bg-red-500={altProb < 0.3}
-											style={'width: ' + Math.min(altProb * 100, 100) + '%;'}
-										></div>
-									</div>
-									<span class="w-10 text-right text-[10px] text-muted-foreground tabular-nums">
-										{(altProb * 100).toFixed(1)}%
-									</span>
-								</div>
-							{/each}
-							{#if items.length > 5}
-								<span class="block text-right text-[10px] text-muted-foreground">
-									+{items.length - 5} more
-								</span>
-							{/if}
-						</div>
-					{/if}
-				</div>
-			{/each}
+		<div
+			class="max-h-96 overflow-y-auto px-3 pb-3"
+			onmousemove={movePopup}
+			onmouseleave={hidePopup}
+			role="region"
+			aria-label="Token list"
+		>
+			<div class="flex flex-wrap gap-1">
+				{#each displayTokens as t, idx (t.token + idx)}
+					{@const mainProb = Math.exp(t.logprob)}
+					{@const ent = computeEntropy(t)}
+					<button
+						type="button"
+						onclick={(e) => {
+							e.stopPropagation();
+							showPopup(e, idx);
+						}}
+						onmouseenter={(e) => showPopup(e, idx)}
+						onmouseleave={hidePopup}
+						class={`
+							cursor-pointer rounded px-1.5 py-0.5 font-mono text-[11px]
+							leading-snug transition-colors
+							${mainProb >= 0.7 ? 'bg-green-800/70 text-green-50 dark:bg-green-800/90 dark:text-green-100' : ''}
+							${mainProb >= 0.3 && mainProb < 0.7 ? 'bg-yellow-800/70 text-yellow-100 dark:bg-yellow-800/90 dark:text-yellow-100' : ''}
+							${mainProb < 0.3 ? 'bg-red-800/70 text-white dark:bg-red-800/90 dark:text-red-50' : ''}
+							${activePopup?.idx === idx ? 'ring-2 ring-blue-500' : ''}
+							hover:brightness-125
+						`}
+						title="{formatToken(t.token)} — ${(mainProb * 100).toFixed(1)}% — H={ent.toFixed(1)}"
+					>
+						{formatToken(t.token)}
+					</button>
+				{/each}
+			</div>
 			{#if hasMore}
-				<div class="py-1 text-center text-xs text-muted-foreground">
-					Showing first 100 of {tokens.length} tokens
+				<div class="mt-2 text-center text-xs text-muted-foreground">
+					+{tokens.length - 100} more tokens (not shown)
 				</div>
 			{/if}
+
+			<!-- Summary bar at bottom -->
+			<div class="mt-3 flex items-center justify-between text-[10px] text-muted-foreground">
+				<div class="flex items-center gap-3">
+					<span class="flex items-center gap-1">
+						<span class="inline-block h-2.5 w-2.5 rounded bg-green-800/70 dark:bg-green-800/90"
+						></span>
+						High (≥70%)
+					</span>
+					<span class="flex items-center gap-1">
+						<span class="inline-block h-2.5 w-2.5 rounded bg-yellow-800/70 dark:bg-yellow-800/90"
+						></span>
+						Medium (30-69%)
+					</span>
+					<span class="flex items-center gap-1">
+						<span class="inline-block h-2.5 w-2.5 rounded bg-red-800/70 dark:bg-red-800/90"></span>
+						Low (&lt;30%)
+					</span>
+				</div>
+				<span>Click token for details. Hover to preview.</span>
+			</div>
 		</div>
 	{/if}
 </div>
+
+<!-- Alternative Token Popup -->
+{#if activePopup !== null}
+	{@const t = displayTokens[activePopup.idx]}
+	{@const mainProb = Math.exp(t.logprob)}
+	{@const ent = computeEntropy(t)}
+
+	<div
+		class="fixed z-50 rounded-lg border border-border bg-popover px-3.5 py-3 text-xs shadow-xl"
+		style="left: {activePopup.x}px; top: {activePopup.y}px; transform: translate(-50%, -100%);"
+		onmouseleave={() => {
+			if (!activePopup?.pinned) activePopup = null;
+		}}
+	>
+		<div class="mb-2 flex items-center justify-between">
+			<div class="flex items-center gap-2">
+				<span class="font-mono text-base font-bold">{formatToken(t.token)}</span>
+				<span
+					class={`rounded px-2 py-0.5 text-xs font-semibold text-white
+						${mainProb >= 0.7 ? 'bg-green-700 dark:bg-green-700' : ''}
+						${mainProb >= 0.3 && mainProb < 0.7 ? 'bg-yellow-600 dark:bg-yellow-600' : ''}
+						${mainProb < 0.3 ? 'bg-red-600 dark:bg-red-600' : ''}`}
+				>
+					{(mainProb * 100).toFixed(1)}%
+				</span>
+			</div>
+			<button
+				onclick={togglePin}
+				class="rounded p-1 text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+			>
+				<Pin class="h-3.5 w-3.5" />
+				{#if activePopup.pinned}
+					<span class="text-blue-500">✓</span>
+				{/if}
+			</button>
+		</div>
+		<div class="grid grid-cols-2 gap-x-6 text-muted-foreground">
+			<div>Logprob: <span class="text-foreground tabular-nums">{t.logprob.toFixed(3)}</span></div>
+			<div>
+				Entropy: <span
+					class="tabular-nums {ent < 1
+						? 'text-green-500'
+						: ent < 3
+							? 'text-yellow-500'
+							: 'text-red-500'}">{ent.toFixed(2)}</span
+				>
+			</div>
+		</div>
+
+		{#if t.top_logprobs.length > 0}
+			<div class="mt-2 border-t border-border pt-2">
+				<div class="mb-1 text-[10px] font-medium tracking-wider text-muted-foreground uppercase">
+					Alternative Tokens
+				</div>
+				{#each t.top_logprobs.slice(0, 8) as alt, i (alt.token + i)}
+					{@const altProb = Math.exp(alt.logprob)}
+					<div class="mb-0.5 flex items-center gap-1.5 text-[11px]">
+						<span class="w-4 text-right text-muted-foreground/60">#{i + 1}</span>
+						<span class="w-20 truncate font-mono">{formatToken(alt.token)}</span>
+						<div class="h-2.5 flex-1 overflow-hidden rounded-sm bg-muted/50">
+							<div
+								class="h-full rounded-sm
+									{altProb >= 0.5 ? 'bg-green-500 dark:bg-green-600' : ''}
+									{altProb >= 0.1 && altProb < 0.5 ? 'bg-yellow-500 dark:bg-yellow-600' : ''}
+									{altProb < 0.1 ? 'bg-red-400 dark:bg-red-500' : ''}"
+								style="width: {Math.min(altProb * 100, 100)}%;"
+							></div>
+						</div>
+						<span class="w-10 text-right text-muted-foreground tabular-nums">
+							{(altProb * 100).toFixed(1)}%
+						</span>
+						<span class="w-14 text-right text-[10px] text-muted-foreground/60 tabular-nums">
+							{alt.logprob.toFixed(2)}
+						</span>
+					</div>
+				{/each}
+			</div>
+		{/if}
+	</div>
+{/if}
