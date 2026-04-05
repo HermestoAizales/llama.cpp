@@ -164,7 +164,12 @@ export class ChatService {
 			? ReasoningFormat.NONE
 			: ReasoningFormat.AUTO;
 
-		if (enableThinking) requestBody.enable_thinking = true;
+		if (enableThinking === true) {
+			requestBody.enable_thinking = true;
+		} else if (enableThinking === false) {
+			requestBody.enable_thinking = false;
+		}
+		// If enableThinking is undefined, let the server use its default
 
 		if (temperature !== undefined) requestBody.temperature = temperature;
 		if (max_tokens !== undefined) {
