@@ -128,6 +128,23 @@
 	// Prompt Prefill State
 	let isPrefillExpanded = $state(false);
 
+	// Prompt Prefill Templates
+	const PREFILL_TEMPLATES = [
+		{ label: 'JSON', text: 'Respond with only valid JSON, no additional text.\n' },
+		{ label: 'XML', text: 'Respond with only valid XML, no additional text.\n' },
+		{ label: 'YAML', text: 'Respond with only valid YAML, no additional text.\n' },
+		{ label: 'Be concise', text: 'Be concise and direct. Avoid unnecessary details, filler, and preamble.\n' },
+		{ label: 'Step by step', text: 'Think through this step by step before providing your final answer.\n' },
+		{ label: 'Short answer', text: 'Provide a short, direct answer in 1-2 sentences.\n' },
+		{ label: 'Code block', text: 'Wrap your entire response in a single code block.\n' },
+		{ label: 'As a table', text: 'Present the information as a markdown table.\n' }
+	] as const;
+
+	function handlePrefillInsert(text: string) {
+		const newText = prefillText ? prefillText + text : text;
+		onPrefillChange?.(newText);
+	}
+
 	/**
 	 *
 	 *
@@ -669,6 +686,18 @@
 		</button>
 
 		{#if isPrefillExpanded}
+			<!-- Prefill Template Buttons -->
+			<div class="mb-2 flex flex-wrap gap-1.5 px-4">
+				{#each PREFILL_TEMPLATES as tpl (tpl.label)}
+					<button
+						type="button"
+						class="prefill-template-pill"
+						onclick={() => handlePrefillInsert(tpl.text)}
+					>
+						{tpl.label}
+					</button>
+				{/each}
+			</div>
 			<textarea
 				class="w-full rounded-lg border border-border bg-background px-4 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
 				rows="3"

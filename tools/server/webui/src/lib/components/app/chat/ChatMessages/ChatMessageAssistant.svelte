@@ -5,9 +5,9 @@
 		ChatMessageStatistics,
 		ModelBadge,
 		ModelsSelector,
-		TokenInspector
+		TokenHover
 	} from '$lib/components/app';
-	import type { TokenLogprobData } from './TokenInspector.svelte';
+	import type { TokenLogprobData } from './TokenHover.svelte';
 	import { getMessageEditContext } from '$lib/contexts';
 	import { useProcessingState } from '$lib/hooks/use-processing-state.svelte';
 	import { isLoading, isChatStreaming } from '$lib/stores/chat.svelte';
@@ -158,6 +158,44 @@
 	);
 	let hasLogprobs = $derived(Array.isArray(messageLogprobs) && messageLogprobs.length > 0);
 
+	// Token inspection: inline highlighting
+	let enableTokenInspection = $derived(Boolean(currentConfig.enableTokenInspection));
+	let showInlineTokens = $derived(enableTokenInspection && hasLogprobs && !showRawOutput && message.role === MessageRole.ASSISTANT);
+
+	// Build character-to-token mapping for inline highlighting
+	// Each entry: { startChar, endChar, tokenData, index }
+	let tokenCharRanges = $derived.by(() => {
+		if (!showInlineTokens || !messageContent) return [];
+		const tokens = messageLogprobs;
+		const ranges: Array<{ startChar: number; endChar: number; tokenData: TokenLogprobData; index: number; prob: number }> = [];
+		let charPos = 0;
+		// Limit to last 100 tokens for performance
+		const startIdx = Math.max(0, tokens.length - 100);
+		for (let i = startIdx; i < tokens.length; i++) {
+			const t = tokens[i];
+			const tokenLen = t.token.length;
+			const prob = Math.exp(t.logprob);
+			ranges.push({
+				startChar: charPos,
+				endChar: charPos + tokenLen,
+				tokenData: t,
+				index: i + 1,
+				prob
+			});
+			charPos += tokenLen;
+		}
+		return ranges;
+	});
+
+	// Build a map of char position -> token info for fast lookup
+	let inlineTokenSpans = $derived.by(() => {
+		if (tokenCharRanges.length === 0) return null;
+		return { content: messageContent || '', ranges: tokenCharRanges };
+	});
+
+	// Hover state for token popover
+	let hoveredToken: { tokenData: TokenLogprobData; index: number; anchorEl: HTMLElement } | null = $state(null);
+
 	let displayedModel = $derived(message.model ?? null);
 
 	let isCurrentlyLoading = $derived(isLoading());
@@ -260,6 +298,18 @@
 	{:else if message.role === MessageRole.ASSISTANT}
 		{#if showRawOutput}
 			<pre class="raw-output">{messageContent || ''}</pre>
+		{:else if showInlineTokens && inlineTokenSpans}
+			<div class="inline-token-content text-sm whitespace-pre-wrap">
+				{#each inlineTokenSpans.ranges as span (span.index)}
+					{@const colorClass =
+						span.prob >= 0.9 ? 'token-bg-green' : span.prob >= 0.5 ? 'token-bg-yellow' : 'token-bg-red'}
+					<span
+						class="inline-token rounded px-0.5 cursor-help hover:brightness-110 {colorClass}"
+						onmouseenter={(e) => hoveredToken = { tokenData: span.tokenData, index: span.index, anchorEl: e.currentTarget }}
+						onmouseleave={() => hoveredToken = null}
+					>{span.tokenData.token}</span>
+				{/each}
+			</div>
 		{:else}
 			<ChatMessageAgenticContent
 				{message}
@@ -367,7 +417,7 @@
 	{/if}
 
 	{#if hasLogprobs && !editCtx.isEditing}
-		<TokenInspector tokens={messageLogprobs} />
+		<TokenHover token={hoveredToken?.tokenData ?? null} index={hoveredToken?.index ?? 0} anchorEl={hoveredToken?.anchorEl ?? null} />
 	{/if}
 </div>
 
@@ -416,5 +466,24 @@
 		line-height: 1.6;
 		white-space: pre-wrap;
 		word-break: break-word;
+	}
+
+	.token-bg-green {
+		background-color: hsl(var(--chart-2) / 0.15);
+	}
+		.token-bg-green:hover {
+		background-color: hsl(var(--chart-2) / 0.3);
+	}
+	.token-bg-yellow {
+		background-color: hsl(45 93% 47% / 0.15);
+	}
+	.token-bg-yellow:hover {
+		background-color: hsl(45 93% 47% / 0.3);
+	}
+	.token-bg-red {
+		background-color: hsl(var(--destructive) / 0.15);
+	}
+	.token-bg-red:hover {
+		background-color: hsl(var(--destructive) / 0.3);
 	}
 </style>
