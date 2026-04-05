@@ -224,6 +224,15 @@
 		const prob = Math.exp(logprob);
 		const base = 'cursor-help transition-colors';
 		const ring = activePopup?.idx === idx ? 'ring-1 ring-blue-400' : '';
+		
+		// Exclusion/Selection overrides
+		if (isTokenExcluded(idx)) {
+			return `inline-block rounded-t px-0.5 ${base} ${ring} token-excluded`;
+		}
+		if (isAlternativeSelected(idx)) {
+			return `inline-block rounded-t px-0.5 ${base} ${ring} token-selected`;
+		}
+		
 		const conf =
 			prob >= 0.5
 				? 'underline-high'
@@ -231,6 +240,13 @@
 					? 'underline-med'
 					: 'underline-low';
 		return `inline-block rounded-t px-0.5 ${base} ${ring} ${conf}`;
+	}
+
+	function getTokenText(logprob: number, idx: number, token: string): string {
+		if (isAlternativeSelected(idx)) {
+			return selectedAlternative?.altToken ?? token;
+		}
+		return token;
 	}
 
 	function tokenizeMarkdown(msg: DatabaseMessage, tools: DatabaseMessage[]): TokenSegment[] {
@@ -360,6 +376,36 @@
 		if (idx >= 0) showPopup(e, idx);
 	}
 
+	// --- Token Exclusion & Selection ---
+	let excludedTokens = $state<Set<number>>(new Set());
+	let selectedAlternative = $state<{ tokenIdx: number; altToken: string } | null>(null);
+
+	function toggleTokenExclusion(idx: number) {
+		if (excludedTokens.has(idx)) {
+			excludedTokens.delete(idx);
+		} else {
+			excludedTokens.add(idx);
+		}
+		excludedTokens = new Set(excludedTokens); // trigger reactivity
+	}
+
+	function selectAlternative(tokenIdx: number, altToken: string) {
+		selectedAlternative = { tokenIdx, altToken };
+	}
+
+	function isTokenExcluded(idx: number): boolean {
+		return excludedTokens.has(idx);
+	}
+
+	function isAlternativeSelected(idx: number): boolean {
+		return selectedAlternative?.tokenIdx === idx;
+	}
+
+	function resetTokenSelections() {
+		excludedTokens = new Set();
+		selectedAlternative = null;
+	}
+
 	let displayedModel = $derived(message.model ?? null);
 
 	let isCurrentlyLoading = $derived(isLoading());
@@ -475,7 +521,8 @@
 									onmouseenter={handleTokenHover}
 									onmouseleave={handleTokenLeave}
 									onclick={handleTokenClick}
-								>{t.token}</span>
+									oncontextmenu={(e) => { e.preventDefault(); toggleTokenExclusion(t.idx); }}
+								>{getTokenText(t.logprob, t.idx, t.token)}</span>
 							{/each}
 						</strong>
 					{:else if segment.type === 'italic'}
@@ -487,7 +534,8 @@
 									onmouseenter={handleTokenHover}
 									onmouseleave={handleTokenLeave}
 									onclick={handleTokenClick}
-								>{t.token}</span>
+									oncontextmenu={(e) => { e.preventDefault(); toggleTokenExclusion(t.idx); }}
+								>{getTokenText(t.logprob, t.idx, t.token)}</span>
 							{/each}
 						</em>
 					{:else if segment.type === 'code'}
@@ -499,7 +547,8 @@
 									onmouseenter={handleTokenHover}
 									onmouseleave={handleTokenLeave}
 									onclick={handleTokenClick}
-								>{t.token}</span>
+									oncontextmenu={(e) => { e.preventDefault(); toggleTokenExclusion(t.idx); }}
+								>{getTokenText(t.logprob, t.idx, t.token)}</span>
 							{/each}
 						</code>
 					{:else if segment.type === 'reasoning'}
@@ -512,7 +561,8 @@
 									onmouseenter={handleTokenHover}
 									onmouseleave={handleTokenLeave}
 									onclick={handleTokenClick}
-								>{t.token}</span>
+									oncontextmenu={(e) => { e.preventDefault(); toggleTokenExclusion(t.idx); }}
+								>{getTokenText(t.logprob, t.idx, t.token)}</span>
 							{/each}
 						</div>
 					{:else if segment.type === 'text'}
@@ -523,10 +573,69 @@
 								onmouseenter={handleTokenHover}
 								onmouseleave={handleTokenLeave}
 								onclick={handleTokenClick}
-							>{t.token}</span>
+								oncontextmenu={(e) => { e.preventDefault(); toggleTokenExclusion(t.idx); }}
+							>{getTokenText(t.logprob, t.idx, t.token)}</span>
 						{/each}
 					{/if}
 				{/each}
+
+			<!-- Token detail popup (follows cursor) -->
+				{#if activePopup && messageLogprobs[activePopup.idx]}
+					{@const t = messageLogprobs[activePopup.idx]}
+					{@const mainProb = Math.exp(t.logprob)}
+					{@const altProps = t.top_logprobs ?? []}
+					{@const altItems = altProps.length > 0 ? altProps.slice(0, 8) : []}
+					{@const popupIdx = activePopup.idx}
+					<div
+						class="token-popup"
+						style="left: {activePopup.x + 12}px; top: {activePopup.y - 10}px;"
+						onmouseenter={() => { popupHoverActive = true; }}
+						onmouseleave={() => { popupHoverActive = false; hidePopup(); }}
+					>
+						<div class="popup-header">
+							<span class="popup-token">{formatToken(t.token)}</span>
+							<button class="popup-pin-btn" onclick={togglePin} title="Pin popup">
+								<Pin class="h-3.5 w-3.5" />
+							</button>
+						</div>
+						<div class="popup-prob">
+							Probability: {(mainProb * 100).toFixed(1)}%
+							{#if altItems.length > 0}
+								<span class="popup-entropy"> | Entropy: {computeEntropy(t).toFixed(2)}</span>
+							{/if}
+						</div>
+						{#if altItems.length > 0}
+							<div class="popup-alternatives">
+								<div class="popup-alt-header">Alternatives:</div>
+								{#each altItems as alt, i (alt.token + i)}
+									{@const altProb = Math.exp(alt.logprob)}
+									<div
+										class="popup-alt-item {altProb >= 0.5 ? 'alt-high' : altProb >= 0.25 ? 'alt-med' : 'alt-low'} {selectedAlternative?.tokenIdx === popupIdx && selectedAlternative?.altToken === alt.token ? 'alt-selected' : ''}"
+										onclick={() => selectAlternative(popupIdx, alt.token)}
+										title="Click to substitute this token"
+									>
+										<span class="alt-token">{formatToken(alt.token)}</span>
+										<span class="alt-prob">{(altProb * 100).toFixed(1)}%</span>
+									</div>
+								{/each}
+							</div>
+						{/if}
+						<div class="popup-actions">
+							<button
+								class="popup-action-btn {isTokenExcluded(popupIdx) ? 'excluded-active' : ''}"
+								onclick={() => toggleTokenExclusion(popupIdx)}
+								title="Right-click to exclude / click to toggle exclusion"
+							>
+								{#if isTokenExcluded(popupIdx)}Exclude (active){:else}Exclude{/if}
+							</button>
+							{#if excludedTokens.size > 0 || selectedAlternative}
+								<button class="popup-action-btn popup-reset" onclick={resetTokenSelections}>
+									Reset selection
+								</button>
+							{/if}
+						</div>
+					</div>
+				{/if}
 			</div>
 		{:else}
 			<ChatMessageAgenticContent
@@ -762,6 +871,167 @@
 		background-color: hsl(var(--muted) / 0.4);
 		border-radius: 4px;
 		padding: 1px 4px;
+	}
+
+	/* Token Exclusion: red strikethrough */
+	.token-excluded {
+		text-decoration: line-through;
+		text-decoration-color: #ef4444;
+		text-decoration-thickness: 2px;
+		opacity: 0.5;
+	}
+
+	/* Token Selection (alternative): green highlight */
+	.token-selected {
+		background-color: rgba(34, 197, 94, 0.25) !important;
+		border-bottom: 2px solid #22c55e !important;
+	}
+
+	:global(.dark) .token-selected {
+		background-color: rgba(74, 222, 128, 0.3) !important;
+	}
+
+	/* Token detail popup */
+	.token-popup {
+		position: fixed;
+		z-index: 9999;
+		background: hsl(var(--card));
+		color: hsl(var(--foreground));
+		border: 1px solid hsl(var(--border));
+		border-radius: 8px;
+		padding: 8px 12px;
+		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+		min-width: 180px;
+		max-width: 280px;
+		font-size: 0.75rem;
+		pointer-events: auto;
+	}
+
+	.popup-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		margin-bottom: 4px;
+	}
+
+	.popup-token {
+		font-weight: 600;
+		font-family: ui-monospace, monospace;
+		font-size: 0.8rem;
+	}
+
+	.popup-pin-btn {
+		background: none;
+		border: none;
+		color: hsl(var(--muted-foreground));
+		cursor: pointer;
+		padding: 2px;
+		border-radius: 3px;
+		display: flex;
+		align-items: center;
+	}
+
+	.popup-pin-btn:hover {
+		background: hsl(var(--muted) / 0.5);
+		color: hsl(var(--foreground));
+	}
+
+	.popup-prob {
+		color: hsl(var(--muted-foreground));
+		margin-bottom: 6px;
+	}
+
+	.popup-entropy {
+		opacity: 0.7;
+	}
+
+	.popup-alternatives {
+		border-top: 1px solid hsl(var(--border));
+		padding-top: 6px;
+		margin-top: 4px;
+	}
+
+	.popup-alt-header {
+		font-weight: 600;
+		color: hsl(var(--muted-foreground));
+		margin-bottom: 4px;
+		font-size: 0.7rem;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+	}
+
+	.popup-alt-item {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		padding: 2px 6px;
+		border-radius: 4px;
+		cursor: pointer;
+		transition: background 0.1s;
+		margin-bottom: 1px;
+	}
+
+	.popup-alt-item:hover {
+		background: hsl(var(--accent) / 0.3);
+	}
+
+	.popup-alt-item.alt-selected {
+		background: hsl(var(--accent) / 0.5);
+		border-left: 2px solid #22c55e;
+	}
+
+	.alt-token {
+		font-family: ui-monospace, monospace;
+		font-size: 0.75rem;
+	}
+
+	.alt-prob {
+		font-size: 0.7rem;
+		color: hsl(var(--muted-foreground));
+		font-variant-numeric: tabular-nums;
+	}
+
+	.alt-high .alt-prob { color: #22c55e; }
+	.alt-med .alt-prob { color: #eab308; }
+	.alt-low .alt-prob { color: #ef4444; }
+
+	.popup-actions {
+		display: flex;
+		gap: 6px;
+		margin-top: 6px;
+		border-top: 1px solid hsl(var(--border));
+		padding-top: 6px;
+	}
+
+	.popup-action-btn {
+		flex: 1;
+		padding: 4px 8px;
+		border-radius: 4px;
+		border: 1px solid hsl(var(--border));
+		background: hsl(var(--background));
+		color: hsl(var(--foreground));
+		font-size: 0.7rem;
+		cursor: pointer;
+		transition: background 0.15s;
+	}
+
+	.popup-action-btn:hover {
+		background: hsl(var(--accent) / 0.3);
+	}
+
+	.popup-action-btn.excluded-active {
+		background: rgba(239, 68, 68, 0.15);
+		border-color: rgba(239, 68, 68, 0.3);
+		color: #ef4444;
+	}
+
+	:global(.dark) .popup-action-btn.excluded-active {
+		background: rgba(248, 113, 113, 0.2);
+		color: #f87171;
+	}
+
+	.popup-action-btn.popup-reset {
+		color: hsl(var(--muted-foreground));
 	}
 
 	.raw-output {
