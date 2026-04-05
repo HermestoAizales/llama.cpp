@@ -6,7 +6,7 @@ on:
 jobs:
   build-webui-windows:
     runs-on: windows-2025
-    timeout-minutes: 60
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -31,18 +31,12 @@ jobs:
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.21
         with:
-          key: windows-cuda-13.1-webui
+          key: windows-cpu-x64-webui-v2
           restore-keys: |
-            windows-cuda-13.1
-            windows-cuda-
+            windows-cpu-x64-
           variant: ccache
-          max-size: 2G
+          max-size: 1G
           save: true
-
-      - name: Install Cuda Toolkit
-        uses: ./.github/actions/windows-setup-cuda
-        with:
-          cuda_version: 13.1
 
       - name: Install Ninja
         run: choco install ninja --no-progress
@@ -52,26 +46,26 @@ jobs:
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
           cmake -S . -B build -G "Ninja Multi-Config" ^
-            -DGGML_BACKEND_DL=ON ^
-            -DGGML_NATIVE=OFF ^
-            -DGGML_CPU=OFF ^
-            -DGGML_CUDA=ON ^
+            -D CMAKE_TOOLCHAIN_FILE=cmake/x64-windows-llvm.cmake ^
             -DLLAMA_BUILD_BORINGSSL=ON ^
-            -DGGML_CUDA_CUB_3DOT2=ON ^
+            -DGGML_NATIVE=OFF ^
+            -DGGML_BACKEND_DL=ON ^
+            -DGGML_CPU_ALL_VARIANTS=ON ^
+            -DGGML_OPENMP=ON ^
             -DLLAMA_BUILD_SERVER=ON ^
             -DLLAMA_BUILD_EXAMPLES=OFF ^
             -DLLAMA_BUILD_TESTS=OFF ^
             -DLLAMA_BUILD_TOOLS=OFF ^
             -DGGML_RPC=ON
-          set /A NINJA_JOBS=%NUMBER_OF_PROCESSORS%-1
-          cmake --build build --config Release -j %NINJA_JOBS%
+          cmake --build build --config Release
 
       - name: Pack artifacts
         run: |
-          7z a -snl llama-server-win-cuda13-x64.zip .\build\bin\Release\*
+          Copy-Item "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Redist\MSVC\14.44.35112\debug_nonredist\x64\Microsoft.VC143.OpenMP.LLVM\libomp140.x86_64.dll" .\build\bin\Release\
+          7z a -snl llama-server-win-cpu-x64.zip .\build\bin\Release\*
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: llama-server-win-cuda13-x64
-          path: llama-server-win-cuda13-x64.zip
+          name: llama-server-win-cpu-x64
+          path: llama-server-win-cpu-x64.zip
