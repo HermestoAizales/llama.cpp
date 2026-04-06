@@ -9,40 +9,30 @@
 
 	let { tokens, class: className = '' }: Props = $props();
 
-	// Popup: follows mouse cursor with pin option
-	let activePopup = $state<{
-		idx: number;
-		x: number;
-		y: number;
-		pinned: boolean;
-	} | null>(null);
-	let popupHoverActive = $state(false);
+	// Popup: anchored to token element, not cursor
+	let activeTokenIdx = $state<number | null>(null);
+	let activeTokenRect = $state<DOMRect | null>(null);
+	let popupPinned = $state(false);
 
 	function showPopup(e: MouseEvent, idx: number) {
-		if (popupHoverActive && activePopup?.pinned) return;
-		activePopup = { idx, x: e.clientX, y: e.clientY, pinned: false };
-		popupHoverActive = true;
-	}
-
-	function movePopup(e: MouseEvent) {
-		if (!popupHoverActive || !activePopup || activePopup.pinned) return;
-		activePopup = { ...activePopup, x: e.clientX, y: e.clientY };
+		if (popupPinned) return;
+		const el = e.currentTarget as HTMLElement;
+		activeTokenIdx = idx;
+		activeTokenRect = el.getBoundingClientRect();
 	}
 
 	function hidePopup() {
-		popupHoverActive = false;
-		if (activePopup && !activePopup.pinned) {
-			activePopup = null;
+		if (!popupPinned) {
+			activeTokenIdx = null;
+			activeTokenRect = null;
 		}
 	}
 
 	function togglePin() {
-		if (activePopup) {
-			const newPinned = !activePopup.pinned;
-			activePopup = { ...activePopup, pinned: newPinned };
-			if (!newPinned && !popupHoverActive) {
-				activePopup = null;
-			}
+		popupPinned = !popupPinned;
+		if (!popupPinned) {
+			activeTokenIdx = null;
+			activeTokenRect = null;
 		}
 	}
 
@@ -70,8 +60,6 @@
 <!-- Container tracks mouse for popup positioning -->
 <div
 	class={className}
-	onmousemove={movePopup}
-	onmouseleave={hidePopup}
 	role="region"
 	aria-label="Token colored text"
 >
@@ -80,34 +68,34 @@
 		{@const ent = computeEntropy(t)}
 		<span
 			onmouseenter={(e) => showPopup(e, idx)}
+			onmouseleave={hidePopup}
 			onclick={(e) => {
 				e.stopPropagation();
 				showPopup(e, idx);
 			}}
 			class={`inline cursor-help rounded px-0.5 ${
 				mainProb >= 0.5
-					? 'bg-green-600/25 dark:bg-green-500/30'
+					? 'bg-green-600/40 dark:bg-green-500/50'
 					: mainProb >= 0.25
-						? 'bg-yellow-600/25 dark:bg-yellow-500/30'
-						: 'bg-red-600/25 dark:bg-red-500/30'
-			} transition-colors ${activePopup?.idx === idx ? 'ring-1 ring-blue-400' : ''}`}
-		>
+						? 'bg-yellow-600/40 dark:bg-yellow-500/50'
+						: 'bg-red-600/40 dark:bg-red-500/50'
+			} transition-colors ${activeTokenIdx === idx ? 'ring-2 ring-blue-400' : ''}`}>
 			{t.token}
 		</span>
 	{/each}
 </div>
 
-<!-- Popup follows mouse -->
-{#if activePopup !== null}
-	{@const t = tokens[activePopup.idx]}
+<!-- Popup anchored to token element -->
+{#if activeTokenIdx !== null && activeTokenRect !== null && tokens[activeTokenIdx]}
+	{@const t = tokens[activeTokenIdx]}
 	{@const mainProb = Math.exp(t.logprob)}
 	{@const ent = computeEntropy(t)}
 
 	<div
-		class="fixed z-[999] rounded-lg border border-border bg-popover px-3.5 py-3 text-xs shadow-xl"
-		style="left: {activePopup.x}px; top: {activePopup.y}px; transform: translate(-50%, -100%);"
+		class="fixed z-[9999] rounded-lg border border-border bg-card px-3.5 py-3 text-xs shadow-2xl backdrop-blur-lg"
+		style="left: {activeTokenRect.left + activeTokenRect.width / 2}px; top: {activeTokenRect.bottom + 4}px; transform: translate(-50%, 0);"
 		onmouseleave={() => {
-			if (!activePopup?.pinned) activePopup = null;
+			if (!popupPinned) hidePopup();
 		}}
 	>
 		<div class="mb-2 flex items-center justify-between">
@@ -116,17 +104,15 @@
 				<span
 					class={`rounded px-2 py-0.5 text-xs font-semibold text-white ${
 						mainProb >= 0.7 ? 'bg-green-700' : mainProb >= 0.3 ? 'bg-yellow-600' : 'bg-red-600'
-					}`}
-				>
+					}`}>
 					{(mainProb * 100).toFixed(1)}%
 				</span>
 			</div>
 			<button
 				onclick={togglePin}
-				class="rounded p-1 text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-			>
+				class="rounded p-1 text-muted-foreground hover:bg-muted/50 hover:text-foreground">
 				<Pin class="h-3.5 w-3.5" />
-				{#if activePopup.pinned}
+				{#if popupPinned}
 					<span class="text-blue-500">✓</span>
 				{/if}
 			</button>
@@ -142,8 +128,7 @@
 						? 'text-green-500'
 						: ent < 3
 							? 'text-yellow-500'
-							: 'text-red-500'}"
-				>
+							: 'text-red-500'}">
 					{ent.toFixed(2)}
 				</span>
 			</div>
@@ -168,8 +153,7 @@
 											? 'bg-yellow-500 dark:bg-yellow-600'
 											: 'bg-red-400 dark:bg-red-500'
 								}`}
-								style="width: {Math.min(altProb * 100, 100)}%;"
-							></div>
+								style="width: {Math.min(altProb * 100, 100)}%;"></div>
 						</div>
 						<span class="w-10 text-right text-muted-foreground tabular-nums">
 							{(altProb * 100).toFixed(1)}%

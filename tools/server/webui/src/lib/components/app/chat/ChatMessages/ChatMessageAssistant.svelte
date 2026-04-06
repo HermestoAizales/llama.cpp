@@ -847,6 +847,7 @@
 		cursor: help;
 	}
 
+	/* Subtle underline (always visible) */
 	.token-span::after {
 		content: '';
 		position: absolute;
@@ -855,37 +856,39 @@
 		right: 0;
 		height: 2px;
 		border-radius: 1px;
-		opacity: 0.4;
+		opacity: 0.7;
 	}
 
+	/* High confidence tokens - green */
 	.underline-high::after {
 		background-color: #22c55e;
 	}
 
+	/* Medium confidence tokens - yellow */
 	.underline-med::after {
 		background-color: #eab308;
-		opacity: 0.5;
+		opacity: 0.7;
 	}
 
+	/* Low confidence tokens - red */
 	.underline-low::after {
 		background-color: #ef4444;
-		opacity: 0.5;
+		opacity: 0.8;
 	}
 
 	/* Dark mode adjustments */
 	:global(.dark) .underline-high::after {
 		background-color: #4ade80;
-		opacity: 0.35;
 	}
 
 	:global(.dark) .underline-med::after {
 		background-color: #facc15;
-		opacity: 0.45;
+		opacity: 0.75;
 	}
 
 	:global(.dark) .underline-low::after {
 		background-color: #f87171;
-		opacity: 0.45;
+		opacity: 0.75;
 	}
 
 	/* Token hover effect */
@@ -943,7 +946,9 @@
 	.token-popup {
 		position: fixed;
 		z-index: 9999;
-		background: hsl(var(--card));
+		background: hsl(var(--card) / 1);
+		backdrop-filter: blur(8px);
+		-webkit-backdrop-filter: blur(8px);
 		color: hsl(var(--foreground));
 		border: 1px solid hsl(var(--border));
 		border-radius: 8px;

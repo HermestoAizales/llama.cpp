@@ -37,7 +37,7 @@
 	let displayTokens = $derived(tokens.slice(0, 100));
 	let hasMore = $derived(tokens.length > 100);
 
-	// Popup state: follows mouse cursor like Google Maps
+	// Popup state: follows mouse cursor OR anchors to token element
 	let activePopup = $state<{
 		idx: number;
 		x: number;
@@ -45,11 +45,23 @@
 		pinned: boolean;
 	} | null>(null);
 	let popupHoverActive = $state(false);
+	let tokenElements: Map<number, HTMLElement> = new Map();
 
 	function showPopup(e: MouseEvent, idx: number) {
 		if (popupHoverActive && activePopup?.pinned) return;
+		// Position at cursor initially, but update to element rect on next frame
 		activePopup = { idx, x: e.clientX, y: e.clientY, pinned: false };
 		popupHoverActive = true;
+		// Update position to match the actual token element position
+		requestAnimationFrame(() => {
+			const el = tokenElements.get(idx);
+			if (el && activePopup?.idx === idx) {
+				const rect = el.getBoundingClientRect();
+				const centerX = rect.left + rect.width / 2;
+				const bottomY = rect.bottom + 4;
+				activePopup = { ...activePopup, x: centerX, y: bottomY };
+			}
+		});
 	}
 
 	function movePopup(e: MouseEvent) {
@@ -117,9 +129,9 @@
 						class={`
 							cursor-pointer rounded px-1.5 py-0.5 font-mono text-[11px]
 							leading-snug transition-colors
-							${mainProb >= 0.7 ? 'bg-green-800/70 text-green-50 dark:bg-green-800/90 dark:text-green-100' : ''}
-							${mainProb >= 0.3 && mainProb < 0.7 ? 'bg-yellow-800/70 text-yellow-100 dark:bg-yellow-800/90 dark:text-yellow-100' : ''}
-							${mainProb < 0.3 ? 'bg-red-800/70 text-white dark:bg-red-800/90 dark:text-red-50' : ''}
+							${mainProb >= 0.7 ? 'bg-green-700/90 text-green-50 dark:bg-green-600 dark:text-white' : ''}
+							${mainProb >= 0.3 && mainProb < 0.7 ? 'bg-yellow-700/90 text-yellow-50 dark:bg-yellow-600 dark:text-white' : ''}
+							${mainProb < 0.3 ? 'bg-red-700/90 text-white dark:bg-red-600 dark:text-white' : ''}
 							${activePopup?.idx === idx ? 'ring-2 ring-blue-500' : ''}
 							hover:brightness-125
 						`}
@@ -139,17 +151,17 @@
 			<div class="mt-3 flex items-center justify-between text-[10px] text-muted-foreground">
 				<div class="flex items-center gap-3">
 					<span class="flex items-center gap-1">
-						<span class="inline-block h-2.5 w-2.5 rounded bg-green-800/70 dark:bg-green-800/90"
+						<span class="inline-block h-2.5 w-2.5 rounded bg-green-700/90 dark:bg-green-600"
 						></span>
 						High (≥70%)
 					</span>
 					<span class="flex items-center gap-1">
-						<span class="inline-block h-2.5 w-2.5 rounded bg-yellow-800/70 dark:bg-yellow-800/90"
+						<span class="inline-block h-2.5 w-2.5 rounded bg-yellow-700/90 dark:bg-yellow-600"
 						></span>
 						Medium (30-69%)
 					</span>
 					<span class="flex items-center gap-1">
-						<span class="inline-block h-2.5 w-2.5 rounded bg-red-800/70 dark:bg-red-800/90"></span>
+						<span class="inline-block h-2.5 w-2.5 rounded bg-red-700/90 dark:bg-red-600"></span>
 						Low (&lt;30%)
 					</span>
 				</div>
@@ -166,8 +178,8 @@
 	{@const ent = computeEntropy(t)}
 
 	<div
-		class="fixed z-50 rounded-lg border border-border bg-popover px-3.5 py-3 text-xs shadow-xl"
-		style="left: {activePopup.x}px; top: {activePopup.y}px; transform: translate(-50%, -100%);"
+		class="fixed z-50 rounded-lg border border-border bg-card px-3.5 py-3 text-xs shadow-xl"
+		style="left: {activePopup.x}px; top: {activePopup.y - 8}px; transform: translate(-50%, -100%);"
 		onmouseleave={() => {
 			if (!activePopup?.pinned) activePopup = null;
 		}}
