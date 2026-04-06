@@ -89,7 +89,8 @@ export class ChatService {
 			// Config options
 			disableReasoningParsing,
 			excludeReasoningFromContext,
-			enableThinking
+			enableThinking,
+			thinkingBudget
 		} = options;
 
 		const normalizedMessages: ApiChatMessageData[] = messages
@@ -171,7 +172,10 @@ export class ChatService {
 		}
 
 		if (temperature !== undefined) requestBody.temperature = temperature;
-		if (max_tokens !== undefined) {
+		if (thinkingBudget && thinkingBudget > 0) {
+			// thinkingBudget limits total tokens (thinking + response)
+			requestBody.max_tokens = thinkingBudget;
+		} else if (max_tokens !== undefined) {
 			// Set max_tokens to -1 (infinite) when explicitly configured as 0 or null
 			requestBody.max_tokens = max_tokens !== null && max_tokens !== 0 ? max_tokens : -1;
 		}

@@ -302,6 +302,11 @@
 					key: SETTINGS_KEYS.ENABLE_THINKING,
 					label: 'Enable thinking (reasoning)',
 					type: SettingsFieldType.CHECKBOX
+				},
+				{
+					key: SETTINGS_KEYS.THINKING_BUDGET,
+					label: 'Thinking token budget (max tokens)',
+					type: SettingsFieldType.INPUT
 				}
 			]
 		},

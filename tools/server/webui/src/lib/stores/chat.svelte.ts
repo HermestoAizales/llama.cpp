@@ -1628,8 +1628,13 @@ class ChatStore {
 			apiOptions.top_logprobs = 10;
 		}
 
-		if (currentConfig.enableThinking) {
-			apiOptions.enableThinking = true;
+		// Always send enableThinking so user can explicitly disable reasoning
+		// Server default is true, so we must send false to disable thinking
+		apiOptions.enableThinking = currentConfig.enableThinking === true;
+
+		// Pass thinking budget if set (limits total tokens for thinking + response)
+		if (currentConfig.thinkingBudget && currentConfig.thinkingBudget > 0) {
+			apiOptions.thinkingBudget = currentConfig.thinkingBudget;
 		}
 
 		return apiOptions;

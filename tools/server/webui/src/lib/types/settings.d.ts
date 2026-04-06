@@ -56,6 +56,7 @@ export interface SettingsChatServiceOptions {
 	top_logprobs?: number;
 	// Thinking
 	enableThinking?: boolean;
+	thinkingBudget?: number;
 	// Config options
 	custom?: string;
 	timings_per_token?: boolean;

@@ -226,14 +226,12 @@
 			type="button"
 			disabled={isLoading}
 			title={currentConfig.enableThinking ? 'Thinking enabled' : 'Enable thinking'}
-			onclick={() =>
-				settingsStore.updateConfig('enableThinking', !currentConfig.enableThinking)
-			}
+			onclick={() => settingsStore.updateConfig('enableThinking', !currentConfig.enableThinking)}
 			class={`flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
 				currentConfig.enableThinking
 					? 'bg-primary/20 text-primary hover:bg-primary/30'
 					: 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
-			} disabled:opacity-50 disabled:cursor-not-allowed`}
+			} disabled:cursor-not-allowed disabled:opacity-50`}
 		>
 			<Brain class="h-4 w-4" />
 		</button>

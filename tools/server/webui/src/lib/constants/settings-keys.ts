@@ -56,6 +56,7 @@ export const SETTINGS_KEYS = {
 	ENABLE_TOKEN_INSPECTION: 'enableTokenInspection',
 	// Thinking
 	ENABLE_THINKING: 'enableThinking',
+	THINKING_BUDGET: 'thinkingBudget',
 	// Developer
 	DISABLE_REASONING_PARSING: 'disableReasoningParsing',
 	EXCLUDE_REASONING_FROM_CONTEXT: 'excludeReasoningFromContext',

@@ -224,7 +224,7 @@
 		const prob = Math.exp(logprob);
 		const base = 'cursor-help transition-colors';
 		const ring = activePopup?.idx === idx ? 'ring-1 ring-blue-400' : '';
-		
+
 		// Exclusion/Selection overrides
 		if (isTokenExcluded(idx)) {
 			return `inline-block rounded-t px-0.5 ${base} ${ring} token-excluded`;
@@ -232,13 +232,8 @@
 		if (isAlternativeSelected(idx)) {
 			return `inline-block rounded-t px-0.5 ${base} ${ring} token-selected`;
 		}
-		
-		const conf =
-			prob >= 0.5
-				? 'underline-high'
-				: prob >= 0.25
-					? 'underline-med'
-					: 'underline-low';
+
+		const conf = prob >= 0.5 ? 'underline-high' : prob >= 0.25 ? 'underline-med' : 'underline-low';
 		return `inline-block rounded-t px-0.5 ${base} ${ring} ${conf}`;
 	}
 
@@ -323,7 +318,11 @@
 			}
 
 			// Italic: *text*
-			if (token === '*' && currentIdx + 1 < logprobs.length && logprobs[currentIdx + 1].token !== '*') {
+			if (
+				token === '*' &&
+				currentIdx + 1 < logprobs.length &&
+				logprobs[currentIdx + 1].token !== '*'
+			) {
 				let j = currentIdx + 1;
 				const tokens: TokenSegment['tokens'] = [];
 				while (j < logprobs.length && logprobs[j].token !== '*') {
@@ -338,7 +337,11 @@
 			}
 
 			// Inline code: `text`
-			if (token === '`' && currentIdx + 1 < logprobs.length && logprobs[currentIdx + 1].token !== '`') {
+			if (
+				token === '`' &&
+				currentIdx + 1 < logprobs.length &&
+				logprobs[currentIdx + 1].token !== '`'
+			) {
 				let j = currentIdx + 1;
 				const tokens: TokenSegment['tokens'] = [];
 				while (j < logprobs.length && logprobs[j].token !== '`') {
@@ -353,7 +356,10 @@
 			}
 
 			// Regular text token
-			segments.push({ type: 'text', tokens: [{ token, logprob: logprobs[currentIdx].logprob, idx: currentIdx }] });
+			segments.push({
+				type: 'text',
+				tokens: [{ token, logprob: logprobs[currentIdx].logprob, idx: currentIdx }]
+			});
 			currentIdx++;
 		}
 
@@ -370,7 +376,9 @@
 		const idx = parseInt((e.currentTarget as HTMLElement).getAttribute('data-token-index') ?? '-1');
 		if (idx >= 0) showPopup(e, idx);
 	}
-	function handleTokenLeave() { hidePopup(); }
+	function handleTokenLeave() {
+		hidePopup();
+	}
 	function handleTokenClick(e: MouseEvent) {
 		const idx = parseInt((e.currentTarget as HTMLElement).getAttribute('data-token-index') ?? '-1');
 		if (idx >= 0) showPopup(e, idx);
@@ -519,7 +527,7 @@
 	{:else if message.role === MessageRole.ASSISTANT}
 		{#if showRawOutput}
 			<pre class="raw-output">{messageContent || ''}</pre>
-			{:else if tokenInspectionActive && hasLogprobs}
+		{:else if tokenInspectionActive && hasLogprobs}
 			<div class="token-inspection">
 				<!-- Markdown-aware token rendering with confidence underlines -->
 				{#each tokenizeMarkdown(message, toolMessages) as segment, segIdx}
@@ -527,39 +535,48 @@
 						<strong>
 							{#each segment.tokens as t}
 								<span
-									class="{getTokenClass(t.logprob, t.idx)}"
+									class={getTokenClass(t.logprob, t.idx)}
 									data-token-index={t.idx}
 									onmouseenter={handleTokenHover}
 									onmouseleave={handleTokenLeave}
 									onclick={handleTokenClick}
-									oncontextmenu={(e) => { e.preventDefault(); toggleTokenExclusion(t.idx); }}
-								>{getTokenText(t.logprob, t.idx, t.token)}</span>
+									oncontextmenu={(e) => {
+										e.preventDefault();
+										toggleTokenExclusion(t.idx);
+									}}>{getTokenText(t.logprob, t.idx, t.token)}</span
+								>
 							{/each}
 						</strong>
 					{:else if segment.type === 'italic'}
 						<em>
 							{#each segment.tokens as t}
 								<span
-									class="{getTokenClass(t.logprob, t.idx)}"
+									class={getTokenClass(t.logprob, t.idx)}
 									data-token-index={t.idx}
 									onmouseenter={handleTokenHover}
 									onmouseleave={handleTokenLeave}
 									onclick={handleTokenClick}
-									oncontextmenu={(e) => { e.preventDefault(); toggleTokenExclusion(t.idx); }}
-								>{getTokenText(t.logprob, t.idx, t.token)}</span>
+									oncontextmenu={(e) => {
+										e.preventDefault();
+										toggleTokenExclusion(t.idx);
+									}}>{getTokenText(t.logprob, t.idx, t.token)}</span
+								>
 							{/each}
 						</em>
 					{:else if segment.type === 'code'}
 						<code class="token-code">
 							{#each segment.tokens as t}
 								<span
-									class="{getTokenClass(t.logprob, t.idx)}"
+									class={getTokenClass(t.logprob, t.idx)}
 									data-token-index={t.idx}
 									onmouseenter={handleTokenHover}
 									onmouseleave={handleTokenLeave}
 									onclick={handleTokenClick}
-									oncontextmenu={(e) => { e.preventDefault(); toggleTokenExclusion(t.idx); }}
-								>{getTokenText(t.logprob, t.idx, t.token)}</span>
+									oncontextmenu={(e) => {
+										e.preventDefault();
+										toggleTokenExclusion(t.idx);
+									}}>{getTokenText(t.logprob, t.idx, t.token)}</span
+								>
 							{/each}
 						</code>
 					{:else if segment.type === 'reasoning'}
@@ -567,30 +584,36 @@
 							<span class="reasoning-label">Reasoning:</span>
 							{#each segment.tokens as t}
 								<span
-									class="{getTokenClass(t.logprob, t.idx)}"
+									class={getTokenClass(t.logprob, t.idx)}
 									data-token-index={t.idx}
 									onmouseenter={handleTokenHover}
 									onmouseleave={handleTokenLeave}
 									onclick={handleTokenClick}
-									oncontextmenu={(e) => { e.preventDefault(); toggleTokenExclusion(t.idx); }}
-								>{getTokenText(t.logprob, t.idx, t.token)}</span>
+									oncontextmenu={(e) => {
+										e.preventDefault();
+										toggleTokenExclusion(t.idx);
+									}}>{getTokenText(t.logprob, t.idx, t.token)}</span
+								>
 							{/each}
 						</div>
 					{:else if segment.type === 'text'}
 						{#each segment.tokens as t}
 							<span
-								class="{getTokenClass(t.logprob, t.idx)}"
+								class={getTokenClass(t.logprob, t.idx)}
 								data-token-index={t.idx}
 								onmouseenter={handleTokenHover}
 								onmouseleave={handleTokenLeave}
 								onclick={handleTokenClick}
-								oncontextmenu={(e) => { e.preventDefault(); toggleTokenExclusion(t.idx); }}
-							>{getTokenText(t.logprob, t.idx, t.token)}</span>
+								oncontextmenu={(e) => {
+									e.preventDefault();
+									toggleTokenExclusion(t.idx);
+								}}>{getTokenText(t.logprob, t.idx, t.token)}</span
+							>
 						{/each}
 					{/if}
 				{/each}
 
-			<!-- Token detail popup (follows cursor) -->
+				<!-- Token detail popup (follows cursor) -->
 				{#if activePopup && messageLogprobs[activePopup.idx]}
 					{@const t = messageLogprobs[activePopup.idx]}
 					{@const mainProb = Math.exp(t.logprob)}
@@ -600,8 +623,13 @@
 					<div
 						class="token-popup"
 						style="left: {activePopup.x + 12}px; top: {activePopup.y + 12}px;"
-						onmouseenter={() => { popupHoverActive = true; }}
-						onmouseleave={() => { popupHoverActive = false; hidePopup(); }}
+						onmouseenter={() => {
+							popupHoverActive = true;
+						}}
+						onmouseleave={() => {
+							popupHoverActive = false;
+							hidePopup();
+						}}
 					>
 						<div class="popup-header">
 							<span class="popup-token">{formatToken(t.token)}</span>
@@ -621,7 +649,14 @@
 								{#each altItems as alt, i (alt.token + i)}
 									{@const altProb = Math.exp(alt.logprob)}
 									<div
-										class="popup-alt-item {altProb >= 0.5 ? 'alt-high' : altProb >= 0.25 ? 'alt-med' : 'alt-low'} {selectedAlternative?.tokenIdx === popupIdx && selectedAlternative?.altToken === alt.token ? 'alt-selected' : ''}"
+										class="popup-alt-item {altProb >= 0.5
+											? 'alt-high'
+											: altProb >= 0.25
+												? 'alt-med'
+												: 'alt-low'} {selectedAlternative?.tokenIdx === popupIdx &&
+										selectedAlternative?.altToken === alt.token
+											? 'alt-selected'
+											: ''}"
 										onclick={() => selectAlternative(popupIdx, alt.token)}
 										title="Click to substitute this token"
 									>
@@ -877,7 +912,9 @@
 
 	/* Code block styling in token inspection */
 	.token-code {
-		font-family: ui-monospace, SFMono-Regular, 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+		font-family:
+			ui-monospace, SFMono-Regular, 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas,
+			monospace;
 		font-size: 0.82em;
 		background-color: hsl(var(--muted) / 0.4);
 		border-radius: 4px;
@@ -1002,9 +1039,15 @@
 		font-variant-numeric: tabular-nums;
 	}
 
-	.alt-high .alt-prob { color: #22c55e; }
-	.alt-med .alt-prob { color: #eab308; }
-	.alt-low .alt-prob { color: #ef4444; }
+	.alt-high .alt-prob {
+		color: #22c55e;
+	}
+	.alt-med .alt-prob {
+		color: #eab308;
+	}
+	.alt-low .alt-prob {
+		color: #ef4444;
+	}
 
 	.popup-actions {
 		display: flex;

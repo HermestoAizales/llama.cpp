@@ -33,6 +33,7 @@ export const SETTING_CONFIG_DEFAULT: Record<string, string | number | boolean | 
 	alwaysShowAgenticTurns: false,
 	enableTokenInspection: false,
 	enableThinking: false,
+	thinkingBudget: undefined,
 	// sampling params: empty means "use server default"
 	// the server / preset is the source of truth
 	// empty values are shown as placeholders from /props in the UI
