@@ -27,7 +27,7 @@ jobs:
           npx vite build
           bash ./scripts/post-build.sh
 
-      - name: Build C++
+      - name: Build
         shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64

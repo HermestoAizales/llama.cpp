@@ -12,6 +12,7 @@ export const SETTINGS_SECTION_TITLES = {
 	IMPORT_EXPORT: 'Import/Export',
 	MCP: 'MCP',
 	INSPECT: 'Inspect',
+	PREFILL: 'Prefill',
 	DEVELOPER: 'Developer'
 } as const;
 

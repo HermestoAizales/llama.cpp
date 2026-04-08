@@ -55,6 +55,11 @@
 		placeholder?: string;
 		showMcpPromptButton?: boolean;
 
+		// Prompt Prefill
+		prefillText?: string;
+		onPrefillChange?: (text: string) => void;
+		showPrefill?: boolean;
+
 		// Event Handlers
 		onAttachmentRemove?: (index: number) => void;
 		onFilesAdd?: (files: File[]) => void;
@@ -73,6 +78,9 @@
 		isLoading = false,
 		placeholder = 'Type a message...',
 		showMcpPromptButton = false,
+		prefillText = '',
+		onPrefillChange,
+		showPrefill = false,
 		uploadedFiles = $bindable([]),
 		value = $bindable(''),
 		onAttachmentRemove,
@@ -116,6 +124,26 @@
 	// Resource Dialog State
 	let isResourceDialogOpen = $state(false);
 	let preSelectedResourceUri = $state<string | undefined>(undefined);
+
+	// Prompt Prefill State
+	let isPrefillExpanded = $state(false);
+
+	// Prompt Prefill Templates
+	const PREFILL_TEMPLATES = [
+		{ label: 'JSON', text: 'Respond with only valid JSON, no additional text.\n' },
+		{ label: 'XML', text: 'Respond with only valid XML, no additional text.\n' },
+		{ label: 'YAML', text: 'Respond with only valid YAML, no additional text.\n' },
+		{ label: 'Be concise', text: 'Be concise and direct. Avoid unnecessary details, filler, and preamble.\n' },
+		{ label: 'Step by step', text: 'Think through this step by step before providing your final answer.\n' },
+		{ label: 'Short answer', text: 'Provide a short, direct answer in 1-2 sentences.\n' },
+		{ label: 'Code block', text: 'Wrap your entire response in a single code block.\n' },
+		{ label: 'As a table', text: 'Present the information as a markdown table.\n' }
+	] as const;
+
+	function handlePrefillInsert(text: string) {
+		const newText = prefillText ? prefillText + text : text;
+		onPrefillChange?.(newText);
+	}
 
 	/**
 	 *
@@ -635,6 +663,51 @@
 		</div>
 	</div>
 </form>
+
+{#if showPrefill}
+	<div class="mx-auto mt-2 max-w-[48rem]">
+		<button
+			type="button"
+			class="flex w-full items-center gap-2 px-4 py-2 text-sm text-muted-foreground hover:text-foreground"
+			onclick={() => (isPrefillExpanded = !isPrefillExpanded)}
+		>
+			<svg
+				class="h-4 w-4 transition-transform {isPrefillExpanded ? 'rotate-90' : ''}"
+				viewBox="0 0 24 24"
+				fill="none"
+				stroke="currentColor"
+				stroke-width="2"
+				stroke-linecap="round"
+				stroke-linejoin="round"
+			>
+				<polyline points="9 18 15 12 9 6" />
+			</svg>
+			<span>Prompt Prefill</span>
+		</button>
+
+		{#if isPrefillExpanded}
+			<!-- Prefill Template Buttons -->
+			<div class="mb-2 flex flex-wrap gap-1.5 px-4">
+				{#each PREFILL_TEMPLATES as tpl (tpl.label)}
+					<button
+						type="button"
+						class="prefill-template-pill"
+						onclick={() => handlePrefillInsert(tpl.text)}
+					>
+						{tpl.label}
+					</button>
+				{/each}
+			</div>
+			<textarea
+				class="w-full rounded-lg border border-border bg-background px-4 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+				rows="3"
+				placeholder="Text to prefill the assistant's response..."
+				value={prefillText}
+				oninput={(e) => onPrefillChange?.((e.target as HTMLTextAreaElement).value)}
+			></textarea>
+		{/if}
+	</div>
+{/if}
 
 <DialogMcpResources
 	bind:open={isResourceDialogOpen}
