@@ -39,7 +39,7 @@
                 {%- set reasoning_content = '' %}
             {%- endif %}
         {%- endif %}
-        {%- if loop.index0 > ns.last_query_index %}
+        {%- if loop.index0 > ns.last_query_index  and reasoning_content %}
             {{- '<|im_start|>' + message.role + '\n<think>\n' + reasoning_content + '\n</think>\n' + content }}
         {%- else %}
             {{- '<|im_start|>' + message.role + '\n' + content }}
