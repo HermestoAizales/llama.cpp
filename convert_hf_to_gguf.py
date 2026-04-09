@@ -5273,10 +5273,139 @@ class _LinearAttentionVReorderBase(Qwen3NextModel):
 class Qwen3_5TextModel(_LinearAttentionVReorderBase):
     model_arch = gguf.MODEL_ARCH.QWEN35
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Include MTP layers in block count so tensor map covers nextn blocks
+        n_mtp = self.hparams.get("mtp_num_hidden_layers", 0)
+        if n_mtp > 0:
+            self.block_count = self.hparams["num_hidden_layers"] + n_mtp
+            self.tensor_map = gguf.get_tensor_name_map(self.model_arch, self.block_count)
+
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+        # Write MTP/NextN prediction layer count to GGUF metadata
+        n_mtp = self.hparams.get("mtp_num_hidden_layers", 0)
+        if n_mtp > 0:
+            self.gguf_writer.add_nextn_predict_layers(n_mtp)
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        n_hidden = self.hparams["num_hidden_layers"]
+
+        # Handle MTP tensors - remap to nextn format instead of skipping
+        # MTP projection: mtp.fc.weight -> blk.(n_hidden).nextn.eh_proj
+        if name.startswith("mtp.fc."):
+            mtp_idx = 0
+            new_bid = n_hidden + mtp_idx
+            new_name = self.format_tensor_name(gguf.MODEL_TENSOR.NEXTN_EH_PROJ, new_bid)
+            yield from super().modify_tensors(data_torch, new_name, new_bid)
+            return
+
+        # MTP embedding norm: mtp.pre_fc_norm_embedding[.N].weight -> blk.(n_hidden+N).nextn.enorm
+        # Note: Qwen3.5 with 1 MTP head uses mtp.pre_fc_norm_embedding.weight (no index)
+        match = re.match(r"mtp\.pre_fc_norm_embedding(?:\.(\d+))?", name)
+        if match:
+            mtp_idx = int(match.group(1)) if match.group(1) is not None else 0
+            new_bid = n_hidden + mtp_idx
+            new_name = self.format_tensor_name(gguf.MODEL_TENSOR.NEXTN_ENORM, new_bid)
+            yield from super().modify_tensors(data_torch, new_name, new_bid)
+            return
+
+        # MTP hidden norm: mtp.pre_fc_norm_hidden[.N].weight -> blk.(n_hidden+N).nextn.hnorm
+        # Note: Qwen3.5 with 1 MTP head uses mtp.pre_fc_norm_hidden.weight (no index)
+        match = re.match(r"mtp\.pre_fc_norm_hidden(?:\.(\d+))?", name)
+        if match:
+            mtp_idx = int(match.group(1)) if match.group(1) is not None else 0
+            new_bid = n_hidden + mtp_idx
+            new_name = self.format_tensor_name(gguf.MODEL_TENSOR.NEXTN_HNORM, new_bid)
+            yield from super().modify_tensors(data_torch, new_name, new_bid)
+            return
+
+        # MTP shared head norm: mtp.norm.weight -> blk.(n_hidden).nextn.shared_head_norm
+        if name.startswith("mtp.norm."):
+            mtp_idx = 0
+            new_bid = n_hidden + mtp_idx
+            new_name = self.format_tensor_name(gguf.MODEL_TENSOR.NEXTN_SHARED_HEAD_NORM, new_bid)
+            yield from super().modify_tensors(data_torch, new_name, new_bid)
+            return
+
+        # MTP transformer layers: mtp.layers.N.* -> model.layers.(n_hidden+N).*
+        # These are full transformer layers with their own attention + MLP weights.
+        # Remap them to standard layer tensor names with the offset block id.
+        match = re.match(r"mtp\.layers\.(\d+)\.(.+)", name)
+        if match:
+            mtp_idx = int(match.group(1))
+            rest = match.group(2)
+            new_bid = n_hidden + mtp_idx
+            # Convert HF-style names to the standard model.layers.N format
+            mapped_name = f"model.layers.{new_bid}.{rest}"
+            # Let the base class handle norm weight adjustment (+1 for RMS norm)
+            yield from _LinearAttentionVReorderBase.modify_tensors(self, data_torch, mapped_name, new_bid)
+            return
+
+        yield from super().modify_tensors(data_torch, name, bid)
+
 
 @ModelBase.register("Qwen3_5MoeForConditionalGeneration", "Qwen3_5MoeForCausalLM")
 class Qwen3_5MoeTextModel(_LinearAttentionVReorderBase):
     model_arch = gguf.MODEL_ARCH.QWEN35MOE
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        n_mtp = self.hparams.get("mtp_num_hidden_layers", 0)
+        if n_mtp > 0:
+            self.block_count = self.hparams["num_hidden_layers"] + n_mtp
+            self.tensor_map = gguf.get_tensor_name_map(self.model_arch, self.block_count)
+
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+        n_mtp = self.hparams.get("mtp_num_hidden_layers", 0)
+        if n_mtp > 0:
+            self.gguf_writer.add_nextn_predict_layers(n_mtp)
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        n_hidden = self.hparams["num_hidden_layers"]
+
+        if name.startswith("mtp.fc."):
+            mtp_idx = 0
+            new_bid = n_hidden + mtp_idx
+            new_name = self.format_tensor_name(gguf.MODEL_TENSOR.NEXTN_EH_PROJ, new_bid)
+            yield from super().modify_tensors(data_torch, new_name, new_bid)
+            return
+
+        # Note: Qwen3.5 with 1 MTP head uses mtp.pre_fc_norm_embedding.weight (no index)
+        match = re.match(r"mtp\.pre_fc_norm_embedding(?:\.(\d+))?", name)
+        if match:
+            mtp_idx = int(match.group(1)) if match.group(1) is not None else 0
+            new_bid = n_hidden + mtp_idx
+            new_name = self.format_tensor_name(gguf.MODEL_TENSOR.NEXTN_ENORM, new_bid)
+            yield from super().modify_tensors(data_torch, new_name, new_bid)
+            return
+
+        match = re.match(r"mtp\.pre_fc_norm_hidden(?:\.(\d+))?", name)
+        if match:
+            mtp_idx = int(match.group(1)) if match.group(1) is not None else 0
+            new_bid = n_hidden + mtp_idx
+            new_name = self.format_tensor_name(gguf.MODEL_TENSOR.NEXTN_HNORM, new_bid)
+            yield from super().modify_tensors(data_torch, new_name, new_bid)
+            return
+
+        if name.startswith("mtp.norm."):
+            mtp_idx = 0
+            new_bid = n_hidden + mtp_idx
+            new_name = self.format_tensor_name(gguf.MODEL_TENSOR.NEXTN_SHARED_HEAD_NORM, new_bid)
+            yield from super().modify_tensors(data_torch, new_name, new_bid)
+            return
+
+        match = re.match(r"mtp\.layers\.(\d+)\.(.+)", name)
+        if match:
+            mtp_idx = int(match.group(1))
+            rest = match.group(2)
+            new_bid = n_hidden + mtp_idx
+            mapped_name = f"model.layers.{new_bid}.{rest}"
+            yield from _LinearAttentionVReorderBase.modify_tensors(self, data_torch, mapped_name, new_bid)
+            return
+
+        yield from super().modify_tensors(data_torch, name, bid)
 
 
 @ModelBase.register("GPT2LMHeadModel")
