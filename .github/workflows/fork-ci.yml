@@ -47,16 +47,11 @@ jobs:
             ${{ env.CMAKE_ARGS }}
           cmake --build build --config Release -j $(sysctl -n hw.logicalcpu)
 
-      - name: Pack artifacts
-        run: |
-          cp LICENSE ./build/bin/
-          tar -czvf llama-bin-macos-arm64.tar.gz -C ./build/bin .
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
         with:
-          path: llama-bin-macos-arm64.tar.gz
-          name: llama-bin-macos-arm64.tar.gz
+          path: build/bin/
+          name: llama-bin-macos-arm64
 
   # ──────────────────────────────────────────────
   # Ubuntu ARM64
@@ -93,16 +88,11 @@ jobs:
             ${{ env.CMAKE_ARGS }}
           cmake --build build --config Release -j $(nproc)
 
-      - name: Pack artifacts
-        run: |
-          cp LICENSE ./build/bin/
-          tar -czvf llama-bin-ubuntu-arm64.tar.gz -C ./build/bin .
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
         with:
-          path: llama-bin-ubuntu-arm64.tar.gz
-          name: llama-bin-ubuntu-arm64.tar.gz
+          path: build/bin/
+          name: llama-bin-ubuntu-arm64
 
   # ──────────────────────────────────────────────
   # Windows x64 CPU (builds EXEs)
@@ -139,15 +129,11 @@ jobs:
             ${{ env.CMAKE_ARGS }}
           cmake --build build --config Release
 
-      - name: Pack artifacts
-        run: |
-          7z a -snl llama-bin-win-cpu-x64.zip .\build\bin\Release\*
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
         with:
-          path: llama-bin-win-cpu-x64.zip
-          name: llama-bin-win-cpu-x64.zip
+          path: build/bin/Release/
+          name: llama-bin-win-cpu-x64
 
   # ──────────────────────────────────────────────
   # Windows x64 CUDA 13.1 (builds ggml-cuda.dll only)
@@ -187,15 +173,11 @@ jobs:
           set /A NINJA_JOBS=%NUMBER_OF_PROCESSORS%-1
           cmake --build build --config Release -j %NINJA_JOBS% --target ggml-cuda
 
-      - name: Pack artifacts
-        run: |
-          7z a -snl llama-bin-win-cuda-13.1-x64.zip .\build\bin\Release\ggml-cuda.dll
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
         with:
-          path: llama-bin-win-cuda-13.1-x64.zip
-          name: llama-bin-win-cuda-13.1-x64.zip
+          path: build/bin/Release/ggml-cuda.dll
+          name: ggml-cuda-win-x64-cuda13.1
 
       - name: Pack CUDA runtime
         run: |
@@ -203,10 +185,9 @@ jobs:
           robocopy "${{env.CUDA_PATH}}\bin" $dst cudart64_*.dll cublas64_*.dll cublasLt64_*.dll
           robocopy "${{env.CUDA_PATH}}\lib" $dst cudart64_*.dll cublas64_*.dll cublasLt64_*.dll
           robocopy "${{env.CUDA_PATH}}\bin\x64" $dst cudart64_*.dll cublas64_*.dll cublasLt64_*.dll
-          7z a cudart-llama-bin-win-cuda-13.1-x64.zip $dst\*
 
       - name: Upload CUDA runtime
         uses: actions/upload-artifact@v6
         with:
-          path: cudart-llama-bin-win-cuda-13.1-x64.zip
-          name: cudart-llama-bin-win-cuda-13.1-x64.zip
+          path: build/bin/cudart/
+          name: cudart-win-x64-cuda13.1
