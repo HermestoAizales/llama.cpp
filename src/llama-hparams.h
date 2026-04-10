@@ -206,6 +206,13 @@ struct llama_hparams {
     uint32_t indexer_head_size = 0;
     uint32_t indexer_top_k     = 0;
 
+    // HISA (hierarchical indexed sparse attention)
+    bool     hisa_enabled     = false;
+    uint32_t hisa_block_size  = 128;   // B: block size for coarse filtering
+    uint32_t hisa_top_m       = 0;     // m: top-m blocks to select (0 = auto: M/4)
+    uint32_t hisa_budget      = 2048;  // k: final token budget
+    uint32_t hisa_min_tokens  = 4096;  // activate only when prefix > this
+
     // qwen3vl deepstack
     uint32_t n_deepstack_layers = 0;
 
