@@ -27,9 +27,12 @@
 #  include <unistd.h>
 #endif
 #include <cstring>
+#include <climits>
 #include <fstream>
 #include <filesystem>
 #include <algorithm>
+#include <thread>
+#include <atomic>
 
 static const char * RPC_DEBUG = std::getenv("GGML_RPC_DEBUG");
 
@@ -107,6 +110,7 @@ enum rpc_cmd {
     RPC_CMD_HELLO,
     RPC_CMD_DEVICE_COUNT,
     RPC_CMD_GRAPH_RECOMPUTE,
+    RPC_CMD_DATA_CONNECT,
     RPC_CMD_COUNT,
 };
 
@@ -268,8 +272,9 @@ struct ggml_backend_rpc_context {
     graph_cache gc;
 };
 
+struct socket_pool_entry; // forward declaration — defined below
 struct ggml_backend_rpc_buffer_context {
-    std::shared_ptr<socket_t> sock;
+    std::shared_ptr<socket_pool_entry> pool;
     void * base_ptr;
     uint64_t remote_ptr;
 };
@@ -314,6 +319,31 @@ static bool set_reuse_addr(sockfd_t sockfd) {
     return ret == 0;
 }
 
+static bool set_socket_buffers(sockfd_t sockfd, size_t sndbuf, size_t rcvbuf) {
+    bool ok = true;
+    if (sndbuf > 0) {
+        int val = (int)std::min(sndbuf, (size_t)INT_MAX);
+        int ret = setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, (char *)&val, sizeof(val));
+        if (ret != 0) {
+            GGML_LOG_WARN("Failed to set SO_SNDBUF=%d\n", val);
+            ok = false;
+        }
+    }
+    if (rcvbuf > 0) {
+        int val = (int)std::min(rcvbuf, (size_t)INT_MAX);
+        int ret = setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, (char *)&val, sizeof(val));
+        if (ret != 0) {
+            GGML_LOG_WARN("Failed to set SO_RCVBUF=%d\n", val);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+// Default socket buffer sizes for RPC transfers (16 MiB)
+static constexpr size_t RPC_SOCK_SNDBUF = 16 * 1024 * 1024;
+static constexpr size_t RPC_SOCK_RCVBUF = 16 * 1024 * 1024;
+
 static std::shared_ptr<socket_t> socket_connect(const char * host, int port) {
     struct sockaddr_in addr;
     auto sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -325,6 +355,7 @@ static std::shared_ptr<socket_t> socket_connect(const char * host, int port) {
         GGML_LOG_ERROR("Failed to set TCP_NODELAY\n");
         return nullptr;
     }
+    set_socket_buffers(sockfd, RPC_SOCK_SNDBUF, RPC_SOCK_RCVBUF);
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
     struct hostent * server = gethostbyname(host);
@@ -349,6 +380,7 @@ static std::shared_ptr<socket_t> socket_accept(sockfd_t srv_sockfd) {
         GGML_LOG_ERROR("Failed to set TCP_NODELAY\n");
         return nullptr;
     }
+    set_socket_buffers(client_socket_fd, RPC_SOCK_SNDBUF, RPC_SOCK_RCVBUF);
     return client_socket;
 }
 
@@ -374,7 +406,8 @@ static std::shared_ptr<socket_t> create_server_socket(const char * host, int por
     if (bind(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) {
         return nullptr;
     }
-    if (listen(sockfd, 1) < 0) {
+    // Allow enough backlog for pool connections (4+ sockets per client)
+    if (listen(sockfd, 16) < 0) {
         return nullptr;
     }
     return sock;
@@ -509,52 +542,127 @@ static bool check_server_version(const std::shared_ptr<socket_t> & sock) {
     return true;
 }
 
-static std::shared_ptr<socket_t> get_socket(const std::string & endpoint) {
+// Socket pool: maintains N connections per endpoint for parallel transfers
+// Configurable via GGML_RPC_POOL_SIZE environment variable (default: 4)
+static size_t get_rpc_pool_size() {
+    static size_t pool_size = 0;
+    if (pool_size == 0) {
+        const char * env = std::getenv("GGML_RPC_POOL_SIZE");
+        pool_size = env ? std::stoul(env) : 4;
+        if (pool_size < 1) pool_size = 1;
+        if (pool_size > 32) pool_size = 32;
+    }
+    return pool_size;
+}
+
+struct socket_pool_entry {
+    std::vector<std::shared_ptr<socket_t>> sockets;
+    std::atomic<size_t> next_idx{0};
+
+    std::shared_ptr<socket_t> get() {
+        size_t idx = next_idx.fetch_add(1, std::memory_order_relaxed) % sockets.size();
+        return sockets[idx];
+    }
+};
+
+static std::shared_ptr<socket_pool_entry> get_socket_pool(const std::string & endpoint) {
     static std::mutex mutex;
     std::lock_guard<std::mutex> lock(mutex);
-    static std::unordered_map<std::string, std::weak_ptr<socket_t>> sockets;
-    static bool initialized = false;
-
-    auto it = sockets.find(endpoint);
-    if (it != sockets.end()) {
-        if (auto sock = it->second.lock()) {
-            return sock;
+    static std::unordered_map<std::string, std::shared_ptr<socket_pool_entry>> pools;
+#ifdef _WIN32
+    static bool wsa_initialized = false;
+    if (!wsa_initialized) {
+        WSADATA wsaData;
+        int res = WSAStartup(MAKEWORD(2, 2), &wsaData);
+        if (res != 0) {
+            return nullptr;
         }
+        wsa_initialized = true;
     }
+#endif
+
+    auto it = pools.find(endpoint);
+    if (it != pools.end()) {
+        // Check if all sockets in the pool are still valid
+        bool all_valid = true;
+        for (auto & sock : it->second->sockets) {
+            if (sock == nullptr) { all_valid = false; break; }
+        }
+        if (all_valid) {
+            return it->second;
+        }
+        // Some sockets are dead, rebuild pool
+        pools.erase(it);
+    }
+
     std::string host;
     int port;
     if (!parse_endpoint(endpoint, host, port)) {
         GGML_LOG_ERROR("Failed to parse endpoint: %s\n", endpoint.c_str());
         return nullptr;
     }
-#ifdef _WIN32
-    if (!initialized) {
-        WSADATA wsaData;
-        int res = WSAStartup(MAKEWORD(2, 2), &wsaData);
-        if (res != 0) {
-            return nullptr;
+
+    size_t pool_size = get_rpc_pool_size();
+    auto pool = std::make_shared<socket_pool_entry>();
+    pool->sockets.reserve(pool_size);
+
+    for (size_t i = 0; i < pool_size; i++) {
+        auto sock = socket_connect(host.c_str(), port);
+        if (sock == nullptr) {
+            if (pool->sockets.empty()) {
+                return nullptr;
+            }
+            break;
         }
-        initialized = true;
+
+        if (i == 0) {
+            // Socket[0] = control connection: full HELLO handshake
+            if (!check_server_version(sock)) {
+                if (pool->sockets.empty()) {
+                    return nullptr;
+                }
+                break;
+            }
+        } else {
+            // Socket[1..N] = data connections: send DATA_CONNECT instead of HELLO
+            // This tells the server this connection only handles SET_TENSOR
+            uint8_t cmd_byte = RPC_CMD_DATA_CONNECT;
+            if (!send_data(sock->fd, &cmd_byte, sizeof(cmd_byte))) {
+                GGML_LOG_WARN("Failed to send DATA_CONNECT on pool socket %zu\n", i);
+                break;
+            }
+            // No response expected — fire and forget
+        }
+
+        LOG_DBG("[%s] pool socket %zu/%zu connected to %s, sockfd=%d (%s)\n",
+                 __func__, i + 1, pool_size, endpoint.c_str(), sock->fd,
+                 i == 0 ? "control" : "data");
+        pool->sockets.push_back(sock);
     }
-#else
-    GGML_UNUSED(initialized);
-#endif
-    auto sock = socket_connect(host.c_str(), port);
-    if (sock == nullptr) {
+
+    if (pool->sockets.empty()) {
         return nullptr;
     }
-    if (!check_server_version(sock)) {
-        return nullptr;
-    }
-    LOG_DBG("[%s] connected to %s, sockfd=%d\n", __func__, endpoint.c_str(), sock->fd);
-    sockets[endpoint] = sock;
-    return sock;
+
+    LOG_DBG("[%s] created socket pool for %s with %zu connections (%zu control + %zu data)\n",
+             __func__, endpoint.c_str(), pool->sockets.size(),
+             1, pool->sockets.size() - 1);
+
+    pools[endpoint] = pool;
+    return pool;
+}
+
+// Legacy single-socket accessor for backward compatibility
+static std::shared_ptr<socket_t> get_socket(const std::string & endpoint) {
+    auto pool = get_socket_pool(endpoint);
+    if (!pool) return nullptr;
+    return pool->get();
 }
 
 static void ggml_backend_rpc_buffer_free_buffer(ggml_backend_buffer_t buffer) {
     ggml_backend_rpc_buffer_context * ctx = (ggml_backend_rpc_buffer_context *)buffer->context;
     rpc_msg_free_buffer_req request = {ctx->remote_ptr};
-    bool status = send_rpc_cmd(ctx->sock, RPC_CMD_FREE_BUFFER, &request, sizeof(request), nullptr, 0);
+    bool status = send_rpc_cmd(ctx->pool->sockets[0], RPC_CMD_FREE_BUFFER, &request, sizeof(request), nullptr, 0);
     RPC_STATUS_ASSERT(status);
     delete ctx;
 }
@@ -566,7 +674,7 @@ static void * ggml_backend_rpc_buffer_get_base(ggml_backend_buffer_t buffer) {
     }
     rpc_msg_buffer_get_base_req request = {ctx->remote_ptr};
     rpc_msg_buffer_get_base_rsp response;
-    bool status = send_rpc_cmd(ctx->sock, RPC_CMD_BUFFER_GET_BASE, &request, sizeof(request), &response, sizeof(response));
+    bool status = send_rpc_cmd(ctx->pool->sockets[0], RPC_CMD_BUFFER_GET_BASE, &request, sizeof(request), &response, sizeof(response));
     RPC_STATUS_ASSERT(status);
     ctx->base_ptr = reinterpret_cast<void *>(response.base_ptr);
     return ctx->base_ptr;
@@ -628,7 +736,7 @@ static enum ggml_status ggml_backend_rpc_buffer_init_tensor(ggml_backend_buffer_
 
         request.tensor = serialize_tensor(tensor);
 
-        bool status = send_rpc_cmd(ctx->sock, RPC_CMD_INIT_TENSOR, &request, sizeof(request), nullptr, 0);
+        bool status = send_rpc_cmd(ctx->pool->sockets[0], RPC_CMD_INIT_TENSOR, &request, sizeof(request), nullptr, 0);
         RPC_STATUS_ASSERT(status);
     }
     return GGML_STATUS_SUCCESS;
@@ -643,21 +751,38 @@ static void ggml_backend_rpc_buffer_set_tensor(ggml_backend_buffer_t buffer, ggm
         request.offset = offset;
         request.hash = fnv_hash((const uint8_t*)data, size);
         rpc_msg_set_tensor_hash_rsp response;
-        bool status = send_rpc_cmd(ctx->sock, RPC_CMD_SET_TENSOR_HASH, &request, sizeof(request), &response, sizeof(response));
+        // hash check always goes over control socket
+        bool status = send_rpc_cmd(ctx->pool->sockets[0], RPC_CMD_SET_TENSOR_HASH, &request, sizeof(request), &response, sizeof(response));
         RPC_STATUS_ASSERT(status);
         if (response.result) {
             // the server has the same data, no need to send it
             return;
         }
     }
-    // input serialization format: | rpc_tensor | offset (8 bytes) | data (size bytes)
+    // Use round-robin over the pool for data transfers — this is the key optimization
+    // that allows multiple TCP connections to carry data in parallel
+    auto sock = ctx->pool->get();
+    // Zero-copy path: send header and data separately to avoid copying the entire tensor
+    // Protocol: | cmd (1B) | input_size (8B) | rpc_tensor | offset (8B) | data (size bytes) |
     size_t input_size = sizeof(rpc_tensor) + sizeof(uint64_t) + size;
-    std::vector<uint8_t> input(input_size, 0);
-    memcpy(input.data(), &rpc_tensor, sizeof(rpc_tensor));
-    memcpy(input.data() + sizeof(rpc_tensor), &offset, sizeof(offset));
-    memcpy(input.data() + sizeof(rpc_tensor) + sizeof(offset), data, size);
-    bool status = send_rpc_cmd(ctx->sock, RPC_CMD_SET_TENSOR, input.data(), input.size());
-    RPC_STATUS_ASSERT(status);
+    uint8_t cmd_byte = RPC_CMD_SET_TENSOR;
+    if (!send_data(sock->fd, &cmd_byte, sizeof(cmd_byte))) {
+        RPC_STATUS_ASSERT(false);
+    }
+    if (!send_data(sock->fd, &input_size, sizeof(input_size))) {
+        RPC_STATUS_ASSERT(false);
+    }
+    // Send header parts directly from stack/computed values
+    if (!send_data(sock->fd, &rpc_tensor, sizeof(rpc_tensor))) {
+        RPC_STATUS_ASSERT(false);
+    }
+    if (!send_data(sock->fd, &offset, sizeof(offset))) {
+        RPC_STATUS_ASSERT(false);
+    }
+    // Send tensor data directly from source buffer — zero-copy
+    if (!send_data(sock->fd, data, size)) {
+        RPC_STATUS_ASSERT(false);
+    }
 }
 
 static void ggml_backend_rpc_buffer_get_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
@@ -666,18 +791,18 @@ static void ggml_backend_rpc_buffer_get_tensor(ggml_backend_buffer_t buffer, con
     request.tensor = serialize_tensor(tensor);
     request.offset = offset;
     request.size = size;
-    bool status = send_rpc_cmd(ctx->sock, RPC_CMD_GET_TENSOR, &request, sizeof(request), data, size);
+    bool status = send_rpc_cmd(ctx->pool->sockets[0], RPC_CMD_GET_TENSOR, &request, sizeof(request), data, size);
     RPC_STATUS_ASSERT(status);
 }
 
 static bool ggml_backend_rpc_buffer_cpy_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * src, ggml_tensor * dst) {
     if (ggml_backend_buffer_is_rpc(src->buffer)) {
-        // check if src and dst are on the same server
+        // check if src and dst are on the same server (same pool)
         ggml_backend_buffer_t src_buffer = src->buffer;
         ggml_backend_rpc_buffer_context * src_ctx = (ggml_backend_rpc_buffer_context *)src_buffer->context;
         ggml_backend_buffer_t dst_buffer = dst->buffer;
         ggml_backend_rpc_buffer_context * dst_ctx = (ggml_backend_rpc_buffer_context *)dst_buffer->context;
-        if (src_ctx->sock != dst_ctx->sock) {
+        if (src_ctx->pool.get() != dst_ctx->pool.get()) {
             return false;
         }
         ggml_backend_rpc_buffer_context * ctx = (ggml_backend_rpc_buffer_context *)buffer->context;
@@ -685,7 +810,7 @@ static bool ggml_backend_rpc_buffer_cpy_tensor(ggml_backend_buffer_t buffer, con
         request.src = serialize_tensor(src);
         request.dst = serialize_tensor(dst);
         rpc_msg_copy_tensor_rsp response;
-        bool status = send_rpc_cmd(ctx->sock, RPC_CMD_COPY_TENSOR, &request, sizeof(request), &response, sizeof(response));
+        bool status = send_rpc_cmd(ctx->pool->sockets[0], RPC_CMD_COPY_TENSOR, &request, sizeof(request), &response, sizeof(response));
         RPC_STATUS_ASSERT(status);
         return response.result;
     }
@@ -695,7 +820,7 @@ static bool ggml_backend_rpc_buffer_cpy_tensor(ggml_backend_buffer_t buffer, con
 static void ggml_backend_rpc_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
     ggml_backend_rpc_buffer_context * ctx = (ggml_backend_rpc_buffer_context *)buffer->context;
     rpc_msg_buffer_clear_req request = {ctx->remote_ptr, value};
-    bool status = send_rpc_cmd(ctx->sock, RPC_CMD_BUFFER_CLEAR, &request, sizeof(request), nullptr, 0);
+    bool status = send_rpc_cmd(ctx->pool->sockets[0], RPC_CMD_BUFFER_CLEAR, &request, sizeof(request), nullptr, 0);
     RPC_STATUS_ASSERT(status);
 }
 
@@ -722,13 +847,16 @@ static ggml_backend_buffer_t ggml_backend_rpc_buffer_type_alloc_buffer(ggml_back
     ggml_backend_rpc_buffer_type_context * buft_ctx = (ggml_backend_rpc_buffer_type_context *)buft->context;
     rpc_msg_alloc_buffer_req request = {buft_ctx->device, size};
     rpc_msg_alloc_buffer_rsp response;
-    auto sock = get_socket(buft_ctx->endpoint);
-    bool status = send_rpc_cmd(sock, RPC_CMD_ALLOC_BUFFER, &request, sizeof(request), &response, sizeof(response));
+    auto pool = get_socket_pool(buft_ctx->endpoint);
+    if (pool == nullptr) {
+        return nullptr;
+    }
+    bool status = send_rpc_cmd(pool->sockets[0], RPC_CMD_ALLOC_BUFFER, &request, sizeof(request), &response, sizeof(response));
     RPC_STATUS_ASSERT(status);
     if (response.remote_ptr != 0) {
         ggml_backend_buffer_t buffer = ggml_backend_buffer_init(buft,
             ggml_backend_rpc_buffer_interface,
-            new ggml_backend_rpc_buffer_context{sock, nullptr, response.remote_ptr},
+            new ggml_backend_rpc_buffer_context{pool, nullptr, response.remote_ptr},
             response.remote_size);
         return buffer;
     } else {
@@ -1596,18 +1724,56 @@ rpc_server::~rpc_server() {
     }
 }
 
+// Serve a data-only connection: accepts only SET_TENSOR commands
+// This is used by pool sockets [1..N] which carry tensor data in parallel
+// The protocol on data connections is simpler: | cmd (1B) | input_size (8B) | rpc_tensor | offset (8B) | data |
+static void rpc_serve_data_client(const std::vector<ggml_backend_t> & backends, const char * cache_dir,
+                                   sockfd_t sockfd) {
+    rpc_server server(backends, cache_dir);
+    LOG_DBG("[%s] data connection started on sockfd=%d\n", __func__, sockfd);
+    while (true) {
+        uint8_t cmd;
+        if (!recv_data(sockfd, &cmd, 1)) {
+            break;
+        }
+        if (cmd == RPC_CMD_SET_TENSOR) {
+            // Read input_size then the payload (matches client's zero-copy send path)
+            uint64_t input_size;
+            if (!recv_data(sockfd, &input_size, sizeof(input_size))) {
+                break;
+            }
+            std::vector<uint8_t> input(input_size, 0);
+            if (!recv_data(sockfd, input.data(), input_size)) {
+                break;
+            }
+            if (!server.set_tensor(input)) {
+                break;
+            }
+        } else {
+            LOG_DBG("[%s] unexpected cmd=%d on data connection, closing\n", __func__, cmd);
+            break;
+        }
+    }
+    LOG_DBG("[%s] data connection closed on sockfd=%d\n", __func__, sockfd);
+}
+
 static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const char * cache_dir,
                              sockfd_t sockfd) {
-    rpc_server server(backends, cache_dir);
     uint8_t cmd;
     if (!recv_data(sockfd, &cmd, 1)) {
         return;
     }
-    // the first command sent by the client must be HELLO
-    if (cmd != RPC_CMD_HELLO) {
-        GGML_LOG_ERROR("Expected HELLO command, update client\n");
+    // the first command sent by the client must be HELLO or DATA_CONNECT
+    if (cmd == RPC_CMD_DATA_CONNECT) {
+        // Data-only connection from a pool socket — only SET_TENSOR
+        rpc_serve_data_client(backends, cache_dir, sockfd);
         return;
     }
+    if (cmd != RPC_CMD_HELLO) {
+        GGML_LOG_ERROR("Expected HELLO or DATA_CONNECT command, got %d\n", cmd);
+        return;
+    }
+    rpc_server server(backends, cache_dir);
     if (!recv_msg(sockfd, nullptr, 0)) {
         return;
     }
@@ -1628,6 +1794,11 @@ static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const
         switch (cmd) {
             case RPC_CMD_HELLO: {
                 // HELLO command is handled above
+                return;
+            }
+            case RPC_CMD_DATA_CONNECT: {
+                // DATA_CONNECT is only valid as the first command
+                GGML_LOG_ERROR("DATA_CONNECT not allowed after HELLO\n");
                 return;
             }
             case RPC_CMD_DEVICE_COUNT: {
@@ -1907,9 +2078,13 @@ void ggml_backend_rpc_start_server(const char * endpoint, const char * cache_dir
         }
         printf("Accepted client connection\n");
         fflush(stdout);
-        rpc_serve_client(backends, cache_dir, client_socket->fd);
-        printf("Client connection closed\n");
-        fflush(stdout);
+        // Serve each client in a separate thread so we can accept more connections
+        std::thread client_thread([&backends, cache_dir, client_socket]() {
+            rpc_serve_client(backends, cache_dir, client_socket->fd);
+            printf("Client connection closed\n");
+            fflush(stdout);
+        });
+        client_thread.detach();
     }
 #ifdef _WIN32
     WSACleanup();
