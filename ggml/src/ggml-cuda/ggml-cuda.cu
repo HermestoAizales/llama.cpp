@@ -61,6 +61,7 @@
 #include "ggml-cuda/tri.cuh"
 #include "ggml-cuda/cumsum.cuh"
 #include "ggml-cuda/fill.cuh"
+#include "ggml-cuda/hisa.cuh"
 #include "ggml.h"
 
 #include <algorithm>
@@ -2875,13 +2876,14 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
             ggml_cuda_op_fill(ctx, dst);
             break;
         case GGML_OP_HISA_BLOCK_POOL:
+            ggml_cuda_op_hisa_block_pool(ctx, dst);
+            break;
         case GGML_OP_HISA_GATHER:
+            ggml_cuda_op_hisa_gather(ctx, dst);
+            break;
         case GGML_OP_HISA_BLOCK_GATHER:
-            {
-                // TODO: implement CUDA kernels for HISA ops
-                fprintf(stderr, "HISA ops not yet implemented for CUDA\n");
-                GGML_ABORT("HISA CUDA support not yet implemented");
-            } break;
+            ggml_cuda_op_hisa_block_gather(ctx, dst);
+            break;
         default:
             return false;
     }
@@ -5025,7 +5027,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_HISA_BLOCK_POOL:
         case GGML_OP_HISA_GATHER:
         case GGML_OP_HISA_BLOCK_GATHER:
-            return false; // TODO: implement CUDA support
+            return true;
         case GGML_OP_SUM_ROWS:
         case GGML_OP_MEAN:
         case GGML_OP_GROUP_NORM:

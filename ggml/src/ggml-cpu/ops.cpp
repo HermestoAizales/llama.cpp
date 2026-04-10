@@ -11264,9 +11264,9 @@ void ggml_compute_forward_hisa_gather(struct ggml_compute_params * params, struc
     const struct ggml_tensor * src     = dst->src[0];
     const struct ggml_tensor * indices = dst->src[1];
 
-    const int64_t d         = src->ne[0];
-    const int64_t n_heads   = src->ne[2];
-    const int64_t n_batch   = src->ne[3];
+    const int64_t d          = src->ne[0];
+    const int64_t n_heads_kv = src->ne[2];
+    const int64_t n_batch    = src->ne[3];
     const int64_t n_selected = indices->ne[0];
 
     if (params->ith != 0) {
@@ -11276,15 +11276,20 @@ void ggml_compute_forward_hisa_gather(struct ggml_compute_params * params, struc
     GGML_ASSERT(src->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32);
     GGML_ASSERT(indices->type == GGML_TYPE_I32);
 
+    // GQA mapping: indices has n_head_q heads (ne[2]), src has n_head_kv heads (ne[2]).
+    // For GQA models: n_head_q > n_head_kv. Map each KV-head to its first Q-head in the group.
+    const int64_t gqa_ratio = n_heads_kv > 0 ? indices->ne[2] / n_heads_kv : 1;
+
     const int32_t * idx_data = (const int32_t *)indices->data;
 
     for (int64_t ib = 0; ib < n_batch; ib++) {
-        for (int64_t ih = 0; ih < n_heads; ih++) {
+        for (int64_t ih = 0; ih < n_heads_kv; ih++) {
+            const int64_t ih_q = ih * gqa_ratio;  // map KV-head to Q-head
             for (int64_t is = 0; is < n_selected; is++) {
                 // Use strides for correct multi-dim index access
                 const int64_t idx_offset = is * (indices->nb[0] / sizeof(int32_t))
                                          + 0 * (indices->nb[1] / sizeof(int32_t))
-                                         + ih * (indices->nb[2] / sizeof(int32_t))
+                                         + ih_q * (indices->nb[2] / sizeof(int32_t))
                                          + ib * (indices->nb[3] / sizeof(int32_t));
                 const int32_t idx = idx_data[idx_offset];
                 GGML_ASSERT(idx >= 0 && idx < src->ne[1]);
