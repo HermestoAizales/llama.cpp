@@ -1860,11 +1860,11 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
                float   kq_scale,
                  int   il) const {
     // At this point, Q, K, V have been permuted by build_attn_mha:
-    // q: [d, n_head, n_tokens, n_stream]
-    // k: [d, n_head_kv, n_kv, n_stream]
-    // v: [d, n_head_kv, n_kv, n_stream]
+    // q: [d, n_tokens, n_head, n_stream]
+    // k: [d, n_kv, n_head_kv, n_stream]   (after permute(0,2,1,3))
+    // v: [d, n_kv, n_head_kv, n_stream]   (after permute(0,2,1,3))
 
-    const int64_t n_kv      = k->ne[2];
+    const int64_t n_kv      = k->ne[1];
 
     // Suppress unused parameter warnings (kq_mask and sinks are not yet used in MVP)
     (void)kq_mask;
@@ -2044,9 +2044,11 @@ ggml_tensor * llm_graph_context::build_attn_mha(
     const bool hisa_on = cparams.hisa_enabled || hparams.hisa_enabled;
     const uint32_t hisa_bs = cparams.hisa_block_size > 0 ? cparams.hisa_block_size : hparams.hisa_block_size;
     const uint32_t hisa_mt = cparams.hisa_min_tokens > 0 ? cparams.hisa_min_tokens : hparams.hisa_min_tokens;
+    // After permute(0,2,1,3), k->ne[1] = n_kv and k->ne[2] = n_head_kv
+    const int64_t n_kv = k->ne[1];
     const bool use_hisa = hisa_on && use_flash_attn
-                          && k->ne[2] > (int64_t)hisa_mt
-                          && k->ne[2] % hisa_bs == 0;
+                          && n_kv > (int64_t)hisa_mt
+                          && n_kv % hisa_bs == 0;
 
     if (use_hisa) {
         // HISA: hierarchical indexed sparse attention
