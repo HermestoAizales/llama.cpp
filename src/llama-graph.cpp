@@ -1866,9 +1866,16 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
 
     const int64_t n_kv      = k->ne[1];
 
-    // Suppress unused parameter warnings (kq_mask and sinks are not yet used in MVP)
-    (void)kq_mask;
+    // Suppress unused parameter warning (sinks not yet used in MVP)
     (void)sinks;
+
+    // Register kq_mask in the graph so the allocator assigns it a buffer.
+    // HISA doesn't use kq_mask for flash_attn (passes nullptr), but the KV cache
+    // still needs to write to it via set_input_kq_mask. Without this reference,
+    // the graph allocator skips the tensor and it gets no buffer allocation.
+    // We use a no-op scale(1.0) to create a graph dependency without affecting values.
+    kq_mask = ggml_scale(ctx0, kq_mask, 1.0f);
+    cb(kq_mask, "hisa_kq_mask_ref", il);
 
     // Resolve HISA params: cparams override hparams defaults
     const uint32_t B = cparams.hisa_block_size > 0 ? cparams.hisa_block_size : hparams.hisa_block_size;
@@ -1881,9 +1888,10 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
     GGML_ASSERT(n_kv % B == 0 && "KV length must be divisible by HISA block size");
     GGML_ASSERT(n_blocks > 0 && "Need at least one block for HISA");
 
-    // Permute K, V to [d, n_kv, n_head_kv, n_stream] for block_pool
-    ggml_tensor * k_bp = ggml_cont(ctx0, ggml_permute(ctx0, k, 0, 2, 1, 3));
-    ggml_tensor * v_bp = ggml_cont(ctx0, ggml_permute(ctx0, v, 0, 2, 1, 3));
+    // K, V are already permuted to [d, n_kv, n_head_kv, n_stream] by build_attn_mha
+    // Ensure contiguous for downstream ops
+    ggml_tensor * k_bp = ggml_cont(ctx0, k);
+    ggml_tensor * v_bp = ggml_cont(ctx0, v);
 
     // Cast K, V to F32 for block_pool accuracy (they may be F16 from the caller)
     // The HISA scoring + gather ops need F32; we cast back to F16 before flash_attn
@@ -1896,15 +1904,15 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
     cb(k_blocks, "hisa_k_blocks", il);
 
     // Step 2: Score blocks against Q
-    // k_blocks: [d, n_blocks, n_head_kv, n_stream] -> permute to [d, n_head_kv, n_blocks, n_stream]
-    // Q is [d, n_head, n_tokens, n_stream]
-    // mul_mat(k_blocks_perm, q) = k_blocks^T * q -> [n_blocks, n_tokens, n_head, n_stream]
-    ggml_tensor * k_blocks_perm = ggml_permute(ctx0, k_blocks, 0, 2, 1, 3);
+    // k_blocks: [d, n_blocks, n_head_kv, n_stream]
+    // Q is [d, n_tokens, n_head, n_stream]
+    // mul_mat handles GQA broadcasting: n_head % n_head_kv == 0
+    // Result: [n_blocks, n_tokens, n_head, n_stream]
 
     // Cast Q to F32 for scoring accuracy (may be F16)
     ggml_tensor * q_f32 = ggml_cast(ctx0, q, GGML_TYPE_F32);
 
-    ggml_tensor * block_scores = ggml_mul_mat(ctx0, k_blocks_perm, q_f32);
+    ggml_tensor * block_scores = ggml_mul_mat(ctx0, k_blocks, q_f32);
     cb(block_scores, "hisa_block_scores", il);
 
     // Apply scale
@@ -1934,33 +1942,29 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
 
     if (budget > 0 && budget < n_cand) {
         // Step 5a: Score individual candidate tokens against Q
-        // k_cand_perm: [d, n_head_kv, m*B, n_stream] for mul_mat
-        ggml_tensor * k_cand_perm = ggml_permute(ctx0, k_cand, 0, 2, 1, 3);
-        // token_scores: [m*B, n_tokens, n_head, n_stream]
-        ggml_tensor * token_scores = ggml_mul_mat(ctx0, k_cand_perm, q_f32);
+        // k_cand: [d, m*B, n_head_kv, n_stream] — same layout as standard K for flash_attn
+        // For mul_mat, we need [d, n_head_kv, m*B, n_stream] so Q's ne[2] broadcasts with k's ne[2]
+        // k_cand ne[2] = n_head_kv, q_f32 ne[2] = n_head, n_head % n_head_kv == 0 (GQA) ✓
+        // No permute needed — k_cand already has n_head_kv in ne[2]
+        ggml_tensor * token_scores = ggml_mul_mat(ctx0, k_cand, q_f32);
         token_scores = ggml_scale(ctx0, token_scores, kq_scale);
         cb(token_scores, "hisa_token_scores", il);
 
         // Step 5b: Select top-budget tokens
-        // top_budget_indices: [budget, n_tokens, n_head, n_stream] (I32)
         ggml_tensor * top_budget_indices = ggml_argsort_top_k(ctx0, token_scores, budget);
         cb(top_budget_indices, "hisa_top_budget_indices", il);
 
         // Step 5c: Gather the top-budget K and V tokens
-        // k_cand is [d, m*B, n_head_kv, n_stream], indices select from dim 1
         k_final = ggml_hisa_gather(ctx0, k_cand, top_budget_indices);
         cb(k_final, "hisa_k_final", il);
         v_final = ggml_hisa_gather(ctx0, v_cand, top_budget_indices);
         cb(v_final, "hisa_v_final", il);
-
-        // Permute to [d, n_head_kv, budget, n_stream] for flash_attn
-        k_final = ggml_permute(ctx0, k_final, 0, 2, 1, 3);
-        v_final = ggml_permute(ctx0, v_final, 0, 2, 1, 3);
+        // k_final/v_final: [d, budget, n_head_kv, n_stream] — correct layout for flash_attn
     } else {
-        // No refinement needed: budget >= m*B, use all candidates
-        // Step 6: Permute gathered K, V back to [d, n_head_kv, m*B, n_stream] for flash_attn
-        k_final = ggml_permute(ctx0, k_cand, 0, 2, 1, 3);
-        v_final = ggml_permute(ctx0, v_cand, 0, 2, 1, 3);
+        // No refinement needed: use all candidates directly
+        k_final = k_cand;
+        v_final = v_cand;
+        // k_final/v_final: [d, m*B, n_head_kv, n_stream] — correct layout for flash_attn
     }
 
     // Cast back to F16 for flash_attn (which requires F16 K/V)
@@ -2049,7 +2053,6 @@ ggml_tensor * llm_graph_context::build_attn_mha(
     const bool use_hisa = hisa_on && use_flash_attn
                           && n_kv > (int64_t)hisa_mt
                           && n_kv % hisa_bs == 0;
-
     if (use_hisa) {
         // HISA: hierarchical indexed sparse attention
         // Note: HISA handles its own type casting and permutations internally
@@ -2076,7 +2079,6 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         if (v->type == GGML_TYPE_F32) {
             v = ggml_cast(ctx0, v, GGML_TYPE_F16);
         }
-
         cur = ggml_flash_attn_ext(ctx0, q, k, v, kq_mask, kq_scale, hparams.f_max_alibi_bias,
                                   hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f);
         cb(cur, LLAMA_TENSOR_NAME_FATTN, il);
