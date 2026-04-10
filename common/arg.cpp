@@ -1349,6 +1349,31 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                                    string_format("error: unknown value for --flash-attn: '%s'\n", value.c_str()));
                            }
                        }).set_env("LLAMA_ARG_FLASH_ATTN"));
+    add_opt(common_arg({ "--hisa" },
+                       "enable hierarchical indexed sparse attention (default: disabled)",
+                       [](common_params & params) {
+                           params.hisa_enabled = true;
+                       }));
+    add_opt(common_arg({ "--hisa-block-size" }, "N",
+                       "block size for HISA coarse filtering (default: model default or 128)",
+                       [](common_params & params, const std::string & value) {
+                           params.hisa_block_size = std::stoi(value);
+                       }));
+    add_opt(common_arg({ "--hisa-top-m" }, "N",
+                       "number of top blocks to select in HISA (default: auto, n_blocks/4)",
+                       [](common_params & params, const std::string & value) {
+                           params.hisa_top_m = std::stoi(value);
+                       }));
+    add_opt(common_arg({ "--hisa-budget" }, "N",
+                       "HISA final token budget (default: 2048)",
+                       [](common_params & params, const std::string & value) {
+                           params.hisa_budget = std::stoi(value);
+                       }));
+    add_opt(common_arg({ "--hisa-min-tokens" }, "N",
+                       "activate HISA only when KV length exceeds this (default: 4096)",
+                       [](common_params & params, const std::string & value) {
+                           params.hisa_min_tokens = std::stoi(value);
+                       }));
     add_opt(common_arg(
         {"-p", "--prompt"}, "PROMPT",
         "prompt to start generation with; for system message, use -sys",

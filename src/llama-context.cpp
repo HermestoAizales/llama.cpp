@@ -153,6 +153,13 @@ llama_context::llama_context(
     cparams.flash_attn = params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED;
     cparams.auto_fa    = params.flash_attn_type == LLAMA_FLASH_ATTN_TYPE_AUTO;
 
+    // HISA: copy from public params to internal cparams
+    cparams.hisa_enabled     = params.hisa_enabled;
+    cparams.hisa_block_size  = params.hisa_block_size;
+    cparams.hisa_top_m       = params.hisa_top_m;
+    cparams.hisa_budget      = params.hisa_budget;
+    cparams.hisa_min_tokens  = params.hisa_min_tokens;
+
     cparams.fused_gdn_ar = true;
     cparams.fused_gdn_ch = true;
     cparams.auto_fgdn    = true;
@@ -2916,6 +2923,11 @@ llama_context_params llama_context_default_params() {
         /*.op_offload                  =*/ true,
         /*.swa_full                    =*/ true,
         /*.kv_unified                  =*/ false,
+        /*.hisa_enabled                =*/ false,
+        /*.hisa_block_size             =*/ 0,
+        /*.hisa_top_m                  =*/ 0,
+        /*.hisa_budget                 =*/ 0,
+        /*.hisa_min_tokens             =*/ 0,
         /*.sampler                     =*/ nullptr,
         /*.n_sampler                   =*/ 0,
     };

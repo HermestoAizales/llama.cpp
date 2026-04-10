@@ -375,6 +375,13 @@ extern "C" {
                           // try to disable when n_seq_max > 1 for improved performance when the sequences do not share a large prefix
                           // ref: https://github.com/ggml-org/llama.cpp/pull/14363
 
+        // HISA (hierarchical indexed sparse attention) parameters
+        bool    hisa_enabled;     // enable HISA sparse attention (default: false)
+        int32_t hisa_block_size;  // block size for coarse filtering (0 = use model default)
+        int32_t hisa_top_m;       // top-m blocks to select (0 = auto)
+        int32_t hisa_budget;      // final token budget (0 = use model default)
+        int32_t hisa_min_tokens;  // activate only when n_kv > this (0 = use model default)
+
         // [EXPERIMENTAL]
         // backend sampler chain configuration (make sure the caller keeps the sampler chains alive)
         // note: the samplers must be sampler chains (i.e. use llama_sampler_chain_init)

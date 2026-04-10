@@ -40,6 +40,13 @@ struct llama_cparams {
     bool kv_unified;
     bool pipeline_parallel;
 
+    // HISA (hierarchical indexed sparse attention)
+    bool    hisa_enabled;
+    int32_t hisa_block_size;
+    int32_t hisa_top_m;
+    int32_t hisa_budget;
+    int32_t hisa_min_tokens;
+
     enum llama_pooling_type pooling_type;
 
     ggml_backend_sched_eval_callback cb_eval;

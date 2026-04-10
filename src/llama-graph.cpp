@@ -1871,9 +1871,12 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
     const int64_t n_head_kv = k->ne[1];
     const int64_t n_kv      = k->ne[2];
 
-    const uint32_t B = hparams.hisa_block_size;
+    // Resolve HISA params: cparams override hparams defaults
+    const uint32_t B = cparams.hisa_block_size > 0 ? cparams.hisa_block_size : hparams.hisa_block_size;
     const uint32_t n_blocks = n_kv / B;
-    const uint32_t m = hparams.hisa_top_m > 0 ? hparams.hisa_top_m : std::max(1u, n_blocks / 4);
+    const uint32_t m_resolved = cparams.hisa_top_m > 0 ? cparams.hisa_top_m : (hparams.hisa_top_m > 0 ? hparams.hisa_top_m : std::max(1u, n_blocks / 4));
+    const uint32_t budget = cparams.hisa_budget > 0 ? cparams.hisa_budget : hparams.hisa_budget;
+    const uint32_t m = m_resolved;
 
     GGML_ASSERT(n_kv % B == 0 && "KV length must be divisible by HISA block size");
     GGML_ASSERT(n_blocks > 0 && "Need at least one block for HISA");
@@ -1970,9 +1973,12 @@ ggml_tensor * llm_graph_context::build_attn_mha(
     ggml_tensor * cur;
 
     const bool use_flash_attn = cparams.flash_attn && kq_b == nullptr;
-    const bool use_hisa = hparams.hisa_enabled && use_flash_attn
-                          && k->ne[2] > (int64_t)hparams.hisa_min_tokens
-                          && k->ne[2] % hparams.hisa_block_size == 0;
+    const bool hisa_on = cparams.hisa_enabled || hparams.hisa_enabled;
+    const uint32_t hisa_bs = cparams.hisa_block_size > 0 ? cparams.hisa_block_size : hparams.hisa_block_size;
+    const uint32_t hisa_mt = cparams.hisa_min_tokens > 0 ? cparams.hisa_min_tokens : hparams.hisa_min_tokens;
+    const bool use_hisa = hisa_on && use_flash_attn
+                          && k->ne[2] > (int64_t)hisa_mt
+                          && k->ne[2] % hisa_bs == 0;
 
     if (use_hisa) {
         // HISA: hierarchical indexed sparse attention

@@ -457,6 +457,13 @@ struct common_params {
     enum llama_attention_type    attention_type    = LLAMA_ATTENTION_TYPE_UNSPECIFIED; // attention type for embeddings
     enum llama_flash_attn_type   flash_attn_type   = LLAMA_FLASH_ATTN_TYPE_AUTO; // whether to use Flash Attention
 
+    // HISA (hierarchical indexed sparse attention)
+    bool    hisa_enabled     = false; // enable HISA sparse attention
+    int32_t hisa_block_size  = 0;    // block size for coarse filtering (0 = use model default)
+    int32_t hisa_top_m       = 0;    // top-m blocks to select (0 = auto)
+    int32_t hisa_budget      = 0;    // final token budget (0 = use model default)
+    int32_t hisa_min_tokens  = 0;    // activate only when n_kv > this (0 = use model default)
+
     struct common_params_sampling    sampling;
     struct common_params_speculative speculative;
     struct common_params_vocoder     vocoder;
