@@ -886,6 +886,17 @@ struct llm_graph_context {
                   float   kq_scale,
                     int   il) const;
 
+    // HISA (hierarchical indexed sparse attention)
+    ggml_tensor * build_hisa_sparse_attn(
+            ggml_tensor * q,
+            ggml_tensor * k,
+            ggml_tensor * v,
+            ggml_tensor * kq_mask,
+            ggml_tensor * sinks,
+            ggml_tensor * v_mla,
+                  float   kq_scale,
+                    int   il) const;
+
     llm_graph_input_attn_no_cache * build_attn_inp_no_cache() const;
 
     ggml_tensor * build_attn(
