@@ -577,6 +577,9 @@ extern "C" {
 
         GGML_OP_GLU,
 
+        GGML_OP_HISA_BLOCK_POOL,   // HISA: mean-pool K rows into blocks
+        GGML_OP_HISA_GATHER,       // HISA: gather rows by index list
+
         GGML_OP_COUNT,
     };
 
@@ -2359,6 +2362,23 @@ extern "C" {
            struct ggml_tensor  * v,
            struct ggml_tensor  * d,
            bool                  masked);
+
+    // HISA (hierarchical indexed sparse attention)
+    // Mean-pool rows of a tensor into blocks of size block_size
+    // Input:  a [n_embd_head_k, n_kv, n_head_kv, n_batch]
+    // Output: [n_embd_head_k, n_blocks, n_head_kv, n_batch]
+    GGML_API struct ggml_tensor * ggml_hisa_block_pool(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            int                   block_size);
+
+    // Gather rows from a tensor by flat index list
+    // Input:  a [d, n_kv, n_head_kv, n_batch], indices [n_selected, n_batch]
+    // Output: [d, n_selected, n_head_kv, n_batch]
+    GGML_API struct ggml_tensor * ggml_hisa_gather(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            struct ggml_tensor  * indices);
 
     GGML_API struct ggml_tensor * ggml_ssm_conv(
             struct ggml_context * ctx,

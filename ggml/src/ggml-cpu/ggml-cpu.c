@@ -2077,6 +2077,14 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
                 ggml_compute_forward_opt_step_sgd(params, tensor);
             }
             break;
+        case GGML_OP_HISA_BLOCK_POOL:
+            {
+                ggml_compute_forward_hisa_block_pool(params, tensor);
+            } break;
+        case GGML_OP_HISA_GATHER:
+            {
+                ggml_compute_forward_hisa_gather(params, tensor);
+            } break;
         case GGML_OP_NONE:
             {
                 // nop
@@ -2416,6 +2424,8 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_CROSS_ENTROPY_LOSS_BACK:
         case GGML_OP_OPT_STEP_ADAMW:
         case GGML_OP_OPT_STEP_SGD:
+        case GGML_OP_HISA_BLOCK_POOL:
+        case GGML_OP_HISA_GATHER:
             {
                 n_tasks = n_threads;
             } break;
@@ -2934,6 +2944,14 @@ struct ggml_cplan ggml_graph_plan(
                     {
                         const int64_t S_v = node->src[2]->ne[0];
                         cur = S_v * sizeof(float) * n_tasks;
+                    } break;
+                case GGML_OP_HISA_BLOCK_POOL:
+                    {
+                        // No extra work buffer needed
+                    } break;
+                case GGML_OP_HISA_GATHER:
+                    {
+                        // No extra work buffer needed
                     } break;
                 case GGML_OP_COUNT:
                     {

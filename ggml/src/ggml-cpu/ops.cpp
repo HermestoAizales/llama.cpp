@@ -11207,3 +11207,103 @@ void ggml_compute_forward_opt_step_sgd(const ggml_compute_params * params, ggml_
             }
     }
 }
+
+// ggml_compute_forward_hisa_block_pool
+
+void ggml_compute_forward_hisa_block_pool(struct ggml_compute_params * params, struct ggml_tensor * dst) {
+    const struct ggml_tensor * src = dst->src[0];
+    const int block_size = ggml_get_op_params_i32(dst, 0);
+
+    const int64_t d        = src->ne[0];
+    const int64_t n_kv     = src->ne[1];
+    const int64_t n_heads  = src->ne[2];
+    const int64_t n_batch  = src->ne[3];
+    const int64_t n_blocks = dst->ne[1];
+
+    GGML_ASSERT(n_kv == n_blocks * block_size);
+
+    if (params->ith != 0) {
+        return;
+    }
+
+    if (ggml_is_contiguous(src) && ggml_is_contiguous(dst)) {
+        // Fast path for contiguous tensors
+        const int64_t src_stride_kv  = src->nb[1] / ggml_type_size(src->type);
+        const int64_t dst_stride_kv  = dst->nb[1] / ggml_type_size(dst->type);
+        const int64_t src_stride_h   = src->nb[2] / ggml_type_size(src->type);
+        const int64_t dst_stride_h   = dst->nb[2] / ggml_type_size(dst->type);
+        const int64_t src_stride_b   = src->nb[3] / ggml_type_size(src->type);
+        const int64_t dst_stride_b   = dst->nb[3] / ggml_type_size(dst->type);
+
+        for (int64_t ib = 0; ib < n_batch; ib++) {
+            for (int64_t ih = 0; ih < n_heads; ih++) {
+                for (int64_t iblk = 0; iblk < n_blocks; iblk++) {
+                    // Mean-pool block_size rows
+                    const float * src_row = (const float *)((const char *)src->data
+                        + ib * src_stride_b * ggml_type_size(src->type)
+                        + ih * src_stride_h * ggml_type_size(src->type)
+                        + iblk * block_size * src_stride_kv * ggml_type_size(src->type));
+                    float * dst_row = (float *)((char *)dst->data
+                        + ib * dst_stride_b * ggml_type_size(dst->type)
+                        + ih * dst_stride_h * ggml_type_size(dst->type)
+                        + iblk * dst_stride_kv * ggml_type_size(dst->type));
+
+                    for (int64_t j = 0; j < d; j++) {
+                        float sum = 0.0f;
+                        for (int b = 0; b < block_size; b++) {
+                            sum += src_row[j + b * d];
+                        }
+                        dst_row[j] = sum / block_size;
+                    }
+                }
+            }
+        }
+    } else {
+        GGML_ABORT("hisa_block_pool: non-contiguous tensors not supported");
+    }
+}
+
+// ggml_compute_forward_hisa_gather
+
+void ggml_compute_forward_hisa_gather(struct ggml_compute_params * params, struct ggml_tensor * dst) {
+    const struct ggml_tensor * src     = dst->src[0];
+    const struct ggml_tensor * indices = dst->src[1];
+
+    const int64_t d         = src->ne[0];
+    const int64_t n_heads   = src->ne[2];
+    const int64_t n_batch   = src->ne[3];
+    const int64_t n_selected = indices->ne[0];
+
+    if (params->ith != 0) {
+        return;
+    }
+
+    GGML_ASSERT(indices->type == GGML_TYPE_I32);
+
+    const int32_t * idx_data = (const int32_t *)indices->data;
+    const int64_t idx_stride_batch = indices->nb[1] / sizeof(int32_t);
+
+    for (int64_t ib = 0; ib < n_batch; ib++) {
+        for (int64_t ih = 0; ih < n_heads; ih++) {
+            for (int64_t is = 0; is < n_selected; is++) {
+                const int32_t idx = idx_data[is + ib * (idx_stride_batch > 0 ? idx_stride_batch : n_selected)];
+                GGML_ASSERT(idx >= 0 && idx < src->ne[1]);
+
+                // Copy row idx from src to row is in dst
+                for (int64_t j = 0; j < d; j++) {
+                    const float * src_row = (const float *)((const char *)src->data
+                        + ib * src->nb[3]
+                        + ih * src->nb[2]
+                        + idx * src->nb[1]
+                        + j * ggml_type_size(src->type));
+                    float * dst_row = (float *)((char *)dst->data
+                        + ib * dst->nb[3]
+                        + ih * dst->nb[2]
+                        + is * dst->nb[1]
+                        + j * ggml_type_size(dst->type));
+                    *dst_row = *src_row;
+                }
+            }
+        }
+    }
+}
