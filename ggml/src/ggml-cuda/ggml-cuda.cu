@@ -2876,6 +2876,7 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
             break;
         case GGML_OP_HISA_BLOCK_POOL:
         case GGML_OP_HISA_GATHER:
+        case GGML_OP_HISA_BLOCK_GATHER:
             {
                 // TODO: implement CUDA kernels for HISA ops
                 fprintf(stderr, "HISA ops not yet implemented for CUDA\n");
@@ -5023,6 +5024,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
 #endif
         case GGML_OP_HISA_BLOCK_POOL:
         case GGML_OP_HISA_GATHER:
+        case GGML_OP_HISA_BLOCK_GATHER:
             return false; // TODO: implement CUDA support
         case GGML_OP_SUM_ROWS:
         case GGML_OP_MEAN:

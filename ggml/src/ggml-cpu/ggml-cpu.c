@@ -2085,6 +2085,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_hisa_gather(params, tensor);
             } break;
+        case GGML_OP_HISA_BLOCK_GATHER:
+            {
+                ggml_compute_forward_hisa_block_gather(params, tensor);
+            } break;
         case GGML_OP_NONE:
             {
                 // nop
@@ -2426,6 +2430,7 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_OPT_STEP_SGD:
         case GGML_OP_HISA_BLOCK_POOL:
         case GGML_OP_HISA_GATHER:
+        case GGML_OP_HISA_BLOCK_GATHER:
             {
                 n_tasks = n_threads;
             } break;
@@ -2950,6 +2955,10 @@ struct ggml_cplan ggml_graph_plan(
                         // No extra work buffer needed
                     } break;
                 case GGML_OP_HISA_GATHER:
+                    {
+                        // No extra work buffer needed
+                    } break;
+                case GGML_OP_HISA_BLOCK_GATHER:
                     {
                         // No extra work buffer needed
                     } break;

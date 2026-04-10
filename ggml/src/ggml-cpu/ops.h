@@ -114,6 +114,7 @@ void ggml_compute_forward_mul_mat(const struct ggml_compute_params * params, str
 void ggml_compute_forward_opt_step_sgd(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_hisa_block_pool(struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_hisa_gather(struct ggml_compute_params * params, struct ggml_tensor * dst);
+void ggml_compute_forward_hisa_block_gather(struct ggml_compute_params * params, struct ggml_tensor * dst);
 #ifdef __cplusplus
 }
 #endif

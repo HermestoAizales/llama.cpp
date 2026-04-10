@@ -1066,9 +1066,10 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
 
     "HISA_BLOCK_POOL",
     "HISA_GATHER",
+    "HISA_BLOCK_GATHER",
 };
 
-static_assert(GGML_OP_COUNT == 98, "GGML_OP_COUNT != 98");
+static_assert(GGML_OP_COUNT == 99, "GGML_OP_COUNT != 99");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1179,9 +1180,10 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
 
     "hisa_block_pool(a, block_size)",
     "hisa_gather(a, indices)",
+    "hisa_block_gather(a, block_indices, block_size)",
 };
 
-static_assert(GGML_OP_COUNT == 98, "GGML_OP_COUNT != 98");
+static_assert(GGML_OP_COUNT == 99, "GGML_OP_COUNT != 99");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -5307,6 +5309,31 @@ struct ggml_tensor * ggml_hisa_gather(
     result->op = GGML_OP_HISA_GATHER;
     result->src[0] = a;
     result->src[1] = indices;
+
+    return result;
+}
+
+// ggml_hisa_block_gather
+
+struct ggml_tensor * ggml_hisa_block_gather(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * a,
+        struct ggml_tensor  * block_indices,
+        int                   block_size) {
+    GGML_ASSERT(block_size > 0);
+    GGML_ASSERT(block_indices->type == GGML_TYPE_I32);
+
+    const int64_t m = block_indices->ne[0];
+    const int64_t n_selected = m * block_size;
+
+    struct ggml_tensor * result = ggml_new_tensor_4d(ctx, a->type,
+            a->ne[0], n_selected, a->ne[2], a->ne[3]);
+
+    result->op = GGML_OP_HISA_BLOCK_GATHER;
+    result->src[0] = a;
+    result->src[1] = block_indices;
+
+    ggml_set_op_params_i32(result, 0, block_size);
 
     return result;
 }

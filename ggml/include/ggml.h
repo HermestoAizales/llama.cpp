@@ -577,8 +577,9 @@ extern "C" {
 
         GGML_OP_GLU,
 
-        GGML_OP_HISA_BLOCK_POOL,   // HISA: mean-pool K rows into blocks
-        GGML_OP_HISA_GATHER,       // HISA: gather rows by index list
+        GGML_OP_HISA_BLOCK_POOL,    // HISA: mean-pool K rows into blocks
+        GGML_OP_HISA_GATHER,        // HISA: gather rows by index list
+        GGML_OP_HISA_BLOCK_GATHER,  // HISA: gather full blocks by block index list
 
         GGML_OP_COUNT,
     };
@@ -2379,6 +2380,15 @@ extern "C" {
             struct ggml_context * ctx,
             struct ggml_tensor  * a,
             struct ggml_tensor  * indices);
+
+    // Gather full blocks from K/V by block index list
+    // Input:  a [d, n_kv, n_head_kv, n_batch], block_indices [m, ...]
+    // Output: [d, m*block_size, n_head_kv, n_batch]
+    GGML_API struct ggml_tensor * ggml_hisa_block_gather(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            struct ggml_tensor  * block_indices,
+            int                   block_size);
 
     GGML_API struct ggml_tensor * ggml_ssm_conv(
             struct ggml_context * ctx,
