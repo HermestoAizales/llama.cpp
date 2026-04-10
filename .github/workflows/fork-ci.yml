@@ -1,0 +1,212 @@
+name: Fork CI
+
+# Minimal CI for the HermestoAizales/llama.cpp fork
+# Only builds the targets we actually need for testing:
+#   - Windows x64 CPU + CUDA 13.1 (primary dev machine)
+#   - macOS ARM64 (Mac mini M2)
+#   - Ubuntu ARM64 (Linux ARM testing)
+# The upstream build.yml (30+ jobs) and release.yml are overkill for our fork.
+
+on:
+  push:
+    branches: ["feature/*", "master"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CMAKE_ARGS: "-DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DGGML_RPC=ON"
+
+jobs:
+  # ──────────────────────────────────────────────
+  # macOS ARM64 (Metal)
+  # ──────────────────────────────────────────────
+  macOS-arm64:
+    runs-on: macos-14
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: fork-macos-arm64
+          evict-old-files: 1d
+
+      - name: Build
+        run: |
+          cmake -B build \
+            -DGGML_METAL_USE_BF16=ON \
+            -DGGML_METAL_EMBED_LIBRARY=ON \
+            -DCMAKE_INSTALL_RPATH='@loader_path' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release -j $(sysctl -n hw.logicalcpu)
+
+      - name: Pack artifacts
+        run: |
+          cp LICENSE ./build/bin/
+          tar -czvf llama-bin-macos-arm64.tar.gz -C ./build/bin .
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          path: llama-bin-macos-arm64.tar.gz
+          name: llama-bin-macos-arm64.tar.gz
+
+  # ──────────────────────────────────────────────
+  # Ubuntu ARM64
+  # ──────────────────────────────────────────────
+  ubuntu-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: fork-ubuntu-arm64
+          evict-old-files: 1d
+
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev gcc-14 g++-14
+
+      - name: Build
+        env:
+          CC: gcc-14
+          CXX: g++-14
+        run: |
+          cmake -B build \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_NATIVE=OFF \
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release -j $(nproc)
+
+      - name: Pack artifacts
+        run: |
+          cp LICENSE ./build/bin/
+          tar -czvf llama-bin-ubuntu-arm64.tar.gz -C ./build/bin .
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          path: llama-bin-ubuntu-arm64.tar.gz
+          name: llama-bin-ubuntu-arm64.tar.gz
+
+  # ──────────────────────────────────────────────
+  # Windows x64 CPU (builds EXEs)
+  # ──────────────────────────────────────────────
+  windows-cpu:
+    runs-on: windows-2025
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: fork-windows-cpu-x64
+          variant: ccache
+          evict-old-files: 1d
+
+      - name: Install Ninja
+        run: choco install ninja
+
+      - name: Build
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+          cmake -S . -B build -G "Ninja Multi-Config" ^
+            -D CMAKE_TOOLCHAIN_FILE=cmake/x64-windows-llvm.cmake ^
+            -DLLAMA_BUILD_BORINGSSL=ON ^
+            -DGGML_NATIVE=OFF ^
+            -DGGML_BACKEND_DL=ON ^
+            -DGGML_CPU_ALL_VARIANTS=ON ^
+            -DGGML_OPENMP=ON ^
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release
+
+      - name: Pack artifacts
+        run: |
+          7z a -snl llama-bin-win-cpu-x64.zip .\build\bin\Release\*
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          path: llama-bin-win-cpu-x64.zip
+          name: llama-bin-win-cpu-x64.zip
+
+  # ──────────────────────────────────────────────
+  # Windows x64 CUDA 13.1 (builds ggml-cuda.dll only)
+  # ──────────────────────────────────────────────
+  windows-cuda:
+    runs-on: windows-2022
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: fork-windows-cuda-13.1
+          variant: ccache
+          evict-old-files: 1d
+
+      - name: Install Cuda Toolkit
+        uses: ./.github/actions/windows-setup-cuda
+        with:
+          cuda_version: "13.1"
+
+      - name: Install Ninja
+        run: choco install ninja
+
+      - name: Build
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+          cmake -S . -B build -G "Ninja Multi-Config" ^
+            -DGGML_BACKEND_DL=ON ^
+            -DGGML_NATIVE=OFF ^
+            -DGGML_CPU=OFF ^
+            -DGGML_CUDA=ON ^
+            -DLLAMA_BUILD_BORINGSSL=ON ^
+            -DGGML_CUDA_CUB_3DOT2=ON
+          set /A NINJA_JOBS=%NUMBER_OF_PROCESSORS%-1
+          cmake --build build --config Release -j %NINJA_JOBS% --target ggml-cuda
+
+      - name: Pack artifacts
+        run: |
+          7z a -snl llama-bin-win-cuda-13.1-x64.zip .\build\bin\Release\ggml-cuda.dll
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          path: llama-bin-win-cuda-13.1-x64.zip
+          name: llama-bin-win-cuda-13.1-x64.zip
+
+      - name: Pack CUDA runtime
+        run: |
+          $dst='.\build\bin\cudart\'
+          robocopy "${{env.CUDA_PATH}}\bin" $dst cudart64_*.dll cublas64_*.dll cublasLt64_*.dll
+          robocopy "${{env.CUDA_PATH}}\lib" $dst cudart64_*.dll cublas64_*.dll cublasLt64_*.dll
+          robocopy "${{env.CUDA_PATH}}\bin\x64" $dst cudart64_*.dll cublas64_*.dll cublasLt64_*.dll
+          7z a cudart-llama-bin-win-cuda-13.1-x64.zip $dst\*
+
+      - name: Upload CUDA runtime
+        uses: actions/upload-artifact@v6
+        with:
+          path: cudart-llama-bin-win-cuda-13.1-x64.zip
+          name: cudart-llama-bin-win-cuda-13.1-x64.zip
