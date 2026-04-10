@@ -1864,12 +1864,11 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
     // k: [d, n_head_kv, n_kv, n_stream]
     // v: [d, n_head_kv, n_kv, n_stream]
 
-    const int64_t d         = q->ne[0];
-    const int64_t n_head    = q->ne[1];
-    const int64_t n_tokens  = q->ne[2];
-    const int64_t n_stream  = q->ne[3];
-    const int64_t n_head_kv = k->ne[1];
     const int64_t n_kv      = k->ne[2];
+
+    // Suppress unused parameter warnings (kq_mask and sinks are not yet used in MVP)
+    (void)kq_mask;
+    (void)sinks;
 
     // Resolve HISA params: cparams override hparams defaults
     const uint32_t B = cparams.hisa_block_size > 0 ? cparams.hisa_block_size : hparams.hisa_block_size;
