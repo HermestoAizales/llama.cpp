@@ -1135,4 +1135,75 @@ typedef struct {
     int64_t  np;
 } ggml_metal_kargs_opt_step_sgd;
 
+// HISA (Hierarchical Indexed Sparse Attention) kernels
+
+typedef struct {
+    int32_t  d;            // src ne[0]
+    int32_t  n_blocks;     // dst ne[1] = n_kv / block_size
+    int32_t  block_size;   // op_params[0]
+    uint64_t src_nb1;
+    uint64_t src_nb2;
+    uint64_t src_nb3;
+    uint64_t dst_nb1;
+    uint64_t dst_nb2;
+    uint64_t dst_nb3;
+} ggml_metal_kargs_hisa_block_pool;
+
+typedef struct {
+    int32_t  d;            // src ne[0]
+    int32_t  budget;       // indices ne[0]
+    int32_t  n_heads_kv;   // src ne[2]
+    int32_t  gqa_ratio;    // indices ne[2] / n_heads_kv
+    uint64_t src_nb1;
+    uint64_t src_nb2;
+    uint64_t src_nb3;
+    uint64_t dst_nb1;
+    uint64_t dst_nb2;
+    uint64_t dst_nb3;
+    uint64_t idx_nb0;
+    uint64_t idx_nb2;
+    uint64_t idx_nb3;
+} ggml_metal_kargs_hisa_gather;
+
+typedef struct {
+    int32_t  d;            // src ne[0]
+    int32_t  m;            // block_indices ne[0]
+    int32_t  block_size;   // op_params[0]
+    int32_t  n_heads_kv;   // src ne[2]
+    int32_t  gqa_ratio;    // block_indices ne[2] / n_heads_kv
+    uint64_t src_nb1;
+    uint64_t src_nb2;
+    uint64_t src_nb3;
+    uint64_t dst_nb1;
+    uint64_t dst_nb2;
+    uint64_t dst_nb3;
+    uint64_t idx_nb0;
+    uint64_t idx_nb2;
+    uint64_t idx_nb3;
+} ggml_metal_kargs_hisa_block_gather;
+
+typedef struct {
+    int32_t  block_size;   // op_params[0]
+    int32_t  n_kv;        // kq_mask ne[0]
+    int32_t  T;           // kq_mask ne[1]
+    int32_t  budget;       // top_budget_indices ne[0]
+    int32_t  S;           // kq_mask ne[3]
+    uint64_t mask_nb0;
+    uint64_t mask_nb1;
+    uint64_t mask_nb2;
+    uint64_t mask_nb3;
+    uint64_t dst_nb0;
+    uint64_t dst_nb1;
+    uint64_t dst_nb2;
+    uint64_t dst_nb3;
+    uint64_t topm_nb0;
+    uint64_t topm_nb1;
+    uint64_t topm_nb2;
+    uint64_t topm_nb3;
+    uint64_t topb_nb0;
+    uint64_t topb_nb1;
+    uint64_t topb_nb2;
+    uint64_t topb_nb3;
+} ggml_metal_kargs_hisa_gather_mask;
+
 #endif // GGML_METAL_IMPL

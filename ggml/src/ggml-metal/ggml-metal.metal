@@ -10547,3 +10547,229 @@ kernel void kernel_count_equal(
 typedef decltype(kernel_count_equal<int32_t>) kernel_count_equal_t;
 
 template [[host_name("kernel_count_equal_i32")]] kernel kernel_count_equal_t kernel_count_equal<int32_t>;
+
+// ============================================================================
+// HISA (Hierarchical Indexed Sparse Attention) kernels
+// ============================================================================
+
+// Kernel 1: hisa_block_pool_f32
+// Mean-pool B consecutive rows along dim 1 to produce block representations.
+// src: [d, n_kv, n_heads_kv, n_batch] F32
+// dst: [d, n_blocks, n_heads_kv, n_batch] F32  where n_blocks = n_kv / block_size
+kernel void kernel_hisa_block_pool_f32(
+        constant ggml_metal_kargs_hisa_block_pool & args,
+        device const char * src0,
+        device       char * dst,
+        uint3  tgpig[[threadgroup_position_in_grid]],
+        ushort tiitg[[thread_index_in_threadgroup]],
+        ushort3 ntg [[threads_per_threadgroup]]) {
+    // tgpig: (iblk, ih, ib)
+    const int32_t iblk = (int32_t)tgpig.x;
+    const int32_t ih   = (int32_t)tgpig.y;
+    const int32_t ib   = (int32_t)tgpig.z;
+
+    if (iblk >= args.n_blocks) {
+        return;
+    }
+
+    const int64_t src_row_base = (int64_t)iblk * args.block_size;
+    device const char * src_base = src0 + (int64_t)ib * args.src_nb3 + (int64_t)ih * args.src_nb2;
+    device       char * dst_base = dst  + (int64_t)ib * args.dst_nb3 + (int64_t)ih * args.dst_nb2;
+
+    // Each thread handles a subset of the d elements
+    for (int32_t j = (int32_t)tiitg; j < args.d; j += (int32_t)ntg.x) {
+        float sum = 0.0f;
+        for (int32_t b = 0; b < args.block_size; b++) {
+            device const float * src_ptr = (device const float *)(src_base + (src_row_base + b) * args.src_nb1 + j * sizeof(float));
+            sum += *src_ptr;
+        }
+        device float * dst_ptr = (device float *)(dst_base + (int64_t)iblk * args.dst_nb1 + j * sizeof(float));
+        *dst_ptr = sum / (float)args.block_size;
+    }
+}
+
+// Kernel 2: hisa_gather_f32 / hisa_gather_f16
+// Gather individual rows by index list (token-level refinement).
+// src:     [d, n_cand, n_heads_kv, n_batch]   F32
+// indices: [budget, n_tokens, n_head_q, n_batch] I32
+// dst:     [d, budget, n_heads_kv, n_batch]   F32 or F16
+// Uses first query token (dim[1]=0) for selection with GQA mapping.
+template<typename T>
+kernel void kernel_hisa_gather_f(
+        constant ggml_metal_kargs_hisa_gather & args,
+        device const char * src0,
+        device const char * src1,
+        device       char * dst,
+        uint3  tgpig[[threadgroup_position_in_grid]],
+        ushort tiitg[[thread_index_in_threadgroup]],
+        ushort3 ntg [[threads_per_threadgroup]]) {
+    // Linearize: each thread handles one (j, is) element
+    // tgpig.x encodes is (budget index), tgpig.y = ih, tgpig.z = ib
+    // tiitg loops over j (dimension d)
+    const int32_t is = (int32_t)tgpig.x;
+    const int32_t ih = (int32_t)tgpig.y;
+    const int32_t ib = (int32_t)tgpig.z;
+
+    if (is >= args.budget || ih >= args.n_heads_kv) {
+        return;
+    }
+
+    // GQA mapping
+    const int32_t ih_q = ih * args.gqa_ratio;
+
+    // Get index: indices[is, 0, ih_q, ib]
+    const int32_t idx = *((device const int32_t *)(src1
+        + (int64_t)is   * args.idx_nb0
+        + (int64_t)ih_q * args.idx_nb2
+        + (int64_t)ib   * args.idx_nb3));
+
+    for (int32_t j = (int32_t)tiitg; j < args.d; j += (int32_t)ntg.x) {
+        // Read src[j, idx, ih, ib]
+        const float val = *((device const float *)(src0
+            + (int64_t)ib   * args.src_nb3
+            + (int64_t)ih   * args.src_nb2
+            + (int64_t)idx  * args.src_nb1
+            + j * sizeof(float)));
+
+        // Write dst[j, is, ih, ib]
+        *((device T *)(dst
+            + (int64_t)ib * args.dst_nb3
+            + (int64_t)ih * args.dst_nb2
+            + (int64_t)is * args.dst_nb1
+            + j * sizeof(T))) = (T)val;
+    }
+}
+
+typedef decltype(kernel_hisa_gather_f<float>) hisa_gather_f_t;
+template [[host_name("kernel_hisa_gather_f32")]] kernel hisa_gather_f_t kernel_hisa_gather_f<float>;
+template [[host_name("kernel_hisa_gather_f16")]] kernel hisa_gather_f_t kernel_hisa_gather_f<half>;
+
+// Kernel 3: hisa_block_gather_f32 / hisa_block_gather_f16
+// Gather full blocks of B rows by block index list.
+// src:           [d, n_kv, n_heads_kv, n_batch]       F32
+// block_indices: [m, n_tokens, n_head_q, n_batch]      I32
+// dst:           [d, m*B, n_heads_kv, n_batch]         F32 or F16
+// Each index selects an entire block of block_size rows.
+template<typename T>
+kernel void kernel_hisa_block_gather_f(
+        constant ggml_metal_kargs_hisa_block_gather & args,
+        device const char * src0,
+        device const char * src1,
+        device       char * dst,
+        uint3  tgpig[[threadgroup_position_in_grid]],
+        ushort tiitg[[thread_index_in_threadgroup]],
+        ushort3 ntg [[threads_per_threadgroup]]) {
+    // tgpig.x = im (block selection index), tgpig.y = ih, tgpig.z = ib
+    // tiitg iterates over (j, b) flattened: total = d * block_size
+    const int32_t im = (int32_t)tgpig.x;
+    const int32_t ih = (int32_t)tgpig.y;
+    const int32_t ib = (int32_t)tgpig.z;
+
+    if (im >= args.m || ih >= args.n_heads_kv) {
+        return;
+    }
+
+    // GQA mapping
+    const int32_t ih_q = ih * args.gqa_ratio;
+
+    // Get block index: block_indices[im, 0, ih_q, ib]
+    const int32_t blk_idx = *((device const int32_t *)(src1
+        + (int64_t)im   * args.idx_nb0
+        + (int64_t)ih_q * args.idx_nb2
+        + (int64_t)ib   * args.idx_nb3));
+
+    // Each thread iterates over (j, b) pairs within this block
+    const int32_t total = args.d * args.block_size;
+    for (int32_t i = (int32_t)tiitg; i < total; i += (int32_t)ntg.x) {
+        int32_t tmp = i;
+        const int32_t j = tmp % args.d;
+        tmp /= args.d;
+        const int32_t b = tmp;  // within-block row index
+
+        const int32_t src_row = blk_idx * args.block_size + b;
+        const int64_t dst_row = (int64_t)im * args.block_size + b;
+
+        // Read src[j, src_row, ih, ib]
+        const float val = *((device const float *)(src0
+            + (int64_t)ib       * args.src_nb3
+            + (int64_t)ih       * args.src_nb2
+            + (int64_t)src_row  * args.src_nb1
+            + j * sizeof(float)));
+
+        // Write dst[j, dst_row, ih, ib]
+        *((device T *)(dst
+            + (int64_t)ib      * args.dst_nb3
+            + (int64_t)ih      * args.dst_nb2
+            + dst_row          * args.dst_nb1
+            + j * sizeof(T))) = (T)val;
+    }
+}
+
+typedef decltype(kernel_hisa_block_gather_f<float>) hisa_block_gather_f_t;
+template [[host_name("kernel_hisa_block_gather_f32")]] kernel hisa_block_gather_f_t kernel_hisa_block_gather_f<float>;
+template [[host_name("kernel_hisa_block_gather_f16")]] kernel hisa_block_gather_f_t kernel_hisa_block_gather_f<half>;
+
+// Kernel 4: hisa_gather_mask_f32 / hisa_gather_mask_f16
+// Two-level index mapping for mask gathering.
+// kq_mask:             [n_kv, T, 1, S]  (F16 or F32)
+// topm_indices:        [m, T, Hq, S]    (I32)
+// top_budget_indices:  [budget, T, Hq, S] (I32)
+// dst:                 [budget, T, 1, S] (same type as kq_mask)
+template<typename T>
+kernel void kernel_hisa_gather_mask_f(
+        constant ggml_metal_kargs_hisa_gather_mask & args,
+        device const char * src0,   // kq_mask
+        device const char * src1,   // topm_indices
+        device const char * src2,   // top_budget_indices
+        device       char * dst,
+        uint3  tgpig[[threadgroup_position_in_grid]],
+        ushort tiitg[[thread_index_in_threadgroup]],
+        ushort3 ntg [[threads_per_threadgroup]]) {
+    // Flatten 3D output: budget * T * S
+    // tgpig.x encodes the batch of elements, tgpig.y/z not used (1D grid)
+    // Each thread handles one output element
+    const int32_t idx = (int32_t)tgpig.x * (int32_t)ntg.x + (int32_t)tiitg;
+    const int32_t total = args.budget * args.T * args.S;
+
+    if (idx >= total) {
+        return;
+    }
+
+    // Decompose: idx -> (s, j, t)
+    int32_t s = idx / (args.budget * args.T);
+    int32_t remainder = idx - s * args.budget * args.T;
+    int32_t j = remainder / args.T;
+    int32_t t = remainder - j * args.T;
+
+    // Step 1: Read top_budget_indices[j, 0, 0, s]
+    const int32_t cand_idx = *((device const int32_t *)(src2
+        + (int64_t)j * args.topb_nb0
+        + (int64_t)s * args.topb_nb3));
+
+    // Step 2: Decompose into block ordinal and offset
+    const int32_t block_ord = cand_idx / args.block_size;
+    const int32_t block_off = cand_idx % args.block_size;
+
+    // Step 3: Read topm_indices[block_ord, 0, 0, s]
+    const int32_t block_idx = *((device const int32_t *)(src1
+        + (int64_t)block_ord * args.topm_nb0
+        + (int64_t)s         * args.topm_nb3));
+
+    // Step 4: Compute absolute KV position
+    const int32_t abs_pos = block_idx * args.block_size + block_off;
+
+    // Step 5: Copy mask value: kq_mask[abs_pos, t, 0, s] -> dst[j, t, 0, s]
+    const T val = *((device const T *)(src0
+        + (int64_t)s       * args.mask_nb3
+        + (int64_t)abs_pos * args.mask_nb0
+        + (int64_t)t       * args.mask_nb1));
+
+    *((device T *)(dst
+        + (int64_t)s * args.dst_nb3
+        + (int64_t)t * args.dst_nb1
+        + (int64_t)j * args.dst_nb0)) = val;
+}
+
+typedef decltype(kernel_hisa_gather_mask_f<float>) hisa_gather_mask_f_t;
+template [[host_name("kernel_hisa_gather_mask_f32")]] kernel hisa_gather_mask_f_t kernel_hisa_gather_mask_f<float>;
+template [[host_name("kernel_hisa_gather_mask_f16")]] kernel hisa_gather_mask_f_t kernel_hisa_gather_mask_f<half>;

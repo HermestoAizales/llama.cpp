@@ -1978,3 +1978,65 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_count_equal(ggml
 
     return res;
 }
+
+// HISA pipeline getters
+
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_hisa_block_pool(ggml_metal_library_t lib) {
+    char base[256];
+    char name[256];
+
+    snprintf(base, 256, "kernel_hisa_block_pool");
+    snprintf(name, 256, "%s", base);
+
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        res = ggml_metal_library_compile_pipeline(lib, base, name, nullptr);
+    }
+
+    return res;
+}
+
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_hisa_gather(ggml_metal_library_t lib, enum ggml_type tdst) {
+    char base[256];
+    char name[256];
+
+    snprintf(base, 256, "kernel_hisa_gather_%s", ggml_type_name(tdst));
+    snprintf(name, 256, "%s", base);
+
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        res = ggml_metal_library_compile_pipeline(lib, base, name, nullptr);
+    }
+
+    return res;
+}
+
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_hisa_block_gather(ggml_metal_library_t lib, enum ggml_type tdst) {
+    char base[256];
+    char name[256];
+
+    snprintf(base, 256, "kernel_hisa_block_gather_%s", ggml_type_name(tdst));
+    snprintf(name, 256, "%s", base);
+
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        res = ggml_metal_library_compile_pipeline(lib, base, name, nullptr);
+    }
+
+    return res;
+}
+
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_hisa_gather_mask(ggml_metal_library_t lib, enum ggml_type tsrc) {
+    char base[256];
+    char name[256];
+
+    snprintf(base, 256, "kernel_hisa_gather_mask_%s", ggml_type_name(tsrc));
+    snprintf(name, 256, "%s", base);
+
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        res = ggml_metal_library_compile_pipeline(lib, base, name, nullptr);
+    }
+
+    return res;
+}

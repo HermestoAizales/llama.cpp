@@ -468,6 +468,22 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
             {
                 n_fuse = ggml_metal_op_count_equal(ctx, idx);
             } break;
+        case GGML_OP_HISA_BLOCK_POOL:
+            {
+                n_fuse = ggml_metal_op_hisa_block_pool(ctx, idx);
+            } break;
+        case GGML_OP_HISA_GATHER:
+            {
+                n_fuse = ggml_metal_op_hisa_gather(ctx, idx);
+            } break;
+        case GGML_OP_HISA_BLOCK_GATHER:
+            {
+                n_fuse = ggml_metal_op_hisa_block_gather(ctx, idx);
+            } break;
+        case GGML_OP_HISA_GATHER_MASK:
+            {
+                n_fuse = ggml_metal_op_hisa_gather_mask(ctx, idx);
+            } break;
         default:
             {
                 GGML_LOG_ERROR("%s: error: node %3d, op = %8s not implemented\n", __func__, idx, ggml_op_name(node->op));
@@ -4532,6 +4548,234 @@ int ggml_metal_op_count_equal(ggml_metal_op_t ctx, int idx) {
         ggml_metal_encoder_set_threadgroup_memory_size(enc, smem, 0);
         ggml_metal_encoder_dispatch_threadgroups(enc, ne01, ne02, ne03, nth, 1, 1);
     }
+
+    return 1;
+}
+
+// HISA ops
+
+int ggml_metal_op_hisa_block_pool(ggml_metal_op_t ctx, int idx) {
+    ggml_tensor * op = ctx->node(idx);
+
+    ggml_metal_library_t lib = ctx->lib;
+    ggml_metal_encoder_t enc = ctx->enc;
+
+    const int32_t block_size = ggml_get_op_params_i32(op, 0);
+
+    GGML_TENSOR_LOCALS(int32_t,  ne0, op->src[0], ne);
+    GGML_TENSOR_LOCALS(uint64_t, nb0, op->src[0], nb);
+    GGML_TENSOR_LOCALS(int32_t,  ne,  op,         ne);
+    GGML_TENSOR_LOCALS(uint64_t, nb,  op,         nb);
+
+    const int32_t n_blocks = ne1; // dst ne[1] = n_kv / block_size
+
+    ggml_metal_kargs_hisa_block_pool args = {
+        /*.d           =*/ ne00,
+        /*.n_blocks    =*/ n_blocks,
+        /*.block_size  =*/ block_size,
+        /*.src_nb1     =*/ nb01,
+        /*.src_nb2     =*/ nb02,
+        /*.src_nb3     =*/ nb03,
+        /*.dst_nb1     =*/ nb1,
+        /*.dst_nb2     =*/ nb2,
+        /*.dst_nb3     =*/ nb3,
+    };
+
+    auto pipeline = ggml_metal_library_get_pipeline_hisa_block_pool(lib);
+
+    // Threadgroup: each group handles one (iblk, ih, ib) output block
+    // tiitg iterates over d elements
+    int nth = 32;
+    while (nth < (int)ne00 && nth < ggml_metal_pipeline_max_theads_per_threadgroup(pipeline)) {
+        nth *= 2;
+    }
+    nth = std::min(nth, ggml_metal_pipeline_max_theads_per_threadgroup(pipeline));
+
+    ggml_metal_encoder_set_pipeline(enc, pipeline);
+    ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
+    ggml_metal_encoder_set_buffer (enc, ggml_metal_get_buffer_id(op->src[0]), 1);
+    ggml_metal_encoder_set_buffer (enc, ggml_metal_get_buffer_id(op),          2);
+
+    ggml_metal_encoder_dispatch_threadgroups(enc, n_blocks, ne02, ne03, nth, 1, 1);
+
+    return 1;
+}
+
+int ggml_metal_op_hisa_gather(ggml_metal_op_t ctx, int idx) {
+    ggml_tensor * op = ctx->node(idx);
+
+    ggml_metal_library_t lib = ctx->lib;
+    ggml_metal_encoder_t enc = ctx->enc;
+
+    GGML_TENSOR_LOCALS(int32_t,  ne0, op->src[0], ne);
+    GGML_TENSOR_LOCALS(uint64_t, nb0, op->src[0], nb);
+    GGML_TENSOR_LOCALS(int32_t,  ne1, op->src[1], ne);
+    GGML_TENSOR_LOCALS(uint64_t, nb1, op->src[1], nb);
+    GGML_TENSOR_LOCALS(int32_t,  ne,  op,         ne);
+    GGML_TENSOR_LOCALS(uint64_t, nb,  op,         nb);
+
+    const int32_t budget    = ne1;       // dst ne[1] = indices ne[0]
+    const int32_t n_heads_kv = ne02;     // src ne[2]
+    const int32_t gqa_ratio  = ne12 / n_heads_kv; // indices ne[2] / n_heads_kv
+
+    ggml_metal_kargs_hisa_gather args = {
+        /*.d           =*/ ne00,
+        /*.budget      =*/ budget,
+        /*.n_heads_kv  =*/ n_heads_kv,
+        /*.gqa_ratio   =*/ gqa_ratio,
+        /*.src_nb1     =*/ nb01,
+        /*.src_nb2     =*/ nb02,
+        /*.src_nb3     =*/ nb03,
+        /*.dst_nb1     =*/ nb1,
+        /*.dst_nb2     =*/ nb2,
+        /*.dst_nb3     =*/ nb3,
+        /*.idx_nb0     =*/ nb10,
+        /*.idx_nb2     =*/ nb12,
+        /*.idx_nb3     =*/ nb13,
+    };
+
+    auto pipeline = ggml_metal_library_get_pipeline_hisa_gather(lib, op->type);
+
+    int nth = 32;
+    while (nth < (int)ne00 && nth < ggml_metal_pipeline_max_theads_per_threadgroup(pipeline)) {
+        nth *= 2;
+    }
+    nth = std::min(nth, ggml_metal_pipeline_max_theads_per_threadgroup(pipeline));
+
+    ggml_metal_encoder_set_pipeline(enc, pipeline);
+    ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
+    ggml_metal_encoder_set_buffer (enc, ggml_metal_get_buffer_id(op->src[0]), 1);
+    ggml_metal_encoder_set_buffer (enc, ggml_metal_get_buffer_id(op->src[1]), 2);
+    ggml_metal_encoder_set_buffer (enc, ggml_metal_get_buffer_id(op),          3);
+
+    ggml_metal_encoder_dispatch_threadgroups(enc, budget, n_heads_kv, ne03, nth, 1, 1);
+
+    return 1;
+}
+
+int ggml_metal_op_hisa_block_gather(ggml_metal_op_t ctx, int idx) {
+    ggml_tensor * op = ctx->node(idx);
+
+    ggml_metal_library_t lib = ctx->lib;
+    ggml_metal_encoder_t enc = ctx->enc;
+
+    const int32_t block_size = ggml_get_op_params_i32(op, 0);
+
+    GGML_TENSOR_LOCALS(int32_t,  ne0, op->src[0], ne);
+    GGML_TENSOR_LOCALS(uint64_t, nb0, op->src[0], nb);
+    GGML_TENSOR_LOCALS(int32_t,  ne1, op->src[1], ne);
+    GGML_TENSOR_LOCALS(uint64_t, nb1, op->src[1], nb);
+    GGML_TENSOR_LOCALS(int32_t,  ne,  op,         ne);
+    GGML_TENSOR_LOCALS(uint64_t, nb,  op,         nb);
+
+    const int32_t m          = ne10;        // block_indices ne[0]
+    const int32_t n_heads_kv = ne02;        // src ne[2]
+    const int32_t gqa_ratio  = ne12 / n_heads_kv;
+
+    ggml_metal_kargs_hisa_block_gather args = {
+        /*.d           =*/ ne00,
+        /*.m           =*/ m,
+        /*.block_size  =*/ block_size,
+        /*.n_heads_kv  =*/ n_heads_kv,
+        /*.gqa_ratio   =*/ gqa_ratio,
+        /*.src_nb1     =*/ nb01,
+        /*.src_nb2     =*/ nb02,
+        /*.src_nb3     =*/ nb03,
+        /*.dst_nb1     =*/ nb1,
+        /*.dst_nb2     =*/ nb2,
+        /*.dst_nb3     =*/ nb3,
+        /*.idx_nb0     =*/ nb10,
+        /*.idx_nb2     =*/ nb12,
+        /*.idx_nb3     =*/ nb13,
+    };
+
+    auto pipeline = ggml_metal_library_get_pipeline_hisa_block_gather(lib, op->type);
+
+    // Each thread iterates over d * block_size elements
+    const int32_t total_per_group = ne00 * block_size;
+    int nth = 32;
+    while (nth < total_per_group && nth < ggml_metal_pipeline_max_theads_per_threadgroup(pipeline)) {
+        nth *= 2;
+    }
+    nth = std::min(nth, ggml_metal_pipeline_max_theads_per_threadgroup(pipeline));
+
+    ggml_metal_encoder_set_pipeline(enc, pipeline);
+    ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
+    ggml_metal_encoder_set_buffer (enc, ggml_metal_get_buffer_id(op->src[0]), 1);
+    ggml_metal_encoder_set_buffer (enc, ggml_metal_get_buffer_id(op->src[1]), 2);
+    ggml_metal_encoder_set_buffer (enc, ggml_metal_get_buffer_id(op),          3);
+
+    ggml_metal_encoder_dispatch_threadgroups(enc, m, n_heads_kv, ne03, nth, 1, 1);
+
+    return 1;
+}
+
+int ggml_metal_op_hisa_gather_mask(ggml_metal_op_t ctx, int idx) {
+    ggml_tensor * op = ctx->node(idx);
+
+    ggml_metal_library_t lib = ctx->lib;
+    ggml_metal_encoder_t enc = ctx->enc;
+
+    const int32_t block_size = ggml_get_op_params_i32(op, 0);
+
+    GGML_TENSOR_LOCALS(int32_t,  ne0, op->src[0], ne);  // kq_mask
+    GGML_TENSOR_LOCALS(uint64_t, nb0, op->src[0], nb);
+    GGML_TENSOR_LOCALS(int32_t,  ne1, op->src[1], ne);  // topm_indices
+    GGML_TENSOR_LOCALS(uint64_t, nb1, op->src[1], nb);
+    GGML_TENSOR_LOCALS(int32_t,  ne2, op->src[2], ne);  // top_budget_indices
+    GGML_TENSOR_LOCALS(uint64_t, nb2, op->src[2], nb);
+    GGML_TENSOR_LOCALS(int32_t,  ne,  op,         ne);
+    GGML_TENSOR_LOCALS(uint64_t, nb,  op,         nb);
+
+    const int32_t budget = ne20;  // top_budget_indices ne[0]
+    const int32_t T      = ne01;  // kq_mask ne[1]
+    const int32_t S      = ne03;  // kq_mask ne[3] (n_stream)
+
+    ggml_metal_kargs_hisa_gather_mask args = {
+        /*.block_size  =*/ block_size,
+        /*.n_kv        =*/ ne00,     // kq_mask ne[0]
+        /*.T           =*/ T,
+        /*.budget      =*/ budget,
+        /*.S           =*/ S,
+        /*.mask_nb0    =*/ nb00,
+        /*.mask_nb1    =*/ nb01,
+        /*.mask_nb2    =*/ nb02,
+        /*.mask_nb3    =*/ nb03,
+        /*.dst_nb0     =*/ nb0,
+        /*.dst_nb1     =*/ nb1,
+        /*.dst_nb2     =*/ nb2,
+        /*.dst_nb3     =*/ nb3,
+        /*.topm_nb0    =*/ nb10,
+        /*.topm_nb1    =*/ nb11,
+        /*.topm_nb2    =*/ nb12,
+        /*.topm_nb3    =*/ nb13,
+        /*.topb_nb0    =*/ nb20,
+        /*.topb_nb1    =*/ nb21,
+        /*.topb_nb2    =*/ nb22,
+        /*.topb_nb3    =*/ nb23,
+    };
+
+    auto pipeline = ggml_metal_library_get_pipeline_hisa_gather_mask(lib, op->src[0]->type);
+
+    // Total output elements: budget * T * S
+    const int32_t total = budget * T * S;
+    int nth = 32;
+    while (nth < total && nth < ggml_metal_pipeline_max_theads_per_threadgroup(pipeline)) {
+        nth *= 2;
+    }
+    nth = std::min(nth, ggml_metal_pipeline_max_theads_per_threadgroup(pipeline));
+    nth = std::min(nth, total);
+
+    const int ngroups = (total + nth - 1) / nth;
+
+    ggml_metal_encoder_set_pipeline(enc, pipeline);
+    ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
+    ggml_metal_encoder_set_buffer (enc, ggml_metal_get_buffer_id(op->src[0]), 1);
+    ggml_metal_encoder_set_buffer (enc, ggml_metal_get_buffer_id(op->src[1]), 2);
+    ggml_metal_encoder_set_buffer (enc, ggml_metal_get_buffer_id(op->src[2]), 3);
+    ggml_metal_encoder_set_buffer (enc, ggml_metal_get_buffer_id(op),          4);
+
+    ggml_metal_encoder_dispatch_threadgroups(enc, ngroups, 1, 1, nth, 1, 1);
 
     return 1;
 }

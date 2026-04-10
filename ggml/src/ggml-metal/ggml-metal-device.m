@@ -1258,6 +1258,11 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
         case GGML_OP_OPT_STEP_ADAMW:
         case GGML_OP_OPT_STEP_SGD:
             return has_simdgroup_reduction;
+        case GGML_OP_HISA_BLOCK_POOL:
+        case GGML_OP_HISA_GATHER:
+        case GGML_OP_HISA_BLOCK_GATHER:
+        case GGML_OP_HISA_GATHER_MASK:
+            return true;
         default:
             return false;
     }
