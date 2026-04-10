@@ -182,9 +182,9 @@ jobs:
       - name: Pack CUDA runtime
         run: |
           $dst='.\build\bin\cudart\'
-          robocopy "${{env.CUDA_PATH}}\bin" $dst cudart64_*.dll cublas64_*.dll cublasLt64_*.dll
-          robocopy "${{env.CUDA_PATH}}\lib" $dst cudart64_*.dll cublas64_*.dll cublasLt64_*.dll
-          robocopy "${{env.CUDA_PATH}}\bin\x64" $dst cudart64_*.dll cublas64_*.dll cublasLt64_*.dll
+          robocopy "${{env.CUDA_PATH}}\bin" $dst cudart64_*.dll cublas64_*.dll cublasLt64_*.dll; if ($LASTEXITCODE -le 7) { $global:LASTEXITCODE = 0 }
+          robocopy "${{env.CUDA_PATH}}\lib" $dst cudart64_*.dll cublas64_*.dll cublasLt64_*.dll; if ($LASTEXITCODE -le 7) { $global:LASTEXITCODE = 0 }
+          robocopy "${{env.CUDA_PATH}}\bin\x64" $dst cudart64_*.dll cublas64_*.dll cublasLt64_*.dll; if ($LASTEXITCODE -le 7) { $global:LASTEXITCODE = 0 }
 
       - name: Upload CUDA runtime
         uses: actions/upload-artifact@v6
