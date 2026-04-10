@@ -2052,12 +2052,11 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 
         // Keep kq_mask in the forward graph so the allocator assigns it a buffer.
         // HISA doesn't pass kq_mask to flash_attn (uses nullptr), but the KV cache
-        // still needs to write to it via set_input_kq_mask. Without this reference,
-        // the graph allocator skips the tensor and set_input_kq_mask crashes.
-        // We add a no-op consumer (scale by 0 + reduce to scalar) to the forward graph.
-        // This forces the allocator to assign a buffer without affecting the output.
+        // still writes to it via set_input_kq_mask. Without a graph consumer,
+        // the allocator skips the tensor and set_input_kq_mask crashes.
+        // ggml_dup works with any tensor type (unlike ggml_scale which asserts F32).
         {
-            ggml_tensor * kq_mask_keep = ggml_scale(ctx0, kq_mask, 0.0f);
+            ggml_tensor * kq_mask_keep = ggml_dup(ctx0, kq_mask);
             ggml_build_forward_expand(gf, kq_mask_keep);
         }
 
