@@ -1868,14 +1868,7 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
 
     // Suppress unused parameter warning (sinks not yet used in MVP)
     (void)sinks;
-
-    // Register kq_mask in the graph so the allocator assigns it a buffer.
-    // HISA doesn't use kq_mask for flash_attn (passes nullptr), but the KV cache
-    // still needs to write to it via set_input_kq_mask. Without this reference,
-    // the graph allocator skips the tensor and it gets no buffer allocation.
-    // We use a no-op scale(1.0) to create a graph dependency without affecting values.
-    kq_mask = ggml_scale(ctx0, kq_mask, 1.0f);
-    cb(kq_mask, "hisa_kq_mask_ref", il);
+    (void)kq_mask;
 
     // Resolve HISA params: cparams override hparams defaults
     const uint32_t B = cparams.hisa_block_size > 0 ? cparams.hisa_block_size : hparams.hisa_block_size;
@@ -2056,6 +2049,18 @@ ggml_tensor * llm_graph_context::build_attn_mha(
     if (use_hisa) {
         // HISA: hierarchical indexed sparse attention
         // Note: HISA handles its own type casting and permutations internally
+
+        // Keep kq_mask in the forward graph so the allocator assigns it a buffer.
+        // HISA doesn't pass kq_mask to flash_attn (uses nullptr), but the KV cache
+        // still needs to write to it via set_input_kq_mask. Without this reference,
+        // the graph allocator skips the tensor and set_input_kq_mask crashes.
+        // We add a no-op consumer (scale by 0 + reduce to scalar) to the forward graph.
+        // This forces the allocator to assign a buffer without affecting the output.
+        {
+            ggml_tensor * kq_mask_keep = ggml_scale(ctx0, kq_mask, 0.0f);
+            ggml_build_forward_expand(gf, kq_mask_keep);
+        }
+
         if (k->type == GGML_TYPE_F32) {
             k = ggml_cast(ctx0, k, GGML_TYPE_F16);
         }
