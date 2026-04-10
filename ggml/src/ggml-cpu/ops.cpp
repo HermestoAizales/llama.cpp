@@ -11226,27 +11226,22 @@ void ggml_compute_forward_hisa_block_pool(struct ggml_compute_params * params, s
         return;
     }
 
-    if (ggml_is_contiguous(src) && ggml_is_contiguous(dst)) {
-        // Fast path for contiguous tensors
-        const int64_t src_stride_kv  = src->nb[1] / ggml_type_size(src->type);
-        const int64_t dst_stride_kv  = dst->nb[1] / ggml_type_size(dst->type);
-        const int64_t src_stride_h   = src->nb[2] / ggml_type_size(src->type);
-        const int64_t dst_stride_h   = dst->nb[2] / ggml_type_size(dst->type);
-        const int64_t src_stride_b   = src->nb[3] / ggml_type_size(src->type);
-        const int64_t dst_stride_b   = dst->nb[3] / ggml_type_size(dst->type);
+    GGML_ASSERT(src->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32);
 
+    if (ggml_is_contiguous(src) && ggml_is_contiguous(dst)) {
+        // Fast path for contiguous F32 tensors
         for (int64_t ib = 0; ib < n_batch; ib++) {
             for (int64_t ih = 0; ih < n_heads; ih++) {
                 for (int64_t iblk = 0; iblk < n_blocks; iblk++) {
                     // Mean-pool block_size rows
                     const float * src_row = (const float *)((const char *)src->data
-                        + ib * src_stride_b * ggml_type_size(src->type)
-                        + ih * src_stride_h * ggml_type_size(src->type)
-                        + iblk * block_size * src_stride_kv * ggml_type_size(src->type));
+                        + ib * src->nb[3]
+                        + ih * src->nb[2]
+                        + iblk * block_size * src->nb[1]);
                     float * dst_row = (float *)((char *)dst->data
-                        + ib * dst_stride_b * ggml_type_size(dst->type)
-                        + ih * dst_stride_h * ggml_type_size(dst->type)
-                        + iblk * dst_stride_kv * ggml_type_size(dst->type));
+                        + ib * dst->nb[3]
+                        + ih * dst->nb[2]
+                        + iblk * dst->nb[1]);
 
                     for (int64_t j = 0; j < d; j++) {
                         float sum = 0.0f;
@@ -11278,30 +11273,35 @@ void ggml_compute_forward_hisa_gather(struct ggml_compute_params * params, struc
         return;
     }
 
+    GGML_ASSERT(src->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32);
     GGML_ASSERT(indices->type == GGML_TYPE_I32);
 
     const int32_t * idx_data = (const int32_t *)indices->data;
-    const int64_t idx_stride_batch = indices->nb[1] / sizeof(int32_t);
 
     for (int64_t ib = 0; ib < n_batch; ib++) {
         for (int64_t ih = 0; ih < n_heads; ih++) {
             for (int64_t is = 0; is < n_selected; is++) {
-                const int32_t idx = idx_data[is + ib * (idx_stride_batch > 0 ? idx_stride_batch : n_selected)];
+                // Use strides for correct multi-dim index access
+                const int64_t idx_offset = is * (indices->nb[0] / sizeof(int32_t))
+                                         + 0 * (indices->nb[1] / sizeof(int32_t))
+                                         + ih * (indices->nb[2] / sizeof(int32_t))
+                                         + ib * (indices->nb[3] / sizeof(int32_t));
+                const int32_t idx = idx_data[idx_offset];
                 GGML_ASSERT(idx >= 0 && idx < src->ne[1]);
 
                 // Copy row idx from src to row is in dst
                 for (int64_t j = 0; j < d; j++) {
-                    const float * src_row = (const float *)((const char *)src->data
+                    const float * src_ptr = (const float *)((const char *)src->data
                         + ib * src->nb[3]
                         + ih * src->nb[2]
                         + idx * src->nb[1]
-                        + j * ggml_type_size(src->type));
-                    float * dst_row = (float *)((char *)dst->data
+                        + j * sizeof(float));
+                    float * dst_ptr = (float *)((char *)dst->data
                         + ib * dst->nb[3]
                         + ih * dst->nb[2]
                         + is * dst->nb[1]
-                        + j * ggml_type_size(dst->type));
-                    *dst_row = *src_row;
+                        + j * sizeof(float));
+                    *dst_ptr = *src_ptr;
                 }
             }
         }
@@ -11317,10 +11317,10 @@ void ggml_compute_forward_hisa_block_gather(struct ggml_compute_params * params,
 
     const int64_t d          = src->ne[0];
     const int64_t n_kv       = src->ne[1];
-    const int64_t n_heads    = src->ne[2];
+    const int64_t n_heads_kv = src->ne[2];
     const int64_t n_batch    = src->ne[3];
-    const int64_t m          = block_indices->ne[0];
-    const int64_t n_selected = m * block_size;
+    const int64_t m          = block_indices->ne[0];  // number of selected blocks
+    const int64_t n_selected = m * block_size;         // total gathered tokens
 
     if (params->ith != 0) {
         return;
@@ -11329,15 +11329,36 @@ void ggml_compute_forward_hisa_block_gather(struct ggml_compute_params * params,
     GGML_ASSERT(block_indices->type == GGML_TYPE_I32);
     GGML_ASSERT(dst->ne[1] == n_selected);
 
+    // block_indices layout: [m, n_tokens, n_head_q, n_batch] from argsort_top_k
+    // src layout:           [d, n_kv, n_head_kv, n_batch]
+    // dst layout:           [d, m*B, n_head_kv, n_batch]
+    //
+    // For GQA: block_indices has n_head_q heads, src has n_head_kv heads.
+    // We select using the first Q-head per KV-head group (gqa_ratio = n_head_q / n_head_kv).
+    // For non-GQA: n_head_q == n_head_kv, direct 1:1 mapping.
+    // For simplicity: use block_indices[:, 0, ih_q, ib] where ih_q maps to KV-head ih.
+    //
+    // The n_tokens dimension in block_indices corresponds to different query positions.
+    // For block_gather we need a single block selection per (KV-head, batch),
+    // so we take the first query token's selection (offset 0 in dim 1).
+
     const int32_t * idx_data = (const int32_t *)block_indices->data;
 
+    // GQA mapping: which Q-head to use for each KV-head
+    const int64_t gqa_ratio = n_heads_kv > 0 ? block_indices->ne[2] / n_heads_kv : 1;
+
     for (int64_t ib = 0; ib < n_batch; ib++) {
-        for (int64_t ih = 0; ih < n_heads; ih++) {
+        for (int64_t ih = 0; ih < n_heads_kv; ih++) {
+            // Map KV-head to corresponding Q-head (first in the group)
+            const int64_t ih_q = ih * gqa_ratio;
+
             for (int64_t im = 0; im < m; im++) {
-                // For multi-dim block_indices, compute flat index
-                // block_indices layout: [m, n_tokens_or_1, n_head_or_1, n_batch_or_1]
-                // For the MVP, assume all heads/batch share the same block selection
-                const int64_t idx_offset = im;
+                // Index into block_indices: [m, n_tokens=0, ih_q, ib]
+                // Use strides for correct multi-dim access
+                const int64_t idx_offset = im * (block_indices->nb[0] / sizeof(int32_t))
+                                         + 0 * (block_indices->nb[1] / sizeof(int32_t))  // first query token
+                                         + ih_q * (block_indices->nb[2] / sizeof(int32_t))
+                                         + ib * (block_indices->nb[3] / sizeof(int32_t));
                 const int32_t blk_idx = idx_data[idx_offset];
                 GGML_ASSERT(blk_idx >= 0 && (int64_t)(blk_idx + 1) * block_size <= n_kv);
 
@@ -11346,17 +11367,18 @@ void ggml_compute_forward_hisa_block_gather(struct ggml_compute_params * params,
                     const int64_t dst_row = im * block_size + b;
 
                     // Copy row: src[:, src_row, ih, ib] -> dst[:, dst_row, ih, ib]
+                    // Both src and dst are F32 at this point (cast before block_gather)
                     for (int64_t j = 0; j < d; j++) {
                         const float * src_ptr = (const float *)((const char *)src->data
                             + ib * src->nb[3]
                             + ih * src->nb[2]
                             + src_row * src->nb[1]
-                            + j * ggml_type_size(src->type));
+                            + j * sizeof(float));
                         float * dst_ptr = (float *)((char *)dst->data
                             + ib * dst->nb[3]
                             + ih * dst->nb[2]
                             + dst_row * dst->nb[1]
-                            + j * ggml_type_size(dst->type));
+                            + j * sizeof(float));
                         *dst_ptr = *src_ptr;
                     }
                 }

@@ -1885,9 +1885,14 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
     ggml_tensor * k_bp = ggml_cont(ctx0, ggml_permute(ctx0, k, 0, 2, 1, 3));
     ggml_tensor * v_bp = ggml_cont(ctx0, ggml_permute(ctx0, v, 0, 2, 1, 3));
 
+    // Cast K, V to F32 for block_pool accuracy (they may be F16 from the caller)
+    // The HISA scoring + gather ops need F32; we cast back to F16 before flash_attn
+    ggml_tensor * k_f32 = ggml_cast(ctx0, k_bp, GGML_TYPE_F32);
+    ggml_tensor * v_f32 = ggml_cast(ctx0, v_bp, GGML_TYPE_F32);
+
     // Step 1: Block-level coarse filtering
-    // k_blocks: [d, n_blocks, n_head_kv, n_stream]
-    ggml_tensor * k_blocks = ggml_hisa_block_pool(ctx0, k_bp, B);
+    // k_blocks: [d, n_blocks, n_head_kv, n_stream] (F32)
+    ggml_tensor * k_blocks = ggml_hisa_block_pool(ctx0, k_f32, B);
     cb(k_blocks, "hisa_k_blocks", il);
 
     // Step 2: Score blocks against Q
@@ -1895,7 +1900,11 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
     // Q is [d, n_head, n_tokens, n_stream]
     // mul_mat(k_blocks_perm, q) = k_blocks^T * q -> [n_blocks, n_tokens, n_head, n_stream]
     ggml_tensor * k_blocks_perm = ggml_permute(ctx0, k_blocks, 0, 2, 1, 3);
-    ggml_tensor * block_scores = ggml_mul_mat(ctx0, k_blocks_perm, q);
+
+    // Cast Q to F32 for scoring accuracy (may be F16)
+    ggml_tensor * q_f32 = ggml_cast(ctx0, q, GGML_TYPE_F32);
+
+    ggml_tensor * block_scores = ggml_mul_mat(ctx0, k_blocks_perm, q_f32);
     cb(block_scores, "hisa_block_scores", il);
 
     // Apply scale
@@ -1909,10 +1918,10 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
     cb(topm_indices, "hisa_topm_indices", il);
 
     // Step 4: Gather candidate K and V from selected blocks
-    // k_cand: [d, m*B, n_head_kv, n_stream]
-    ggml_tensor * k_cand = ggml_hisa_block_gather(ctx0, k_bp, topm_indices, B);
+    // k_cand: [d, m*B, n_head_kv, n_stream] (F32)
+    ggml_tensor * k_cand = ggml_hisa_block_gather(ctx0, k_f32, topm_indices, B);
     cb(k_cand, "hisa_k_cand", il);
-    ggml_tensor * v_cand = ggml_hisa_block_gather(ctx0, v_bp, topm_indices, B);
+    ggml_tensor * v_cand = ggml_hisa_block_gather(ctx0, v_f32, topm_indices, B);
     cb(v_cand, "hisa_v_cand", il);
 
     // Step 5: Token-level refinement (TODO for MVP: skip, use all m*B tokens)
@@ -1921,6 +1930,10 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
     // Step 6: Permute gathered K, V back to [d, n_head_kv, m*B, n_stream] for flash_attn
     ggml_tensor * k_final = ggml_permute(ctx0, k_cand, 0, 2, 1, 3);
     ggml_tensor * v_final = ggml_permute(ctx0, v_cand, 0, 2, 1, 3);
+
+    // Cast back to F16 for flash_attn (which requires F16 K/V)
+    k_final = ggml_cast(ctx0, k_final, GGML_TYPE_F16);
+    v_final = ggml_cast(ctx0, v_final, GGML_TYPE_F16);
 
     // Step 7: Build compressed causal mask
     // For MVP: use NULL mask (all gathered prefix tokens are causally accessible from queries)
