@@ -580,6 +580,7 @@ extern "C" {
         GGML_OP_HISA_BLOCK_POOL,    // HISA: mean-pool K rows into blocks
         GGML_OP_HISA_GATHER,        // HISA: gather rows by index list
         GGML_OP_HISA_BLOCK_GATHER,  // HISA: gather full blocks by block index list
+        GGML_OP_HISA_GATHER_MASK,  // HISA: gather mask rows via two-level index mapping
 
         GGML_OP_COUNT,
     };
@@ -2388,6 +2389,17 @@ extern "C" {
             struct ggml_context * ctx,
             struct ggml_tensor  * a,
             struct ggml_tensor  * block_indices,
+            int                   block_size);
+
+    // Gather rows from kq_mask using the two-level HISA index mapping.
+    // Maps token-level indices back to absolute KV positions and gathers mask rows.
+    // Input:  kq_mask [n_kv, T, 1, S], topm_indices [m, T, Hq, S], top_budget_indices [budget, T, Hq, S]
+    // Output: [budget, T, 1, S] — compressed causal mask for flash_attn_ext
+    GGML_API struct ggml_tensor * ggml_hisa_gather_mask(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * kq_mask,
+            struct ggml_tensor  * topm_indices,
+            struct ggml_tensor  * top_budget_indices,
             int                   block_size);
 
     GGML_API struct ggml_tensor * ggml_ssm_conv(

@@ -1868,7 +1868,6 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
 
     // Suppress unused parameter warning (sinks not yet used in MVP)
     (void)sinks;
-    (void)kq_mask;
 
     // Resolve HISA params: cparams override hparams defaults
     const uint32_t B = cparams.hisa_block_size > 0 ? cparams.hisa_block_size : hparams.hisa_block_size;
@@ -1886,10 +1885,9 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
     ggml_tensor * k_bp = ggml_cont(ctx0, k);
     ggml_tensor * v_bp = ggml_cont(ctx0, v);
 
-    // Cast K, V to F32 for block_pool accuracy (they may be F16 from the caller)
-    // The HISA scoring + gather ops need F32; we cast back to F16 before flash_attn
+    // Cast K to F32 for block_pool accuracy (mean pooling needs F32 precision)
+    // V stays in its native type — we only need to cast the small gathered subset later
     ggml_tensor * k_f32 = ggml_cast(ctx0, k_bp, GGML_TYPE_F32);
-    ggml_tensor * v_f32 = ggml_cast(ctx0, v_bp, GGML_TYPE_F32);
 
     // Step 1: Block-level coarse filtering
     // k_blocks: [d, n_blocks, n_head_kv, n_stream] (F32)
@@ -1897,7 +1895,7 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
     cb(k_blocks, "hisa_k_blocks", il);
 
     // Step 2: Score blocks against Q
-    // k_blocks: [d, n_blocks, n_head_kv, n_stream]
+    // k_blocks: [d, n_blocks, n_head_kv, n_stream] (F32)
     // Q is [d, n_tokens, n_head, n_stream]
     // mul_mat handles GQA broadcasting: n_head % n_head_kv == 0
     // Result: [n_blocks, n_tokens, n_head, n_stream]
@@ -1915,14 +1913,16 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
     // Step 3: Select top-m blocks
     // block_scores: [n_blocks, n_tokens, n_head, n_stream]
     // topm_indices: [m, n_tokens, n_head, n_stream] (I32)
-    ggml_tensor * topm_indices = ggml_argsort_top_k(ctx0, block_scores, m);
+    // Use ggml_top_k (efficient partial sort O(n*k)) instead of ggml_argsort (full sort O(n*log(n)))
+    ggml_tensor * topm_indices = ggml_top_k(ctx0, block_scores, m);
     cb(topm_indices, "hisa_topm_indices", il);
 
     // Step 4: Gather candidate K and V from selected blocks
     // k_cand: [d, m*B, n_head_kv, n_stream] (F32)
     ggml_tensor * k_cand = ggml_hisa_block_gather(ctx0, k_f32, topm_indices, B);
     cb(k_cand, "hisa_k_cand", il);
-    ggml_tensor * v_cand = ggml_hisa_block_gather(ctx0, v_f32, topm_indices, B);
+    // V stays in native type (F16) — no cast needed, flash_attn accepts F16 directly
+    ggml_tensor * v_cand = ggml_hisa_block_gather(ctx0, v_bp, topm_indices, B);
     cb(v_cand, "hisa_v_cand", il);
 
     // Step 5: Token-level refinement — score individual tokens, select top-budget
@@ -1932,6 +1932,7 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
 
     ggml_tensor * k_final = nullptr;
     ggml_tensor * v_final = nullptr;
+    ggml_tensor * top_budget_indices = nullptr;
 
     if (budget > 0 && budget < n_cand) {
         // Step 5a: Score individual candidate tokens against Q
@@ -1944,7 +1945,7 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
         cb(token_scores, "hisa_token_scores", il);
 
         // Step 5b: Select top-budget tokens
-        ggml_tensor * top_budget_indices = ggml_argsort_top_k(ctx0, token_scores, budget);
+        top_budget_indices = ggml_top_k(ctx0, token_scores, budget);
         cb(top_budget_indices, "hisa_top_budget_indices", il);
 
         // Step 5c: Gather the top-budget K and V tokens
@@ -1965,32 +1966,36 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
     v_final = ggml_cast(ctx0, v_final, GGML_TYPE_F16);
 
     // Step 7: Build compressed causal mask
-    // The original kq_mask has shape [n_kv, n_tokens, n_head, n_stream] and encodes
-    // which KV tokens each query token can attend to. For HISA, we need a mask over
-    // only the gathered [m*B] KV tokens.
+    // The original kq_mask encodes which KV tokens each query token can attend to.
+    // For HISA, we need a mask over only the gathered KV tokens.
+    // We use the two-level index mapping: top_budget_indices -> topm_indices -> absolute KV position,
+    // then gather the corresponding mask rows.
     //
-    // Building this properly requires gathering rows from kq_mask by the same
-    // block indices, which is complicated because:
-    //   - block selection differs per head (GQA: per Q-head group)
-    //   - mask layout is FP16 [n_kv, n_tokens, n_head, n_stream]
-    //   - need a new ggml op or graph construction to gather mask rows
+    // During generation (n_tokens == 1), all KV tokens are causally accessible from the single
+    // query token, so the gathered mask is all-ones (no masking needed). We still build it
+    // for correctness in case the model uses non-causal patterns (e.g., packing).
     //
-    // MVP approach: pass NULL mask. This is correct when:
-    //   - All gathered tokens are from the KV cache (positions before current ubatch)
-    //   - The current ubatch tokens are the queries
-    //   Therefore all KV tokens are causally accessible from all query tokens.
-    //
-    // This holds for both prefill (many query tokens, KV from prompt) and
-    // generation (1 query token, KV from entire history). The only case where
-    // NULL mask would be wrong is if HISA gathered tokens from the current ubatch
-    // (same positions as queries), which cannot happen since the KV cache only
-    // contains past tokens at this point in the graph.
-    //
-    // Limitation: No causal masking between query tokens themselves during prefill.
-    // This is acceptable for MVP since HISA targets long-context scenarios where
-    // the prefix dominates and query-query causal constraints are handled separately
-    // by the standard attention path for the non-sparse portion.
+    // During prefill (n_tokens > 1), the mask is essential to enforce causal constraints
+    // between query tokens — especially important when HISA gathers tokens near the
+    // boundary of the current ubatch.
     ggml_tensor * mask_hisa = nullptr;
+    if (kq_mask != nullptr) {
+        if (budget > 0 && budget < n_cand) {
+            mask_hisa = ggml_hisa_gather_mask(ctx0, kq_mask, topm_indices, top_budget_indices, B);
+        } else {
+            // No token-level refinement: all candidate tokens are accessible from all
+            // query tokens during generation. During prefill, the causal mask is needed,
+            // but building it for the block-only path requires a different gather strategy.
+            // TODO: implement mask for block-only path if needed for non-causal models.
+            mask_hisa = nullptr;
+        }
+        if (mask_hisa != nullptr) {
+            // flash_attn_ext requires F16 contiguous mask
+            mask_hisa = ggml_cont(ctx0, mask_hisa);
+            mask_hisa = ggml_cast(ctx0, mask_hisa, GGML_TYPE_F16);
+        }
+        cb(mask_hisa, "hisa_mask_gathered", il);
+    }
 
     // Step 8: Run flash attention on the reduced K/V
     ggml_tensor * cur = ggml_flash_attn_ext(ctx0, q, k_final, v_final, mask_hisa, kq_scale,
@@ -2049,16 +2054,6 @@ ggml_tensor * llm_graph_context::build_attn_mha(
     if (use_hisa) {
         // HISA: hierarchical indexed sparse attention
         // Note: HISA handles its own type casting and permutations internally
-
-        // Keep kq_mask in the forward graph so the allocator assigns it a buffer.
-        // HISA doesn't pass kq_mask to flash_attn (uses nullptr), but the KV cache
-        // still writes to it via set_input_kq_mask. Without a graph consumer,
-        // the allocator skips the tensor and set_input_kq_mask crashes.
-        // ggml_dup works with any tensor type (unlike ggml_scale which asserts F32).
-        {
-            ggml_tensor * kq_mask_keep = ggml_dup(ctx0, kq_mask);
-            ggml_build_forward_expand(gf, kq_mask_keep);
-        }
 
         if (k->type == GGML_TYPE_F32) {
             k = ggml_cast(ctx0, k, GGML_TYPE_F16);

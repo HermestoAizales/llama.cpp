@@ -11391,3 +11391,101 @@ void ggml_compute_forward_hisa_block_gather(struct ggml_compute_params * params,
         }
     }
 }
+
+// ggml_compute_forward_hisa_gather_mask
+// Gather rows from kq_mask using the two-level HISA index mapping.
+// Maps top_budget_indices -> topm_indices -> absolute KV position, then copies mask rows.
+// kq_mask:         [n_kv, T, 1, S]  (F32 or F16)
+// topm_indices:    [m, T, Hq, S]    (I32)
+// top_budget_indices: [budget, T, Hq, S] (I32)
+// dst:             [budget, T, 1, S] (same type as kq_mask)
+
+void ggml_compute_forward_hisa_gather_mask(struct ggml_compute_params * params, struct ggml_tensor * dst) {
+    const struct ggml_tensor * kq_mask            = dst->src[0];
+    const struct ggml_tensor * topm_indices        = dst->src[1];
+    const struct ggml_tensor * top_budget_indices  = dst->src[2];
+    const int block_size = ggml_get_op_params_i32(dst, 0);
+
+    const int64_t n_kv    = kq_mask->ne[0];
+    const int64_t T       = kq_mask->ne[1];
+    const int64_t S       = kq_mask->ne[3];
+    const int64_t budget  = top_budget_indices->ne[0];
+
+    if (params->ith != 0) {
+        return;
+    }
+
+    GGML_ASSERT(topm_indices->type == GGML_TYPE_I32);
+    GGML_ASSERT(top_budget_indices->type == GGML_TYPE_I32);
+    GGML_ASSERT(dst->ne[0] == budget);
+    GGML_ASSERT(dst->ne[1] == T);
+    GGML_ASSERT(dst->ne[2] == 1);
+    GGML_ASSERT(dst->ne[3] == S);
+
+    const int32_t * topm_data  = (const int32_t *)topm_indices->data;
+    const int32_t * topb_data  = (const int32_t *)top_budget_indices->data;
+
+    const bool mask_f16 = (kq_mask->type == GGML_TYPE_F16);
+    GGML_ASSERT(!mask_f16 || dst->type == GGML_TYPE_F16);
+    GGML_ASSERT(mask_f16  || kq_mask->type == GGML_TYPE_F32);
+
+    // For each gathered position j, compute its absolute KV position
+    // using head 0, token 0 (consistent with block_gather and gather ops),
+    // then copy the full mask row (all T tokens) from kq_mask.
+    for (int64_t ib = 0; ib < S; ib++) {
+        for (int64_t j = 0; j < budget; j++) {
+            // Step 1: Read top_budget_indices[j, 0, 0, ib] (head 0, token 0)
+            const int64_t topb_offset = j  * (top_budget_indices->nb[0] / sizeof(int32_t))
+                                      + 0  * (top_budget_indices->nb[1] / sizeof(int32_t))
+                                      + 0  * (top_budget_indices->nb[2] / sizeof(int32_t))
+                                      + ib * (top_budget_indices->nb[3] / sizeof(int32_t));
+            const int32_t cand_idx = topb_data[topb_offset];
+
+            // Step 2: Decompose into block ordinal and offset
+            const int32_t block_ord = cand_idx / block_size;
+            const int32_t block_off = cand_idx % block_size;
+
+            // Step 3: Read topm_indices[block_ord, 0, 0, ib] to get absolute block index
+            const int64_t topm_offset = block_ord * (topm_indices->nb[0] / sizeof(int32_t))
+                                      + 0        * (topm_indices->nb[1] / sizeof(int32_t))
+                                      + 0        * (topm_indices->nb[2] / sizeof(int32_t))
+                                      + ib       * (topm_indices->nb[3] / sizeof(int32_t));
+            const int32_t block_idx = topm_data[topm_offset];
+
+            // Step 4: Compute absolute KV position
+            const int32_t abs_pos = block_idx * block_size + block_off;
+            GGML_ASSERT(abs_pos >= 0 && abs_pos < n_kv);
+
+            // Step 5: Copy mask row: kq_mask[abs_pos, :, 0, ib] -> dst[j, :, 0, ib]
+            if (mask_f16) {
+                for (int64_t t = 0; t < T; t++) {
+                    const ggml_fp16_t * src_ptr = (const ggml_fp16_t *)((const char *)kq_mask->data
+                        + ib * kq_mask->nb[3]
+                        + 0  * kq_mask->nb[2]
+                        + t  * kq_mask->nb[1]
+                        + abs_pos * kq_mask->nb[0]);
+                    ggml_fp16_t * dst_ptr = (ggml_fp16_t *)((char *)dst->data
+                        + ib * dst->nb[3]
+                        + 0  * dst->nb[2]
+                        + t  * dst->nb[1]
+                        + j  * dst->nb[0]);
+                    *dst_ptr = *src_ptr;
+                }
+            } else {
+                for (int64_t t = 0; t < T; t++) {
+                    const float * src_ptr = (const float *)((const char *)kq_mask->data
+                        + ib * kq_mask->nb[3]
+                        + 0  * kq_mask->nb[2]
+                        + t  * kq_mask->nb[1]
+                        + abs_pos * kq_mask->nb[0]);
+                    float * dst_ptr = (float *)((char *)dst->data
+                        + ib * dst->nb[3]
+                        + 0  * dst->nb[2]
+                        + t  * dst->nb[1]
+                        + j  * dst->nb[0]);
+                    *dst_ptr = *src_ptr;
+                }
+            }
+        }
+    }
+}

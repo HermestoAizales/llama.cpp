@@ -2884,6 +2884,9 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
         case GGML_OP_HISA_BLOCK_GATHER:
             ggml_cuda_op_hisa_block_gather(ctx, dst);
             break;
+        case GGML_OP_HISA_GATHER_MASK:
+            ggml_cuda_op_hisa_gather_mask(ctx, dst);
+            break;
         default:
             return false;
     }
@@ -5027,6 +5030,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_HISA_BLOCK_POOL:
         case GGML_OP_HISA_GATHER:
         case GGML_OP_HISA_BLOCK_GATHER:
+        case GGML_OP_HISA_GATHER_MASK:
             return true;
         case GGML_OP_SUM_ROWS:
         case GGML_OP_MEAN:

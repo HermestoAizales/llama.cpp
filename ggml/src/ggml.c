@@ -1067,9 +1067,10 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "HISA_BLOCK_POOL",
     "HISA_GATHER",
     "HISA_BLOCK_GATHER",
+    "HISA_GATHER_MASK",
 };
 
-static_assert(GGML_OP_COUNT == 99, "GGML_OP_COUNT != 99");
+static_assert(GGML_OP_COUNT == 100, "GGML_OP_COUNT != 100");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1181,9 +1182,10 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "hisa_block_pool(a, block_size)",
     "hisa_gather(a, indices)",
     "hisa_block_gather(a, block_indices, block_size)",
+    "hisa_gather_mask(kq_mask, topm_indices, top_budget_indices, block_size)",
 };
 
-static_assert(GGML_OP_COUNT == 99, "GGML_OP_COUNT != 99");
+static_assert(GGML_OP_COUNT == 100, "GGML_OP_COUNT != 100");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -5332,6 +5334,37 @@ struct ggml_tensor * ggml_hisa_block_gather(
     result->op = GGML_OP_HISA_BLOCK_GATHER;
     result->src[0] = a;
     result->src[1] = block_indices;
+
+    ggml_set_op_params_i32(result, 0, block_size);
+
+    return result;
+}
+
+// ggml_hisa_gather_mask
+
+struct ggml_tensor * ggml_hisa_gather_mask(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * kq_mask,
+        struct ggml_tensor  * topm_indices,
+        struct ggml_tensor  * top_budget_indices,
+        int                   block_size) {
+    GGML_ASSERT(block_size > 0);
+    GGML_ASSERT(topm_indices->type == GGML_TYPE_I32);
+    GGML_ASSERT(top_budget_indices->type == GGML_TYPE_I32);
+    GGML_ASSERT(kq_mask->ne[2] == 1);  // mask must be shared across heads for flash_attn
+
+    const int64_t budget = top_budget_indices->ne[0];
+    const int64_t T      = kq_mask->ne[1];        // n_tokens (per stream)
+    const int64_t S      = kq_mask->ne[3];        // n_stream
+
+    // Output shape: [budget, T, 1, S] — compatible with flash_attn_ext mask
+    struct ggml_tensor * result = ggml_new_tensor_4d(ctx, kq_mask->type,
+            budget, T, 1, S);
+
+    result->op = GGML_OP_HISA_GATHER_MASK;
+    result->src[0] = kq_mask;
+    result->src[1] = topm_indices;
+    result->src[2] = top_budget_indices;
 
     ggml_set_op_params_i32(result, 0, block_size);
 

@@ -304,3 +304,182 @@ void ggml_cuda_op_hisa_gather(ggml_backend_cuda_context & ctx, ggml_tensor * dst
             indices->nb[0], indices->nb[2], indices->nb[3]);
     }
 }
+
+// ============================================================
+// Kernel 4: hisa_gather_mask
+// Gather rows from kq_mask using the two-level HISA index mapping.
+// Maps top_budget_indices -> topm_indices -> absolute KV position,
+// then copies the corresponding mask rows.
+// kq_mask:             [n_kv, T, 1, S]  (F16, since flash_attn uses F16 mask)
+// topm_indices:        [m, T, Hq, S]    (I32)
+// top_budget_indices:  [budget, T, Hq, S](I32)
+// dst:                 [budget, T, 1, S] (F16)
+// Uses head 0, token 0 for index lookup (consistent with other HISA ops).
+// ============================================================
+
+static __global__ void hisa_gather_mask_f16(
+        const half * __restrict__ kq_mask,
+        const int32_t * __restrict__ topm_indices,
+        const int32_t * __restrict__ top_budget_indices,
+        half * __restrict__ dst,
+        const int block_size,
+        const int n_kv, const int T, const int budget, const int S,
+        const size_t mask_nb0, const size_t mask_nb1, const size_t mask_nb2, const size_t mask_nb3,
+        const size_t dst_nb0,  const size_t dst_nb1,  const size_t dst_nb2,  const size_t dst_nb3,
+        const size_t topm_nb0, const size_t topm_nb1, const size_t topm_nb2, const size_t topm_nb3,
+        const size_t topb_nb0, const size_t topb_nb1, const size_t topb_nb2, const size_t topb_nb3) {
+
+    // Each thread handles one output element: dst[j, t, 0, s]
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = budget * T * S;
+    if (idx >= total) return;
+
+    // Decompose linear index into (j, t, s)
+    int s = idx / (budget * T);
+    int remainder = idx - s * budget * T;
+    int j = remainder / T;
+    int t = remainder - j * T;
+
+    // Step 1: Read top_budget_indices[j, 0, 0, s] (head 0, token 0)
+    const int32_t cand_idx = *(const int32_t *)((const char *)top_budget_indices
+        + j  * topb_nb0
+        + 0  * topb_nb1
+        + 0  * topb_nb2
+        + s  * topb_nb3);
+
+    // Step 2: Decompose into block ordinal and offset
+    const int32_t block_ord = cand_idx / block_size;
+    const int32_t block_off = cand_idx % block_size;
+
+    // Step 3: Read topm_indices[block_ord, 0, 0, s] to get absolute block index
+    const int32_t block_idx = *(const int32_t *)((const char *)topm_indices
+        + block_ord * topm_nb0
+        + 0         * topm_nb1
+        + 0         * topm_nb2
+        + s         * topm_nb3);
+
+    // Step 4: Compute absolute KV position
+    const int32_t abs_pos = block_idx * block_size + block_off;
+
+    // Step 5: Copy mask value: kq_mask[abs_pos, t, 0, s] -> dst[j, t, 0, s]
+    const half * src_ptr = (const half *)((const char *)kq_mask
+        + s       * mask_nb3
+        + 0       * mask_nb2
+        + t       * mask_nb1
+        + abs_pos * mask_nb0);
+
+    half * dst_ptr = (half *)((char *)dst
+        + s * dst_nb3
+        + 0 * dst_nb2
+        + t * dst_nb1
+        + j * dst_nb0);
+
+    *dst_ptr = *src_ptr;
+}
+
+// F32 variant for CPU fallback / testing
+static __global__ void hisa_gather_mask_f32(
+        const float * __restrict__ kq_mask,
+        const int32_t * __restrict__ topm_indices,
+        const int32_t * __restrict__ top_budget_indices,
+        float * __restrict__ dst,
+        const int block_size,
+        const int n_kv, const int T, const int budget, const int S,
+        const size_t mask_nb0, const size_t mask_nb1, const size_t mask_nb2, const size_t mask_nb3,
+        const size_t dst_nb0,  const size_t dst_nb1,  const size_t dst_nb2,  const size_t dst_nb3,
+        const size_t topm_nb0, const size_t topm_nb1, const size_t topm_nb2, const size_t topm_nb3,
+        const size_t topb_nb0, const size_t topb_nb1, const size_t topb_nb2, const size_t topb_nb3) {
+
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = budget * T * S;
+    if (idx >= total) return;
+
+    int s = idx / (budget * T);
+    int remainder = idx - s * budget * T;
+    int j = remainder / T;
+    int t = remainder - j * T;
+
+    const int32_t cand_idx = *(const int32_t *)((const char *)top_budget_indices
+        + j  * topb_nb0
+        + 0  * topb_nb1
+        + 0  * topb_nb2
+        + s  * topb_nb3);
+
+    const int32_t block_ord = cand_idx / block_size;
+    const int32_t block_off = cand_idx % block_size;
+
+    const int32_t block_idx = *(const int32_t *)((const char *)topm_indices
+        + block_ord * topm_nb0
+        + 0         * topm_nb1
+        + 0         * topm_nb2
+        + s         * topm_nb3);
+
+    const int32_t abs_pos = block_idx * block_size + block_off;
+
+    const float * src_ptr = (const float *)((const char *)kq_mask
+        + s       * mask_nb3
+        + 0       * mask_nb2
+        + t       * mask_nb1
+        + abs_pos * mask_nb0);
+
+    float * dst_ptr = (float *)((char *)dst
+        + s * dst_nb3
+        + 0 * dst_nb2
+        + t * dst_nb1
+        + j * dst_nb0);
+
+    *dst_ptr = *src_ptr;
+}
+
+void ggml_cuda_op_hisa_gather_mask(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    const ggml_tensor * kq_mask            = dst->src[0];
+    const ggml_tensor * topm_indices        = dst->src[1];
+    const ggml_tensor * top_budget_indices  = dst->src[2];
+    const int block_size = ggml_get_op_params_i32(dst, 0);
+
+    const int64_t n_kv    = kq_mask->ne[0];
+    const int64_t T       = kq_mask->ne[1];
+    const int64_t budget  = top_budget_indices->ne[0];
+    const int64_t S       = kq_mask->ne[3];
+
+    cudaStream_t stream = ctx.stream();
+
+    const int64_t total = budget * T * S;
+    const int n_threads = 256;
+    const int n_blocks_cuda = (total + n_threads - 1) / n_threads;
+
+    if (total == 0) return;
+
+    if (kq_mask->type == GGML_TYPE_F16) {
+        GGML_ASSERT(dst->type == GGML_TYPE_F16);
+
+        hisa_gather_mask_f16<<<n_blocks_cuda, n_threads, 0, stream>>>(
+            (const half *)kq_mask->data,
+            (const int32_t *)topm_indices->data,
+            (const int32_t *)top_budget_indices->data,
+            (half *)dst->data,
+            block_size,
+            (int)n_kv, (int)T, (int)budget, (int)S,
+            kq_mask->nb[0], kq_mask->nb[1], kq_mask->nb[2], kq_mask->nb[3],
+            dst->nb[0],      dst->nb[1],      dst->nb[2],      dst->nb[3],
+            topm_indices->nb[0], topm_indices->nb[1], topm_indices->nb[2], topm_indices->nb[3],
+            top_budget_indices->nb[0], top_budget_indices->nb[1], top_budget_indices->nb[2], top_budget_indices->nb[3]
+        );
+    } else {
+        GGML_ASSERT(kq_mask->type == GGML_TYPE_F32);
+        GGML_ASSERT(dst->type == GGML_TYPE_F32);
+
+        hisa_gather_mask_f32<<<n_blocks_cuda, n_threads, 0, stream>>>(
+            (const float *)kq_mask->data,
+            (const int32_t *)topm_indices->data,
+            (const int32_t *)top_budget_indices->data,
+            (float *)dst->data,
+            block_size,
+            (int)n_kv, (int)T, (int)budget, (int)S,
+            kq_mask->nb[0], kq_mask->nb[1], kq_mask->nb[2], kq_mask->nb[3],
+            dst->nb[0],      dst->nb[1],      dst->nb[2],      dst->nb[3],
+            topm_indices->nb[0], topm_indices->nb[1], topm_indices->nb[2], topm_indices->nb[3],
+            top_budget_indices->nb[0], top_budget_indices->nb[1], top_budget_indices->nb[2], top_budget_indices->nb[3]
+        );
+    }
+}
