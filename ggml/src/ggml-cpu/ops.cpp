@@ -5546,6 +5546,9 @@ void ggml_compute_forward_clamp(
     const ggml_tensor * src0 = dst->src[0];
 
     switch (src0->type) {
+        case GGML_TYPE_TQ3_0:
+        case GGML_TYPE_TQ4_0:
+            break;
         case GGML_TYPE_F32:
             {
                 ggml_compute_forward_clamp_f32(params, dst);

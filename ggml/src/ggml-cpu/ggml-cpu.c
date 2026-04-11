@@ -1702,6 +1702,8 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
     }
 
     switch (tensor->op) {
+        case GGML_OP_TURBO_WHT:
+            break;
         case GGML_OP_DUP:
             {
                 ggml_compute_forward_dup(params, tensor);
