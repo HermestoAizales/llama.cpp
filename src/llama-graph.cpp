@@ -1906,6 +1906,12 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
     ggml_tensor * k_bp = ggml_cont(ctx0, k);
     ggml_tensor * v_bp = ggml_cont(ctx0, v);
 
+    // OPTIMIZATION: Pre-scale Q. 
+    // Since (K * Q) * scale == K * (Q * scale), we scale Q once here 
+    // to avoid multiple ggml_scale nodes after every MulMat.
+    ggml_tensor * q_scaled = ggml_scale(ctx0, q, kq_scale);
+    cb(q_scaled, "hisa_q_scaled", il);
+
     // Cast K to F16 for block_pool to reduce bandwidth and memory footprint.
     // Since k is already cast to F16 in build_attn_mha, we can use it directly.
     ggml_tensor * k_f16_pool = k_bp;
@@ -1917,11 +1923,9 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
 
     // Step 2: Score blocks against Q
     // Result: [n_blocks, n_tokens, n_head, n_stream]
-    // Integrated Scale: We use a combined operation to avoid a separate ggml_scale kernel
-    // Since ggml_mul_mat doesn't have a built-in scale, we use ggml_scale(ggml_mul_mat(...))
-    // But to reduce temporary allocations, we chain them.
-    ggml_tensor * block_scores = ggml_scale(ctx0, ggml_mul_mat(ctx0, k_blocks, q), kq_scale);
-    cb(block_scores, "hisa_block_scores_scaled", il);
+    // OPTIMIZATION: Use pre-scaled Q to avoid a separate ggml_scale node.
+    ggml_tensor * block_scores = ggml_mul_mat(ctx0, k_blocks, q_scaled);
+    cb(block_scores, "hisa_block_scores", il);
 
     // Step 3: Select top-m blocks
     // block_scores: [n_blocks, n_tokens, n_head, n_stream]
@@ -1955,11 +1959,8 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
         // k_cand: [d, n_cand, n_head_kv, n_stream]
         // Result scores: [n_cand, n_tokens, n_head, n_stream]
         
-        // OPTIMIZATION: We avoid ggml_scale by fusing the scale into the MulMat 
-        // if the backend supports it, or by using a specialized kernel.
-        // Since GGML mul_mat currently doesn't take a scale, we keep ggml_scale,
-        // but we ensure the tensors are optimally aligned for the backend.
-        ggml_tensor * token_scores = ggml_scale(ctx0, ggml_mul_mat(ctx0, k_cand, q), kq_scale);
+        // OPTIMIZATION: Use pre-scaled Q to avoid a separate ggml_scale node.
+        ggml_tensor * token_scores = ggml_mul_mat(ctx0, k_cand, q_scaled);
         cb(token_scores, "hisa_token_scores", il);
         
         // Step 5b: Select top-budget tokens
