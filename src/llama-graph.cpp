@@ -1906,13 +1906,9 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
     ggml_tensor * k_bp = ggml_cont(ctx0, k);
     ggml_tensor * v_bp = ggml_cont(ctx0, v);
 
-    // Prepare Q in F32 for scoring to maintain precision during MulMat
-    ggml_tensor * q_f32 = ggml_cast(ctx0, q, GGML_TYPE_F32);
-    cb(q_f32, "hisa_q_f32", il);
-
     // Cast K to F16 for block_pool to reduce bandwidth and memory footprint.
-    // F16 precision is sufficient for mean pooling in most cases.
-    ggml_tensor * k_f16_pool = ggml_cast(ctx0, k_bp, GGML_TYPE_F16);
+    // Since k is already cast to F16 in build_attn_mha, we can use it directly.
+    ggml_tensor * k_f16_pool = k_bp;
 
     // Step 1: Block-level coarse filtering
     // k_blocks: [d, n_blocks, n_head_kv, n_stream] (F16)
@@ -1924,7 +1920,7 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
     // Integrated Scale: We use a combined operation to avoid a separate ggml_scale kernel
     // Since ggml_mul_mat doesn't have a built-in scale, we use ggml_scale(ggml_mul_mat(...))
     // But to reduce temporary allocations, we chain them.
-    ggml_tensor * block_scores = ggml_scale(ctx0, ggml_mul_mat(ctx0, k_blocks, q_f32), kq_scale);
+    ggml_tensor * block_scores = ggml_scale(ctx0, ggml_mul_mat(ctx0, k_blocks, q), kq_scale);
     cb(block_scores, "hisa_block_scores_scaled", il);
 
     // Step 3: Select top-m blocks
@@ -1963,7 +1959,7 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
         // if the backend supports it, or by using a specialized kernel.
         // Since GGML mul_mat currently doesn't take a scale, we keep ggml_scale,
         // but we ensure the tensors are optimally aligned for the backend.
-        ggml_tensor * token_scores = ggml_scale(ctx0, ggml_mul_mat(ctx0, k_cand, q_f32), kq_scale);
+        ggml_tensor * token_scores = ggml_scale(ctx0, ggml_mul_mat(ctx0, k_cand, q), kq_scale);
         cb(token_scores, "hisa_token_scores", il);
         
         // Step 5b: Select top-budget tokens
