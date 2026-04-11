@@ -9,7 +9,6 @@
 #pragma once
 
 #include "common.cuh"
-#include "turbo-innerq.cuh"
 #include <cstdlib>
 #include <cmath>
 
@@ -142,7 +141,8 @@ static __device__ __forceinline__ void turbo_rotate_forward_64(float * x) {
 // Equalizes K channel variances before WHT rotation to reduce quantization error.
 // Enabled via TURBO_INNERQ=N env var (N = calibration token count).
 // Math: <Q/s, s*K> = <Q, K> preserves dot products.
-// INNERQ_MAX_CHANNELS is defined in turbo-innerq.cuh
+// INNERQ_MAX_CHANNELS is defined as 128 for standard groups
+#define INNERQ_MAX_CHANNELS 128
 
 static __device__ float d_innerq_scale[INNERQ_MAX_CHANNELS];
 static __device__ float d_innerq_scale_inv[INNERQ_MAX_CHANNELS];
