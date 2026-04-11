@@ -8,20 +8,9 @@ name: Fork CI
 # The upstream build.yml (30+ jobs) and release.yml are overkill for our fork.
 
 on:
+  push:
+    branches: ["feature/hisa"]
   workflow_dispatch:
-    inputs:
-      build_mac:
-        description: 'Build macOS ARM64'
-        type: boolean
-        default: false
-      build_win:
-        description: 'Build Windows CUDA/CPU'
-        type: boolean
-        default: false
-      build_linux:
-        description: 'Build Ubuntu ARM64'
-        type: boolean
-        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
