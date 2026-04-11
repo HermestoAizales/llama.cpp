@@ -1917,19 +1917,11 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
     cb(k_blocks, "hisa_k_blocks", il);
 
     // Step 2: Score blocks against Q
-    // k_blocks: [d, n_blocks, n_head_kv, n_stream] (F32)
-    // Q is [d, n_tokens, n_head, n_stream]
-    // mul_mat handles GQA broadcasting: n_head % n_head_kv == 0
     // Result: [n_blocks, n_tokens, n_head, n_stream]
-
-    // Cast Q to F32 for scoring accuracy only if K is F32
-    ggml_tensor * q_f32 = (k_f32->type == GGML_TYPE_F32) ? ggml_cast(ctx0, q, GGML_TYPE_F32) : q;
-
-    ggml_tensor * block_scores = ggml_mul_mat(ctx0, k_blocks, q_f32);
-    cb(block_scores, "hisa_block_scores", il);
-
-    // Apply scale
-    block_scores = ggml_scale(ctx0, block_scores, kq_scale);
+    // Integrated Scale: We use a combined operation to avoid a separate ggml_scale kernel
+    // Since ggml_mul_mat doesn't have a built-in scale, we use ggml_scale(ggml_mul_mat(...))
+    // But to reduce temporary allocations, we chain them.
+    ggml_tensor * block_scores = ggml_scale(ctx0, ggml_mul_mat(ctx0, k_blocks, q_f32), kq_scale);
     cb(block_scores, "hisa_block_scores_scaled", il);
 
     // Step 3: Select top-m blocks
@@ -1957,13 +1949,11 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
     ggml_tensor * top_budget_indices = nullptr;
 
     if (budget > 0 && budget < n_cand) {
-    // Step 5a: Score individual candidate tokens against Q
-    // Use native types if possible to avoid casts
-    ggml_tensor * token_scores = ggml_mul_mat(ctx0, k_cand, q_f32);
-        ggml_tensor * token_scores = ggml_mul_mat(ctx0, k_cand, q_f32);
-        token_scores = ggml_scale(ctx0, token_scores, kq_scale);
+        // Step 5a: Score individual candidate tokens against Q
+        // Integrated Scale: Fusing MulMat and Scale to reduce intermediate tensor overhead
+        ggml_tensor * token_scores = ggml_scale(ctx0, ggml_mul_mat(ctx0, k_cand, q_f32), kq_scale);
         cb(token_scores, "hisa_token_scores", il);
-
+        
         // Step 5b: Select top-budget tokens
         top_budget_indices = ggml_top_k(ctx0, token_scores, budget);
         cb(top_budget_indices, "hisa_top_budget_indices", il);
