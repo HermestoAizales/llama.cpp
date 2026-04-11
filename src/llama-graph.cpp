@@ -1980,13 +1980,7 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
         // k_final/v_final: [d, m*B, n_head_kv, n_stream] — correct layout for flash_attn
     }
 
-    // Cast back to native type for flash_attn (which requires F16 K/V)
-    if (k_final->type != GGML_TYPE_F16) {
-        k_final = ggml_cast(ctx0, k_final, GGML_TYPE_F16);
-    }
-    if (v_final->type != GGML_TYPE_F16) {
-        v_final = ggml_cast(ctx0, v_final, GGML_TYPE_F16);
-    }
+    // Step 7: Build compressed causal mask
 
     // Step 7: Build compressed causal mask
     // The original kq_mask encodes which KV tokens each query token can attend to.
