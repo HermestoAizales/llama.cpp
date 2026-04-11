@@ -10552,11 +10552,12 @@ template [[host_name("kernel_count_equal_i32")]] kernel kernel_count_equal_t ker
 // HISA (Hierarchical Indexed Sparse Attention) kernels
 // ============================================================================
 
-// Kernel 1: hisa_block_pool_f32
+// Kernel 1: hisa_block_pool
 // Mean-pool B consecutive rows along dim 1 to produce block representations.
-// src: [d, n_kv, n_heads_kv, n_batch] F32
-// dst: [d, n_blocks, n_heads_kv, n_batch] F32  where n_blocks = n_kv / block_size
-kernel void kernel_hisa_block_pool_f32(
+// src: [d, n_kv, n_heads_kv, n_batch] T
+// dst: [d, n_blocks, n_heads_kv, n_batch] T  where n_blocks = n_kv / block_size
+template<typename T>
+kernel void kernel_hisa_block_pool_f(
         constant ggml_metal_kargs_hisa_block_pool & args,
         device const char * src0,
         device       char * dst,
@@ -10580,13 +10581,19 @@ kernel void kernel_hisa_block_pool_f32(
     for (int32_t j = (int32_t)tiitg; j < args.d; j += (int32_t)ntg.x) {
         float sum = 0.0f;
         for (int32_t b = 0; b < args.block_size; b++) {
-            device const float * src_ptr = (device const float *)(src_base + (src_row_base + b) * args.src_nb1 + j * sizeof(float));
-            sum += *src_ptr;
+            device const T * src_ptr = (device const T *)(src_base + (src_row_base + b) * args.src_nb1 + j * sizeof(T));
+            sum += (float)*src_ptr;
         }
-        device float * dst_ptr = (device float *)(dst_base + (int64_t)iblk * args.dst_nb1 + j * sizeof(float));
-        *dst_ptr = sum / (float)args.block_size;
+        device T * dst_ptr = (device T *)(dst_base + (int64_t)iblk * args.dst_nb1 + j * sizeof(T));
+        *dst_ptr = (T)(sum / (float)args.block_size);
     }
 }
+
+typedef decltype(kernel_hisa_block_pool_f<float>) hisa_block_pool_f32_t;
+template [[host_name("kernel_hisa_block_pool_f32")]] kernel hisa_block_pool_f32_t kernel_hisa_block_pool_f<float>;
+
+typedef decltype(kernel_hisa_block_pool_f<half>) hisa_block_pool_f16_t;
+template [[host_name("kernel_hisa_block_pool_f16")]] kernel hisa_block_pool_f16_t kernel_hisa_block_pool_f<half>;
 
 // Kernel 2: hisa_gather_f32 / hisa_gather_f16
 // Gather individual rows by index list (token-level refinement).

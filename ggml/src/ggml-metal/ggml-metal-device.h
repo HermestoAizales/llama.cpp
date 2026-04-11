@@ -199,7 +199,7 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_att
         int32_t nwg);
 
 // HISA pipeline getters
-struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_hisa_block_pool   (ggml_metal_library_t lib);
+struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_hisa_block_pool(ggml_metal_library_t lib, enum ggml_type type);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_hisa_gather       (ggml_metal_library_t lib, enum ggml_type tdst);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_hisa_block_gather (ggml_metal_library_t lib, enum ggml_type tdst);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_hisa_gather_mask  (ggml_metal_library_t lib, enum ggml_type tsrc);

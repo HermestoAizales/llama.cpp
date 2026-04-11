@@ -1981,11 +1981,14 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_count_equal(ggml
 
 // HISA pipeline getters
 
-ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_hisa_block_pool(ggml_metal_library_t lib) {
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_hisa_block_pool(ggml_metal_library_t lib, enum ggml_type type) {
     char base[256];
     char name[256];
-
-    snprintf(base, 256, "kernel_hisa_block_pool");
+    if (type == GGML_TYPE_F16) {
+        snprintf(base, 256, "kernel_hisa_block_pool_f16");
+    } else {
+        snprintf(base, 256, "kernel_hisa_block_pool_f32");
+    }
     snprintf(name, 256, "%s", base);
 
     ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);

@@ -4581,7 +4581,7 @@ int ggml_metal_op_hisa_block_pool(ggml_metal_op_t ctx, int idx) {
         /*.dst_nb3     =*/ nb3,
     };
 
-    auto pipeline = ggml_metal_library_get_pipeline_hisa_block_pool(lib);
+    auto pipeline = ggml_metal_library_get_pipeline_hisa_block_pool(lib, op->type);
 
     // Threadgroup: each group handles one (iblk, ih, ib) output block
     // tiitg iterates over d elements
