@@ -1919,7 +1919,8 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
 
     // Step 1: Block-level coarse filtering
     // k_blocks: [d, n_blocks, n_head_kv, n_stream] (F16)
-    ggml_tensor * k_blocks = ggml_hisa_block_pool(ctx0, k_f16_pool, B);
+    // DEBUG: Disable block_pool to isolate crash
+    ggml_tensor * k_blocks = k_f16_pool; // Fallback: use full K as blocks (will fail MulMat, but tests if block_pool is the crash cause)
     cb(k_blocks, "hisa_k_blocks", il);
 
     // Step 2: Score blocks against Q
