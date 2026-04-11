@@ -1906,9 +1906,10 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
     ggml_tensor * k_bp = ggml_cont(ctx0, k);
     ggml_tensor * v_bp = ggml_cont(ctx0, v);
 
-    // Cast K to F32 for block_pool accuracy (mean pooling needs F32 precision)
-    // V stays in its native type — we only need to cast the small gathered subset later
-    ggml_tensor * k_f32 = ggml_cast(ctx0, k_bp, GGML_TYPE_F32);
+    // Cast K to F32 only if necessary for block_pool accuracy
+    // If block size is small (B <= 64), F16 precision is usually sufficient for mean pooling.
+    // For larger B or specific models, F32 is safer. Defaulting to native type for now to reduce bandwidth.
+    ggml_tensor * k_f32 = (B > 64) ? ggml_cast(ctx0, k_bp, GGML_TYPE_F32) : k_bp;
 
     // Step 1: Block-level coarse filtering
     // k_blocks: [d, n_blocks, n_head_kv, n_stream] (F32)
@@ -1921,8 +1922,8 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
     // mul_mat handles GQA broadcasting: n_head % n_head_kv == 0
     // Result: [n_blocks, n_tokens, n_head, n_stream]
 
-    // Cast Q to F32 for scoring accuracy (may be F16)
-    ggml_tensor * q_f32 = ggml_cast(ctx0, q, GGML_TYPE_F32);
+    // Cast Q to F32 for scoring accuracy only if K is F32
+    ggml_tensor * q_f32 = (k_f32->type == GGML_TYPE_F32) ? ggml_cast(ctx0, q, GGML_TYPE_F32) : q;
 
     ggml_tensor * block_scores = ggml_mul_mat(ctx0, k_blocks, q_f32);
     cb(block_scores, "hisa_block_scores", il);
@@ -1956,11 +1957,9 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
     ggml_tensor * top_budget_indices = nullptr;
 
     if (budget > 0 && budget < n_cand) {
-        // Step 5a: Score individual candidate tokens against Q
-        // k_cand: [d, m*B, n_head_kv, n_stream] — same layout as standard K for flash_attn
-        // For mul_mat, we need [d, n_head_kv, m*B, n_stream] so Q's ne[2] broadcasts with k's ne[2]
-        // k_cand ne[2] = n_head_kv, q_f32 ne[2] = n_head, n_head % n_head_kv == 0 (GQA) ✓
-        // No permute needed — k_cand already has n_head_kv in ne[2]
+    // Step 5a: Score individual candidate tokens against Q
+    // Use native types if possible to avoid casts
+    ggml_tensor * token_scores = ggml_mul_mat(ctx0, k_cand, q_f32);
         ggml_tensor * token_scores = ggml_mul_mat(ctx0, k_cand, q_f32);
         token_scores = ggml_scale(ctx0, token_scores, kq_scale);
         cb(token_scores, "hisa_token_scores", il);
@@ -1982,9 +1981,13 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
         // k_final/v_final: [d, m*B, n_head_kv, n_stream] — correct layout for flash_attn
     }
 
-    // Cast back to F16 for flash_attn (which requires F16 K/V)
-    k_final = ggml_cast(ctx0, k_final, GGML_TYPE_F16);
-    v_final = ggml_cast(ctx0, v_final, GGML_TYPE_F16);
+    // Cast back to native type for flash_attn (which requires F16 K/V)
+    if (k_final->type != GGML_TYPE_F16) {
+        k_final = ggml_cast(ctx0, k_final, GGML_TYPE_F16);
+    }
+    if (v_final->type != GGML_TYPE_F16) {
+        v_final = ggml_cast(ctx0, v_final, GGML_TYPE_F16);
+    }
 
     // Step 7: Build compressed causal mask
     // The original kq_mask encodes which KV tokens each query token can attend to.
