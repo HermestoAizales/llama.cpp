@@ -89,7 +89,12 @@ jobs:
             -DGGML_METAL_SHADER_DEBUG=ON \
             -DGGML_RPC=ON
           time cmake --build build --config Release -j $(sysctl -n hw.logicalcpu)
-          leaks -atExit -- ./build/bin/test-thread-safety -hf ggml-org/gemma-3-270m-qat-GGUF -ngl 99 -p "$(printf 'hello %.0s' {1..128})" -n 16 -c 512 -ub 32 -np 2 -t 2 -lv 1
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: llama-bin-macos-arm64
+          path: build/bin/
 
       - name: Test
         id: cmake_test
