@@ -145,3 +145,5 @@ poetry.toml
 /.windsurf/
 # emscripten
 a.out.*
+macos_bin/
+macos_bin_new/
