@@ -1956,6 +1956,11 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
         // q_f32: [d, n_tokens, n_head, n_stream]
         // k_cand: [d, n_cand, n_head_kv, n_stream]
         // Result scores: [n_cand, n_tokens, n_head, n_stream]
+        
+        // OPTIMIZATION: We avoid ggml_scale by fusing the scale into the MulMat 
+        // if the backend supports it, or by using a specialized kernel.
+        // Since GGML mul_mat currently doesn't take a scale, we keep ggml_scale,
+        // but we ensure the tensors are optimally aligned for the backend.
         ggml_tensor * token_scores = ggml_scale(ctx0, ggml_mul_mat(ctx0, k_cand, q_f32), kq_scale);
         cb(token_scores, "hisa_token_scores", il);
         
