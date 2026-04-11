@@ -1871,14 +1871,35 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
 
     // Resolve HISA params: cparams override hparams defaults
     const uint32_t B = cparams.hisa_block_size > 0 ? cparams.hisa_block_size : hparams.hisa_block_size;
-    const uint32_t n_blocks = n_kv / B;
-    const uint32_t m_resolved = cparams.hisa_top_m > 0 ? cparams.hisa_top_m : (hparams.hisa_top_m > 0 ? hparams.hisa_top_m : std::max(1u, n_blocks / 4));
+    if (B == 0) {
+        LLAMA_LOG_ERROR("%s: HISA block size (B) is zero, HISA disabled\n", __func__);
+        return nullptr;
+    }
+
+    // HISA is only beneficial when we have enough KV tokens
+    const uint32_t m_resolved = cparams.hisa_top_m > 0 ? cparams.hisa_top_m : (hparams.hisa_top_m > 0 ? hparams.hisa_top_m : std::max(1u, 4u));
     const uint32_t budget = cparams.hisa_budget > 0 ? cparams.hisa_budget : hparams.hisa_budget;
-    const uint32_t m = m_resolved;
+
+    // Only activate HISA if we have enough KV tokens and divisible by block size
+    // If n_kv == 0 (during graph_reserve), HISA is effectively disabled
+    const uint32_t n_blocks = (n_kv > 0 && n_kv % B == 0) ? (uint32_t)(n_kv / B) : 0;
+    const uint32_t m = (n_blocks > 0) ? m_resolved : 0;
     const uint32_t n_cand = m * B; // total candidate tokens after block gather
 
-    GGML_ASSERT(n_kv % B == 0 && "KV length must be divisible by HISA block size");
-    GGML_ASSERT(n_blocks > 0 && "Need at least one block for HISA");
+    if (n_kv == 0) {
+        // Early exit during graph reservation when n_kv is not yet populated
+        return nullptr;
+    }
+
+    if (n_kv % B != 0) {
+        LLAMA_LOG_ERROR("%s: KV length (%ld) not divisible by HISA block size (%u), HISA disabled for this layer\n", __func__, n_kv, B);
+        return nullptr;
+    }
+
+    if (n_blocks == 0) {
+        LLAMA_LOG_ERROR("%s: No HISA blocks available (n_kv=%ld, B=%u), HISA disabled for this layer\n", __func__, n_kv, B);
+        return nullptr;
+    }
 
     // K, V are already permuted to [d, n_kv, n_head_kv, n_stream] by build_attn_mha
     // Ensure contiguous for downstream ops
@@ -2048,9 +2069,21 @@ ggml_tensor * llm_graph_context::build_attn_mha(
     const uint32_t hisa_mt = cparams.hisa_min_tokens > 0 ? cparams.hisa_min_tokens : hparams.hisa_min_tokens;
     // After permute(0,2,1,3), k->ne[1] = n_kv and k->ne[2] = n_head_kv
     const int64_t n_kv = k->ne[1];
-    const bool use_hisa = hisa_on && use_flash_attn
+    // HISA is only beneficial when we have enough KV tokens
+    bool use_hisa = hisa_on && use_flash_attn
                           && n_kv > (int64_t)hisa_mt
                           && n_kv % hisa_bs == 0;
+    if (!use_hisa && hisa_on) {
+        LLAMA_LOG_DEBUG("%s: HISA disabled for layer %d - use_hisa=%d, n_kv=%ld, hisa_mt=%u, hisa_bs=%u\n",
+                        __func__, il, use_hisa, n_kv, hisa_mt, hisa_bs);
+    }
+    if (use_hisa && n_kv == 0) {
+        // Safety check: ensure we don't attempt HISA with zero KV cache
+        // This can happen during graph_reserve when KV cache is not yet populated
+        LLAMA_LOG_DEBUG("%s: HISA disabled for layer %d - n_kv=0 (KV cache not yet populated), skipping\n",
+                        __func__, il);
+        use_hisa = false;
+    }
     if (use_hisa) {
         // HISA: hierarchical indexed sparse attention
         // Note: HISA handles its own type casting and permutations internally
