@@ -1075,7 +1075,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "TURBO_WHT",
 };
 
-static_assert(GGML_OP_COUNT == 100, "GGML_OP_COUNT != 100");
+static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1190,7 +1190,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "hisa_gather_mask(kq_mask, topm_indices, top_budget_indices, block_size)",
 };
 
-static_assert(GGML_OP_COUNT == 100, "GGML_OP_COUNT != 100");
+static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 

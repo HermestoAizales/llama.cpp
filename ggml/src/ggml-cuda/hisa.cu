@@ -3,8 +3,8 @@
 // ============================================================
 // Kernel 1: hisa_block_pool
 // Mean-pool B consecutive rows of K into one block representation.
-// src:  [d, n_kv, n_head_kv, n_batch]   (F32)
-// dst:  [d, n_blocks, n_head_kv, n_batch] (F32)
+// src:  [d, n_kv, n_head_kv, n_batch]
+// dst:  [d, n_blocks, n_head_kv, n_batch]
 // n_blocks = n_kv / B
 // ============================================================
 
@@ -18,7 +18,6 @@ static __global__ void hisa_block_pool_f32(
         const size_t src_nb1, const size_t src_nb2, const size_t src_nb3,
         const size_t dst_nb1, const size_t dst_nb2, const size_t dst_nb3) {
 
-    // Each block handles one output row: (iblk, ih, ib)
     const int64_t iblk = blockIdx.x;
     const int64_t ih   = blockIdx.y;
     const int64_t ib   = blockIdx.z;
@@ -31,7 +30,6 @@ static __global__ void hisa_block_pool_f32(
     const char * src_base = (const char *)src + ib * src_nb3 + ih * src_nb2;
     char * dst_base = (char *)dst + ib * dst_nb3 + ih * dst_nb2;
 
-    // Each thread handles a subset of the d elements
     for (int64_t j = threadIdx.x; j < d; j += blockDim.x) {
         float sum = 0.0f;
         for (int32_t b = 0; b < block_size; b++) {
@@ -40,6 +38,39 @@ static __global__ void hisa_block_pool_f32(
         }
         float * dst_ptr = (float *)(dst_base + iblk * dst_nb1 + j * sizeof(float));
         *dst_ptr = sum / (float)block_size;
+    }
+}
+
+static __global__ void hisa_block_pool_f16(
+        const half * __restrict__ src,
+        half * __restrict__ dst,
+        const int64_t d,
+        const int64_t n_kv,
+        const int64_t n_blocks,
+        const int32_t block_size,
+        const size_t src_nb1, const size_t src_nb2, const size_t src_nb3,
+        const size_t dst_nb1, const size_t dst_nb2, const size_t dst_nb3) {
+
+    const int64_t iblk = blockIdx.x;
+    const int64_t ih   = blockIdx.y;
+    const int64_t ib   = blockIdx.z;
+
+    if (iblk >= n_blocks || ib >= gridDim.z) {
+        return;
+    }
+
+    const int64_t src_row_base = iblk * block_size;
+    const char * src_base = (const char *)src + ib * src_nb3 + ih * src_nb2;
+    char * dst_base = (char *)dst + ib * dst_nb3 + ih * dst_nb2;
+
+    for (int64_t j = threadIdx.x; j < d; j += blockDim.x) {
+        float sum = 0.0f;
+        for (int32_t b = 0; b < block_size; b++) {
+            const half * src_ptr = (const half *)(src_base + (src_row_base + b) * src_nb1 + j * sizeof(half));
+            sum += __half2float(*src_ptr);
+        }
+        half * dst_ptr = (half *)(dst_base + iblk * dst_nb1 + j * sizeof(half));
+        *dst_ptr = __float2half(sum / (float)block_size);
     }
 }
 
@@ -77,9 +108,9 @@ void ggml_cuda_op_hisa_block_pool(ggml_backend_cuda_context & ctx, ggml_tensor *
 // ============================================================
 // Kernel 2: hisa_block_gather
 // Gather full blocks of B rows from K/V by block index list.
-// src:           [d, n_kv, n_head_kv, n_batch]        (F32)
+// src:           [d, n_kv, n_head_kv, n_batch]
 // block_indices: [m, n_tokens, n_head_q, n_batch]     (I32)
-// dst:           [d, m*B, n_head_kv, n_batch]         (F32)
+// dst:           [d, m*B, n_head_kv, n_batch]
 // Uses first query token (dim[1]=0) for selection.
 // GQA: ih_kv -> ih_q = ih_kv * (block_indices->ne[2] / n_heads_kv)
 // ============================================================
@@ -97,9 +128,6 @@ static __global__ void hisa_block_gather_f32(
         const size_t dst_nb1, const size_t dst_nb2, const size_t dst_nb3,
         const size_t idx_nb0, const size_t idx_nb2, const size_t idx_nb3) {
 
-    // Each thread copies one element.
-    // Total output elements = d * m * block_size * n_heads_kv * n_batch
-    // Linearize as: i = j + d * (b + block_size * (im + m * (ih + n_heads_kv * ib)))
     const int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
     const int64_t total = d * m * block_size;
 
@@ -107,15 +135,13 @@ static __global__ void hisa_block_gather_f32(
         return;
     }
 
-    // Decode i -> (j, b, im) where b is within-block row, im is block index
     int64_t tmp = i;
     const int64_t j  = tmp % d;
     tmp /= d;
     const int64_t b  = tmp % block_size;
     tmp /= block_size;
-    const int64_t im = tmp;  // block selection index in [0, m)
+    const int64_t im = tmp;
 
-    // ih and ib come from grid
     const int64_t ih = blockIdx.y;
     const int64_t ib = blockIdx.z;
 
@@ -123,12 +149,10 @@ static __global__ void hisa_block_gather_f32(
         return;
     }
 
-    // GQA mapping
     const int64_t ih_q = ih * gqa_ratio;
 
-    // Get block index from block_indices[im, 0, ih_q, ib]
     const int64_t idx_offset = im * idx_nb0
-                             + 0 * 0  // n_tokens dim = 0, stride is idx_nb1 but offset is 0
+                             + 0 * 0
                              + ih_q * idx_nb2
                              + ib * idx_nb3;
     const int32_t blk_idx = *(const int32_t *)((const char *)block_indices + idx_offset);
@@ -136,19 +160,77 @@ static __global__ void hisa_block_gather_f32(
     const int32_t src_row = blk_idx * block_size + (int32_t)b;
     const int64_t dst_row = im * block_size + b;
 
-    // Read src[j, src_row, ih, ib]
     const float * src_ptr = (const float *)((const char *)src
         + ib * src_nb3
         + ih * src_nb2
         + src_row * src_nb1
         + j * sizeof(float));
 
-    // Write dst[j, dst_row, ih, ib]
     float * dst_ptr = (float *)((char *)dst
         + ib * dst_nb3
         + ih * dst_nb2
         + dst_row * dst_nb1
         + j * sizeof(float));
+
+    *dst_ptr = *src_ptr;
+}
+
+static __global__ void hisa_block_gather_f16(
+        const half * __restrict__ src,
+        const int32_t * __restrict__ block_indices,
+        half * __restrict__ dst,
+        const int64_t d,
+        const int64_t m,
+        const int32_t block_size,
+        const int64_t n_heads_kv,
+        const int64_t gqa_ratio,
+        const size_t src_nb1, const size_t src_nb2, const size_t src_nb3,
+        const size_t dst_nb1, const size_t dst_nb2, const size_t dst_nb3,
+        const size_t idx_nb0, const size_t idx_nb2, const size_t idx_nb3) {
+
+    const int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    const int64_t total = d * m * block_size;
+
+    if (i >= total) {
+        return;
+    }
+
+    int64_t tmp = i;
+    const int64_t j  = tmp % d;
+    tmp /= d;
+    const int64_t b  = tmp % block_size;
+    tmp /= block_size;
+    const int64_t im = tmp;
+
+    const int64_t ih = blockIdx.y;
+    const int64_t ib = blockIdx.z;
+
+    if (ih >= n_heads_kv) {
+        return;
+    }
+
+    const int64_t ih_q = ih * gqa_ratio;
+
+    const int64_t idx_offset = im * idx_nb0
+                             + 0 * 0
+                             + ih_q * idx_nb2
+                             + ib * idx_nb3;
+    const int32_t blk_idx = *(const int32_t *)((const char *)block_indices + idx_offset);
+
+    const int32_t src_row = blk_idx * block_size + (int32_t)b;
+    const int64_t dst_row = im * block_size + b;
+
+    const half * src_ptr = (const half *)((const char *)src
+        + ib * src_nb3
+        + ih * src_nb2
+        + src_row * src_nb1
+        + j * sizeof(half));
+
+    half * dst_ptr = (half *)((char *)dst
+        + ib * dst_nb3
+        + ih * dst_nb2
+        + dst_row * dst_nb1
+        + j * sizeof(half));
 
     *dst_ptr = *src_ptr;
 }
@@ -198,9 +280,9 @@ void ggml_cuda_op_hisa_block_gather(ggml_backend_cuda_context & ctx, ggml_tensor
 // ============================================================
 // Kernel 3: hisa_gather
 // Gather individual rows from K/V by index list (token-level refinement).
-// src:     [d, n_cand, n_head_kv, n_batch]    (F32)
+// src:     [d, n_cand, n_head_kv, n_batch]
 // indices: [budget, n_tokens, n_head_q, n_batch] (I32)
-// dst:     [d, budget, n_head_kv, n_batch]    (F32)
+// dst:     [d, budget, n_head_kv, n_batch]
 // Uses first query token (dim[1]=0) for selection.
 // GQA: ih_kv -> ih_q = ih_kv * (indices->ne[2] / n_heads_kv)
 // ============================================================
@@ -217,8 +299,6 @@ static __global__ void hisa_gather_f32(
         const size_t dst_nb1, const size_t dst_nb2, const size_t dst_nb3,
         const size_t idx_nb0, const size_t idx_nb2, const size_t idx_nb3) {
 
-    // Each thread copies one element.
-    // Total per (ih, ib) = d * budget
     const int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
     const int64_t total = d * budget;
 
@@ -226,11 +306,9 @@ static __global__ void hisa_gather_f32(
         return;
     }
 
-    // Decode i -> (j, is)
     const int64_t j  = i % d;
     const int64_t is = i / d;
 
-    // ih and ib from grid
     const int64_t ih = blockIdx.y;
     const int64_t ib = blockIdx.z;
 
@@ -238,29 +316,77 @@ static __global__ void hisa_gather_f32(
         return;
     }
 
-    // GQA mapping
     const int64_t ih_q = ih * gqa_ratio;
 
-    // Get index: indices[is, 0, ih_q, ib]
     const int64_t idx_offset = is * idx_nb0
-                             + 0 * 0  // n_tokens dim = 0
+                             + 0 * 0
                              + ih_q * idx_nb2
                              + ib * idx_nb3;
     const int32_t idx = *(const int32_t *)((const char *)indices + idx_offset);
 
-    // Read src[j, idx, ih, ib]
     const float * src_ptr = (const float *)((const char *)src
         + ib * src_nb3
         + ih * src_nb2
         + idx * src_nb1
         + j * sizeof(float));
 
-    // Write dst[j, is, ih, ib]
     float * dst_ptr = (float *)((char *)dst
         + ib * dst_nb3
         + ih * dst_nb2
         + is * dst_nb1
         + j * sizeof(float));
+
+    *dst_ptr = *src_ptr;
+}
+
+static __global__ void hisa_gather_f16(
+        const half * __restrict__ src,
+        const int32_t * __restrict__ indices,
+        half * __restrict__ dst,
+        const int64_t d,
+        const int64_t budget,
+        const int64_t n_heads_kv,
+        const int64_t gqa_ratio,
+        const size_t src_nb1, const size_t src_nb2, const size_t src_nb3,
+        const size_t dst_nb1, const size_t dst_nb2, const size_t dst_nb3,
+        const size_t idx_nb0, const size_t idx_nb2, const size_t idx_nb3) {
+
+    const int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    const int64_t total = d * budget;
+
+    if (i >= total) {
+        return;
+    }
+
+    const int64_t j  = i % d;
+    const int64_t is = i / d;
+
+    const int64_t ih = blockIdx.y;
+    const int64_t ib = blockIdx.z;
+
+    if (ih >= n_heads_kv) {
+        return;
+    }
+
+    const int64_t ih_q = ih * gqa_ratio;
+
+    const int64_t idx_offset = is * idx_nb0
+                             + 0 * 0
+                             + ih_q * idx_nb2
+                             + ib * idx_nb3;
+    const int32_t idx = *(const int32_t *)((const char *)indices + idx_offset);
+
+    const half * src_ptr = (const half *)((const char *)src
+        + ib * src_nb3
+        + ih * src_nb2
+        + idx * src_nb1
+        + j * sizeof(half));
+
+    half * dst_ptr = (half *)((char *)dst
+        + ib * dst_nb3
+        + ih * dst_nb2
+        + is * dst_nb1
+        + j * sizeof(half));
 
     *dst_ptr = *src_ptr;
 }
