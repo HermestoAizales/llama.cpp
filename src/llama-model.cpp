@@ -493,7 +493,7 @@ static const std::map<llama_rope_scaling_type, const char *> LLAMA_ROPE_SCALING_
 };
 
 std::string llama_rope_scaling_type_name(llama_rope_scaling_type rope_scaling_type) {
-    return LLAMA_ROPE_SCALING_TYPES.count(rope_scaling_type) ? LLAMA_ROPE_SCALING_TYPES.at(rope_scaling_type) : "unknown";
+    return LLAMA_ROPE_SCALING_TYPES.at(rope_scaling_type);
 }
 
 static llama_rope_scaling_type llama_rope_scaling_type_from_string(const std::string & name) {
