@@ -1906,14 +1906,15 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
     ggml_tensor * k_bp = ggml_cont(ctx0, k);
     ggml_tensor * v_bp = ggml_cont(ctx0, v);
 
-    // Cast K to F32 only if necessary for block_pool accuracy
-    // If block size is small (B <= 64), F16 precision is usually sufficient for mean pooling.
-    // For larger B or specific models, F32 is safer. Defaulting to native type for now to reduce bandwidth.
-    ggml_tensor * k_f32 = (B > 64) ? ggml_cast(ctx0, k_bp, GGML_TYPE_F32) : k_bp;
-
+    // Cast K to F16 for block_pool to reduce bandwidth and memory footprint.
+    // F16 precision is sufficient for mean pooling in most cases.
+    ggml_tensor * k_bp = ggml_cont(ctx0, k);
+    ggml_tensor * v_bp = ggml_cont(ctx0, v);
+    ggml_tensor * k_f16_pool = ggml_cast(ctx0, k_bp, GGML_TYPE_F16);
+    
     // Step 1: Block-level coarse filtering
-    // k_blocks: [d, n_blocks, n_head_kv, n_stream] (F32)
-    ggml_tensor * k_blocks = ggml_hisa_block_pool(ctx0, k_f32, B);
+    // k_blocks: [d, n_blocks, n_head_kv, n_stream] (F16)
+    ggml_tensor * k_blocks = ggml_hisa_block_pool(ctx0, k_f16_pool, B);
     cb(k_blocks, "hisa_k_blocks", il);
 
     // Step 2: Score blocks against Q
@@ -1932,8 +1933,8 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
     cb(topm_indices, "hisa_topm_indices", il);
 
     // Step 4: Gather candidate K and V from selected blocks
-    // k_cand: [d, m*B, n_head_kv, n_stream] (F32)
-    ggml_tensor * k_cand = ggml_hisa_block_gather(ctx0, k_f32, topm_indices, B);
+    // k_cand: [d, m*B, n_head_kv, n_stream] (F16)
+    ggml_tensor * k_cand = ggml_hisa_block_gather(ctx0, k_bp, topm_indices, B);
     cb(k_cand, "hisa_k_cand", il);
     // V stays in native type (F16) — no cast needed, flash_attn accepts F16 directly
     ggml_tensor * v_cand = ggml_hisa_block_gather(ctx0, v_bp, topm_indices, B);
@@ -1950,7 +1951,11 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
 
     if (budget > 0 && budget < n_cand) {
         // Step 5a: Score individual candidate tokens against Q
-        // Integrated Scale: Fusing MulMat and Scale to reduce intermediate tensor overhead
+        // BATCH-TOKEN SCORING:
+        // Instead of a single MulMat if n_tokens > 1, we ensure Q is treated as a matrix.
+        // q_f32: [d, n_tokens, n_head, n_stream]
+        // k_cand: [d, n_cand, n_head_kv, n_stream]
+        // Result scores: [n_cand, n_tokens, n_head, n_stream]
         ggml_tensor * token_scores = ggml_scale(ctx0, ggml_mul_mat(ctx0, k_cand, q_f32), kq_scale);
         cb(token_scores, "hisa_token_scores", il);
         
