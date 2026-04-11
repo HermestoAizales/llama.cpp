@@ -10,10 +10,8 @@
 // FIXME: required here for quantization functions
 #include "ggml-quants.h"
 
-// Dummy implementation for Q1_0 to fix build errors in fork
-void quantize_q1_0(const void * src, void * dst, int nrows, int n_per_row, void * imatrix) {
-    (void)src; (void)dst; (void)nrows; (void)n_per_row; (void)imatrix;
-}
+// Forward declaration to fix build errors in fork (Upstream issue)
+size_t quantize_q1_0(const float * src, void * dst, int64_t nrow, int64_t n_per_row, const float * quant_weights);
 
 #ifdef GGML_USE_CPU_HBM
 #include <hbwmalloc.h>
