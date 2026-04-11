@@ -72,30 +72,6 @@ static ggml_tensor * ggml_mul_mat_aux(
     return res;
 }
 
-// InnerQ: cross-TU shared state for CUDA per-channel equalization.
-// These are defined in ggml-cuda/disabled_turbo-innerq.cu (when CUDA is enabled).
-// When CUDA is not available, we provide stub implementations.
-#ifndef INNERQ_MAX_CHANNELS
-#define INNERQ_MAX_CHANNELS 128
-#endif
-
-#ifdef GGML_USE_CUDA
-#if defined(_WIN32) && !defined(__MINGW32__)
-#  define DISABLED_TURBO_IQ_IMPORT __declspec(dllimport)
-#else
-#  define DISABLED_TURBO_IQ_IMPORT
-#endif
-extern DISABLED_TURBO_IQ_IMPORT bool  g_innerq_finalized;
-extern DISABLED_TURBO_IQ_IMPORT float g_innerq_scale_inv_host[INNERQ_MAX_CHANNELS];
-DISABLED_TURBO_IQ_IMPORT bool disabled_turbo_innerq_needs_tensor_update(void);
-DISABLED_TURBO_IQ_IMPORT void disabled_turbo_innerq_mark_tensor_updated(void);
-#else
-static bool  g_innerq_finalized = false;
-static float g_innerq_scale_inv_host[INNERQ_MAX_CHANNELS] = {};
-static bool disabled_turbo_innerq_needs_tensor_update(void) { return false; }
-static void disabled_turbo_innerq_mark_tensor_updated(void) {}
-#endif
-
 //
 // llama_kv_cache
 //
@@ -134,8 +110,7 @@ llama_kv_cache::llama_kv_cache(
         auto it = ctx_map.find(buft);
         if (it == ctx_map.end()) {
             ggml_init_params params = {
-                // +3 for disabled_turbo rotation matrices (disabled_turbo_rotation + disabled_turbo_rotation_inv + disabled_turbo_innerq_scale_inv)
-                /*.mem_size   =*/ size_t((2u*(1 + n_stream)*n_layer_kv + 3)*ggml_tensor_overhead()),
+                /*.mem_size   =*/ size_t(2u*(1 + n_stream)*n_layer_kv*ggml_tensor_overhead()),
                 /*.mem_buffer =*/ NULL,
                 /*.no_alloc   =*/ true,
             };
@@ -194,6 +169,18 @@ llama_kv_cache::llama_kv_cache(
             continue;
         }
 
+        if (n_embd_head_k_all == 0) {
+            n_embd_head_k_all = (int32_t) hparams.n_embd_head_k(il);
+        } else if (n_embd_head_k_all > 0 && n_embd_head_k_all != (int32_t) hparams.n_embd_head_k(il)) {
+            n_embd_head_k_all = -1;
+        }
+
+        if (n_embd_head_v_all == 0) {
+            n_embd_head_v_all = (int32_t) hparams.n_embd_head_v(il);
+        } else if (n_embd_head_v_all > 0 && n_embd_head_v_all != (int32_t) hparams.n_embd_head_v(il)) {
+            n_embd_head_v_all = -1;
+        }
+
         // [TAG_V_CACHE_VARIABLE]
         const uint32_t n_embd_k_gqa =            hparams.n_embd_k_gqa(il);
         const uint32_t n_embd_v_gqa = !v_trans ? hparams.n_embd_v_gqa(il) : hparams.n_embd_v_gqa_max();
@@ -216,135 +203,26 @@ llama_kv_cache::llama_kv_cache(
             throw std::runtime_error("failed to create ggml context for kv cache");
         }
 
-        // TurboQuant zero-padding: for models with non-128-aligned head_dim (e.g. DeepSeek
-        // head_dim_k=192), pad each head to the next multiple of 128. The padded zeros don't
-        // affect dot products since WHT preserves inner products:
-        //   <WHT(Q_padded), WHT(K_padded)> = <Q_padded, K_padded> = <Q, K> + <0, 0> = <Q, K>
-        const uint32_t n_embd_head_k = hparams.n_embd_head_k(il);
-
-
         const bool has_k = true;
         const bool has_v = !is_mla;
 
-        // Layer-adaptive: use higher precision for quality-sensitive layers
-        // Config: DISABLED_TURBO_LAYER_ADAPTIVE env var controls the strategy
-        //   0 = uniform (default)
-        //   1 = q8_0 K+V for first+last 4 layers
-        //   2 = q8_0 K+V for last 8 layers
-        //   5 = Boundary V: first2+last2 V=disabled_turbo4, rest V=disabled_turbo2 (K unchanged)
-        //   6 = V-only: last 8 V=disabled_turbo4, rest V=disabled_turbo2 (K unchanged)
-        //   7 = Boundary V (recommended): first2+last2 V=q8_0, rest V=disabled_turbo2 (K unchanged)
-        ggml_type layer_type_k = type_k;
-        ggml_type layer_type_v = type_v;
-        {
-//             static const int adaptive_mode = [&]() {
-//                 const char * env = getenv("DISABLED_TURBO_LAYER_ADAPTIVE");
-//                 if (env) {
-//                     int mode = atoi(env);
-//                     if (mode > 0) {
-//                         LLAMA_LOG_INFO("llama_kv_cache: layer-adaptive mode %d enabled (env)\n", mode);
-//                     }
-//                     return mode;
-//                 }
-//                 // Auto-enable Boundary V (mode 7) when V is disabled_turbo2
-//                 if (type_v == GGML_TYPE_F16 && hparams.n_layer >= 8) {
-//                     LLAMA_LOG_INFO("llama_kv_cache: Boundary V auto-enabled for disabled_turbo2-V (opt-out: DISABLED_TURBO_LAYER_ADAPTIVE=0)\n");
-//                     return 7;
-//                 }
-//                 return 0;
-//             }();
-//             const bool is_disabled_turbo = (type_k == GGML_TYPE_F16 || type_k == GGML_TYPE_F16 || type_k == GGML_TYPE_F16);
-//             const bool v_is_disabled_turbo = (type_v == GGML_TYPE_F16 || type_v == GGML_TYPE_F16 || type_v == GGML_TYPE_F16);
-//             const uint32_t n_layer = hparams.n_layer;
-//             if (adaptive_mode == 1 && is_disabled_turbo && n_layer >= 8) {
-//                 if (il < 4 || il >= n_layer - 4) {
-//                     layer_type_k = GGML_TYPE_Q8_0;
-//                     layer_type_v = GGML_TYPE_Q8_0;
-//                 }
-//             } else if (adaptive_mode == 2 && is_disabled_turbo && n_layer >= 8) {
-//                 if (il >= n_layer - 8) {
-//                     layer_type_k = GGML_TYPE_Q8_0;
-//                     layer_type_v = GGML_TYPE_Q8_0;
-//                 }
-//             } else if (adaptive_mode == 5 && v_is_disabled_turbo && n_layer >= 8) {
-//                 // Boundary V (disabled_turbo4 boundaries): first2+last2 V=disabled_turbo4, rest V=disabled_turbo2
-//                 const bool is_boundary = (il < 2 || il >= n_layer - 2);
-//                 layer_type_v = is_boundary ? GGML_TYPE_F16 : GGML_TYPE_F16;
-//                 if (il == 0) {
-//                     LLAMA_LOG_INFO("llama_kv_cache: Boundary V mode 5: first2+last2 V=disabled_turbo4, rest V=disabled_turbo2\n");
-//                 }
-//             } else if (adaptive_mode == 6 && v_is_disabled_turbo && n_layer >= 8) {
-//                 // V-only: last 8 V=disabled_turbo4, rest V=disabled_turbo2
-//                 layer_type_v = (il >= n_layer - 8) ? GGML_TYPE_F16 : GGML_TYPE_F16;
-//                 if (il == 0) {
-//                     LLAMA_LOG_INFO("llama_kv_cache: V-only LA mode 6: last8 V=disabled_turbo4, rest V=disabled_turbo2\n");
-//                 }
-//             } else if (adaptive_mode == 7 && v_is_disabled_turbo && n_layer >= 8) {
-//                 // Boundary V (recommended): first2+last2 V=q8_0, rest V=disabled_turbo2
-//                 const bool is_boundary = (il < 2 || il >= n_layer - 2);
-//                 layer_type_v = is_boundary ? GGML_TYPE_Q8_0 : GGML_TYPE_F16;
-//                 if (il == 0) {
-//                     LLAMA_LOG_INFO("llama_kv_cache: Boundary V mode 7: first2+last2 V=q8_0, rest V=disabled_turbo2\n");
-//                 }
-//             }
+        ggml_tensor * k = has_k ? ggml_new_tensor_3d(ctx, type_k, n_embd_k_gqa, kv_size, n_stream) : nullptr;
+        ggml_tensor * v = has_v ? ggml_new_tensor_3d(ctx, type_v, n_embd_v_gqa, kv_size, n_stream) : nullptr;
+
+        has_k && ggml_format_name(k, "cache_k_l%d", il);
+        has_v && ggml_format_name(v, "cache_v_l%d", il);
+
+        std::vector<ggml_tensor *> k_stream;
+        std::vector<ggml_tensor *> v_stream;
+
+        for (uint32_t s = 0; s < n_stream; ++s) {
+            k_stream.push_back(has_k ? ggml_view_2d(ctx, k, n_embd_k_gqa, kv_size, k->nb[1], s*k->nb[2]) : nullptr);
+            v_stream.push_back(has_v ? ggml_view_2d(ctx, v, n_embd_v_gqa, kv_size, v->nb[1], s*v->nb[2]) : nullptr);
         }
-//         // For disabled_turbo types, pad K head_dim to next multiple of 128 for full WHT groups
-//         uint32_t n_embd_k_gqa_eff = n_embd_k_gqa;
-//         const bool k_is_disabled_turbo = (layer_type_k == GGML_TYPE_F16 || layer_type_k == GGML_TYPE_F16 || layer_type_k == GGML_TYPE_F16);
-//         if (k_is_disabled_turbo && n_embd_head_k % 128 != 0) {
-//             const uint32_t padded_head_k = ((n_embd_head_k + 127) / 128) * 128;
-//             const uint32_t n_head_kv = n_embd_k_gqa / n_embd_head_k;
-//             n_embd_k_gqa_eff = n_head_kv * padded_head_k;
-//             if (il == 0) {
-//                 LLAMA_LOG_INFO("%s: disabled_turbo zero-padding K head_dim %u -> %u (cache %u -> %u)\n",
-//                                __func__, n_embd_head_k, padded_head_k, n_embd_k_gqa, n_embd_k_gqa_eff);
-//             }
-//         }
-// 
-//         // For disabled_turbo types, pad V head_dim to next multiple of 128 if needed
-//         const uint32_t n_embd_head_v = hparams.n_embd_head_v(il);
-//         uint32_t n_embd_v_gqa_eff = n_embd_v_gqa;
-//         const bool v_is_disabled_turbo = (layer_type_v == GGML_TYPE_F16 || layer_type_v == GGML_TYPE_F16 || layer_type_v == GGML_TYPE_F16);
-//         if (v_is_disabled_turbo && !is_mla && n_embd_head_v % 128 != 0) {
-//             const uint32_t padded_head_v = ((n_embd_head_v + 127) / 128) * 128;
-//             const uint32_t n_head_kv = n_embd_v_gqa / n_embd_head_v;
-//             n_embd_v_gqa_eff = n_head_kv * padded_head_v;
-//             if (il == 0) {
-//                 LLAMA_LOG_INFO("%s: disabled_turbo zero-padding V head_dim %u -> %u (cache %u -> %u)\n",
-//                                __func__, n_embd_head_v, padded_head_v, n_embd_v_gqa, n_embd_v_gqa_eff);
-//             }
-//         }
-// 
-//         ggml_tensor * k = has_k ? ggml_new_tensor_3d(ctx, layer_type_k, n_embd_k_gqa_eff, kv_size, n_stream) : nullptr;
-//         ggml_tensor * v = has_v ? ggml_new_tensor_3d(ctx, layer_type_v, n_embd_v_gqa_eff, kv_size, n_stream) : nullptr;
-// 
-//         has_k && ggml_format_name(k, "cache_k_l%d", il);
-//         has_v && ggml_format_name(v, "cache_v_l%d", il);
-// 
-//         std::vector<ggml_tensor *> k_stream;
-//         std::vector<ggml_tensor *> v_stream;
-// 
-//         for (uint32_t s = 0; s < n_stream; ++s) {
-//             k_stream.push_back(has_k ? ggml_view_2d(ctx, k, n_embd_k_gqa_eff, kv_size, k->nb[1], s*k->nb[2]) : nullptr);
-//             v_stream.push_back(has_v ? ggml_view_2d(ctx, v, n_embd_v_gqa_eff, kv_size, v->nb[1], s*v->nb[2]) : nullptr);
-//         }
-// 
-//         map_layer_ids[il] = layers.size();
-// 
-//         layers.push_back({ il, k, v, k_stream, v_stream, });
-// 
-// [DISABLED_TURBO_LOGIC]
-//         if (disabled_turbo_rotation == nullptr &&
-//             (type_k == GGML_TYPE_F16 || type_k == GGML_TYPE_F16 || type_k == GGML_TYPE_F16)) {
-//             disabled_turbo_rotation = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 128, 128);
-//             ggml_format_name(disabled_turbo_rotation, "disabled_turbo_rotation");  // R^T
-//             disabled_turbo_rotation_inv = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 128, 128);
-//             ggml_format_name(disabled_turbo_rotation_inv, "disabled_turbo_rotation_inv");  // R
-// 
-//             // InnerQ: per-channel scale_inv tensor (128 floats, initialized to all 1.0)
-//             disabled_turbo_innerq_scale_inv = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, INNERQ_MAX_CHANNELS);
-//             ggml_format_name(disabled_turbo_innerq_scale_inv, "disabled_turbo_innerq_scale_inv");
-//         }
+
+        map_layer_ids[il] = layers.size();
+
+        layers.push_back({ il, k, v, k_stream, v_stream, });
     }
 
     if (reuse) {
@@ -389,28 +267,6 @@ llama_kv_cache::llama_kv_cache(
         LLAMA_LOG_INFO("%s: %10s KV buffer size = %8.2f MiB\n", __func__, ggml_backend_buffer_name(buf), ggml_backend_buffer_get_size(buf)/1024.0/1024.0);
 
         ggml_backend_buffer_clear(buf, 0);
-
-//         // Fill disabled_turbo rotation matrices AFTER buffer clear (clear zeroes everything)
-//         if (disabled_turbo_rotation != nullptr && disabled_turbo_rotation->buffer != nullptr && !model.hparams.no_alloc) {
-//             #include "disabled_turbo-rotation-data.h"
-//             // ggml is column-major; C arrays are row-major. Storing a row-major matrix
-//             // into ggml implicitly transposes it. ggml_mul_mat(A, x) computes A^T @ x.
-//             // To get R @ q: store R^T → ggml sees (R^T)^T_col = R → mul_mat gives R @ q. Wait no —
-//             // store R so ggml col-major reads it as R^T, then mul_mat gives (R^T)^T = R. ✓
-//             // Store R for Q forward rotation, R^T for V inverse rotation
-//             // ggml_mul_mat(A,x) computes A@x for row-major stored A (verified by test)
-//             ggml_backend_tensor_set(disabled_turbo_rotation, DISABLED_TURBO_ROTATION_R, 0, 128 * 128 * sizeof(float));
-//             ggml_backend_tensor_set(disabled_turbo_rotation_inv, DISABLED_TURBO_ROTATION_RT, 0, 128 * 128 * sizeof(float));
-// 
-//             // Initialize InnerQ scale_inv to all 1.0 (identity scaling)
-//             if (disabled_turbo_innerq_scale_inv != nullptr && disabled_turbo_innerq_scale_inv->buffer != nullptr) {
-//                 float ones[INNERQ_MAX_CHANNELS];
-//                 for (int i = 0; i < INNERQ_MAX_CHANNELS; i++) ones[i] = 1.0f;
-//                 ggml_backend_tensor_set(disabled_turbo_innerq_scale_inv, ones, 0, INNERQ_MAX_CHANNELS * sizeof(float));
-//             }
-// 
-//             LLAMA_LOG_INFO("%s: TurboQuant rotation matrices initialized (128x128)\n", __func__);
-//         }
         ctxs_bufs.emplace_back(std::move(ctx), buf);
     }
 
@@ -424,36 +280,31 @@ llama_kv_cache::llama_kv_cache(
                 ggml_type_name(type_v), (float)memory_size_v / (1024.0f * 1024.0f));
     }
 
-    // TurboQuant: disable upstream graph-level activation rotation by default.
-    // Our fork uses kernel-level WHT rotation (simd_shuffle_xor in Metal/CUDA)
-    // which is independent and more efficient. The upstream rotation adds extra
-    // graph nodes that cause hash table overflow on some models (e.g. Phi-4).
-    // Users can re-enable with LLAMA_ATTN_ROT_DISABLE=0 if needed.
     const char * LLAMA_ATTN_ROT_DISABLE = getenv("LLAMA_ATTN_ROT_DISABLE");
-    const bool attn_rot_disable = LLAMA_ATTN_ROT_DISABLE ? atoi(LLAMA_ATTN_ROT_DISABLE) : true;
+    const bool attn_rot_disable = LLAMA_ATTN_ROT_DISABLE ? atoi(LLAMA_ATTN_ROT_DISABLE) : false;
     if (attn_rot_disable) {
-        LLAMA_LOG_INFO("%s: upstream attention rotation disabled (TurboQuant uses kernel-level WHT)\n", __func__);
+        LLAMA_LOG_WARN("%s: attention rotation force disabled (LLAMA_ATTN_ROT_DISABLE)\n", __func__);
     }
 
     attn_rot_k =
         !attn_rot_disable &&
+        n_embd_head_k_all > 0 &&
         ggml_is_quantized(type_k) &&
-        !hparams.is_n_embd_k_gqa_variable() &&
         hparams.n_embd_head_k() % 64 == 0;
 
     attn_rot_v =
         !attn_rot_disable &&
+        n_embd_head_v_all > 0 &&
         ggml_is_quantized(type_v) &&
-        !hparams.is_n_embd_v_gqa_variable() &&
         hparams.n_embd_head_v() % 64 == 0;
 
-    LLAMA_LOG_INFO("%s: attn_rot_k = %d\n", __func__, attn_rot_k);
-    LLAMA_LOG_INFO("%s: attn_rot_v = %d\n", __func__, attn_rot_v);
+    LLAMA_LOG_INFO("%s: attn_rot_k = %d, n_embd_head_k_all = %d\n", __func__, attn_rot_k, n_embd_head_k_all);
+    LLAMA_LOG_INFO("%s: attn_rot_v = %d, n_embd_head_k_all = %d\n", __func__, attn_rot_v, n_embd_head_v_all);
 
     // pre-compute the haramard matrices and keep them in host memory
     // TODO: in the future, we can make copies in the backend buffers to avoid host -> device transfers
     if (attn_rot_k || attn_rot_v) {
-        for (int64_t n = 64; n <= std::max(hparams.n_embd_head_k(), hparams.n_embd_head_v()); n *= 2) {
+        for (int64_t n = 64; n <= std::max(n_embd_head_k_all, n_embd_head_v_all); n *= 2) {
             attn_rot_hadamard[n] = std::vector<float>(n*n);
 
             ggml_init_params params = {
@@ -1298,20 +1149,13 @@ ggml_tensor * llama_kv_cache::get_k(ggml_context * ctx, int32_t il, uint32_t n_k
     const uint64_t kv_size      = get_size();
     const uint64_t n_embd_k_gqa = k->ne[0];
 
-    // For HISA/Standard caches, n_embd_k_gqa is taken from hparams
-    assert(n_embd_k_gqa >= hparams.n_embd_k_gqa(il));
-
-    // Use padded head_dim for disabled_turbo types so the full padded data is returned
-    const bool k_is_disabled_turbo = (k->type == GGML_TYPE_F16 || k->type == GGML_TYPE_F32);
-    const uint32_t head_k = hparams.n_embd_head_k(il);
-    const uint32_t head_k_eff = (k_is_disabled_turbo && head_k % 128 != 0)
-        ? ((head_k + 127) / 128) * 128 : head_k;
+    assert(n_embd_k_gqa == hparams.n_embd_k_gqa(il));
 
     const uint32_t ns = sinfo.s1 - sinfo.s0 + 1;
 
     return ggml_view_4d(ctx, k,
-            head_k_eff, hparams.n_head_kv(il), n_kv, ns,
-            ggml_row_size(k->type, head_k_eff),
+            hparams.n_embd_head_k(il), hparams.n_head_kv(il), n_kv, ns,
+            ggml_row_size(k->type, hparams.n_embd_head_k(il)),
             ggml_row_size(k->type, n_embd_k_gqa),
             ggml_row_size(k->type, n_embd_k_gqa*kv_size),
             ggml_row_size(k->type, n_embd_k_gqa*kv_size)*sinfo.s0);
@@ -1325,33 +1169,27 @@ ggml_tensor * llama_kv_cache::get_v(ggml_context * ctx, int32_t il, uint32_t n_k
     const uint64_t kv_size      = get_size();
     const uint64_t n_embd_v_gqa = v->ne[0];
 
-    // [TAG_V_CACHE_VARIABLE] — for disabled_turbo-padded V, cache may be larger
+    // [TAG_V_CACHE_VARIABLE]
     assert(n_embd_v_gqa >= hparams.n_embd_v_gqa(il));
-
-    // Use padded head_dim for disabled_turbo types
-    const bool v_is_disabled_turbo = (v->type == GGML_TYPE_F16 || v->type == GGML_TYPE_F16 || v->type == GGML_TYPE_F16);
-    const uint32_t head_v = hparams.n_embd_head_v(il);
-    const uint32_t head_v_eff = (v_is_disabled_turbo && head_v % 128 != 0)
-        ? ((head_v + 127) / 128) * 128 : head_v;
 
     const uint32_t ns = sinfo.s1 - sinfo.s0 + 1;
 
     if (!v_trans) {
         // note: v->nb[1] <= v->nb[2]
         return ggml_view_4d(ctx, v,
-                head_v_eff, hparams.n_head_kv(il), n_kv, ns,
-                ggml_row_size(v->type, head_v_eff),                      // v->nb[1]
-                ggml_row_size(v->type, n_embd_v_gqa),                    // v->nb[2]
-                ggml_row_size(v->type, n_embd_v_gqa*kv_size),            // v->nb[3]
+                hparams.n_embd_head_v(il), hparams.n_head_kv(il), n_kv, ns,
+                ggml_row_size(v->type, hparams.n_embd_head_v(il)),          // v->nb[1]
+                ggml_row_size(v->type, n_embd_v_gqa),                   // v->nb[2]
+                ggml_row_size(v->type, n_embd_v_gqa*kv_size),           // v->nb[3]
                 ggml_row_size(v->type, n_embd_v_gqa*kv_size)*sinfo.s0);
     }
 
     // note: v->nb[1] > v->nb[2]
     return ggml_view_4d(ctx, v,
-            n_kv, hparams.n_head_kv(il), head_v_eff, ns,
-            ggml_row_size(v->type, kv_size*head_v_eff),              // v->nb[1]
-            ggml_row_size(v->type, kv_size),                         // v->nb[2]
-            ggml_row_size(v->type, kv_size*n_embd_v_gqa),            // v->nb[3]
+            n_kv, hparams.n_head_kv(il), hparams.n_embd_head_v(il), ns,
+            ggml_row_size(v->type, kv_size*hparams.n_embd_head_v(il)),  // v->nb[1]
+            ggml_row_size(v->type, kv_size),                        // v->nb[2]
+            ggml_row_size(v->type, kv_size*n_embd_v_gqa),           // v->nb[3]
             ggml_row_size(v->type, kv_size*n_embd_v_gqa)*sinfo.s0);
 }
 
@@ -1362,22 +1200,11 @@ ggml_tensor * llama_kv_cache::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggm
 
     ggml_tensor * k = layers[ikv].k;
 
-    int64_t n_embd_head = k_cur->ne[0];
+    const int64_t n_embd_head = k_cur->ne[0];
     const int64_t n_head      = k_cur->ne[1];
     const int64_t n_tokens    = k_cur->ne[2];
 
-    // Turbo zero-padding: pad each head to next multiple of 128 before merging dims.
-    // k_cur shape here is (n_embd_head, n_head, n_tokens).
-    // ggml_pad pads ne[0] with zeros — exactly what we need per-head.
-    const bool k_is_disabled_turbo = (k->type == GGML_TYPE_F16 || k->type == GGML_TYPE_F16 || k->type == GGML_TYPE_F16);
-    const bool k_needs_pad = k_is_disabled_turbo && (n_embd_head % 128 != 0);
-    if (k_needs_pad) {
-        const int64_t pad_amount = ((n_embd_head + 127) / 128) * 128 - n_embd_head;
-        k_cur = ggml_pad(ctx, k_cur, pad_amount, 0, 0, 0);
-        n_embd_head = k_cur->ne[0];  // now 128-aligned
-    }
-
-    int64_t n_embd_gqa = n_embd_head * n_head;
+    const int64_t n_embd_gqa = n_embd_head*n_head;
 
     // we can merge dims 0 and 1
     // TODO: add ggml helper function for this?
@@ -1398,16 +1225,7 @@ ggml_tensor * llama_kv_cache::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggm
     }
 
     // store the current K values into the cache
-    ggml_tensor * result = ggml_set_rows(ctx, k, k_cur, k_idxs);
-
-    // For disabled_turbo: store WHT group size in op_params so the CUDA kernel knows.
-    // With zero-padding, all groups are always full 128-element WHT groups.
-    if (k_is_disabled_turbo) {
-        int32_t wht_group = 128;  // always 128 with padding
-        memcpy(result->op_params, &wht_group, sizeof(int32_t));
-    }
-
-    return result;
+    return ggml_set_rows(ctx, k, k_cur, k_idxs);
 }
 
 ggml_tensor * llama_kv_cache::cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs, int32_t il, const slot_info & sinfo) const {
@@ -1417,20 +1235,11 @@ ggml_tensor * llama_kv_cache::cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggm
 
     auto * v = layers[ikv].v;
 
-    int64_t n_embd_head = v_cur->ne[0];
+    const int64_t n_embd_head = v_cur->ne[0];
     const int64_t n_head      = v_cur->ne[1];
     const int64_t n_tokens    = v_cur->ne[2];
 
-    // Turbo zero-padding: pad V head_dim to next multiple of 128
-    const bool v_is_disabled_turbo = (v->type == GGML_TYPE_F16 || v->type == GGML_TYPE_F16 || v->type == GGML_TYPE_F16);
-    const bool v_needs_pad = v_is_disabled_turbo && (n_embd_head % 128 != 0);
-    if (v_needs_pad) {
-        const int64_t pad_amount = ((n_embd_head + 127) / 128) * 128 - n_embd_head;
-        v_cur = ggml_pad(ctx, v_cur, pad_amount, 0, 0, 0);
-        n_embd_head = v_cur->ne[0];  // now 128-aligned
-    }
-
-    int64_t n_embd_gqa = n_embd_head * n_head;
+    const int64_t n_embd_gqa = n_embd_head*n_head;
 
     // we can merge dims 0 and 1
     GGML_ASSERT(ggml_row_size(v_cur->type, n_embd_head) == v_cur->nb[1]);
@@ -1451,13 +1260,7 @@ ggml_tensor * llama_kv_cache::cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggm
             v = ggml_reshape_2d(ctx, v, n_embd_gqa, kv_size*n_stream);
         }
 
-        ggml_tensor * result = ggml_set_rows(ctx, v, v_cur, v_idxs);
-        // With zero-padding, all groups are always full 128-element WHT groups
-        if (v_is_disabled_turbo) {
-            int32_t wht_group = 128;  // always 128 with padding
-            memcpy(result->op_params, &wht_group, sizeof(int32_t));
-        }
-        return result;
+        return ggml_set_rows(ctx, v, v_cur, v_idxs);
     }
 
     if (ggml_row_size(v_cur->type, n_embd_gqa) == v_cur->nb[2]) {
@@ -1517,7 +1320,7 @@ ggml_tensor * llama_kv_cache::build_input_k_rot(ggml_context * ctx) const {
         // ref: https://github.com/ggml-org/llama.cpp/pull/21038#issuecomment-4141323088
         do {
             nrot *= 2;
-        } while (hparams.n_embd_head_k() % nrot == 0);
+        } while (n_embd_head_k_all % nrot == 0);
         nrot /= 2;
 
         res = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, nrot, nrot);
@@ -2176,10 +1979,9 @@ void llama_kv_cache::state_write_data(llama_io_write_i & io, const cell_ranges_t
     for (const auto & layer : layers) {
         const uint32_t il = layer.il;
 
-        auto * k = layer.k_stream[cr.strm];
+        const uint32_t n_embd_k_gqa = hparams.n_embd_k_gqa(il);
 
-        // Use actual tensor width (may be padded for disabled_turbo types: e.g. 576→640)
-        const uint32_t n_embd_k_gqa = (uint32_t) k->ne[0];
+        auto * k = layer.k_stream[cr.strm];
 
         // Write key type
         const int32_t k_type_i = (int32_t) k->type;
@@ -2201,13 +2003,12 @@ void llama_kv_cache::state_write_data(llama_io_write_i & io, const cell_ranges_t
         for (const auto & layer : layers) {
             const uint32_t il = layer.il;
 
+            const uint32_t n_embd_v_gqa = hparams.n_embd_v_gqa(il);
+
             auto * v = layer.v_stream[cr.strm];
             if (!v) {
                 continue;
             }
-
-            // Use actual tensor width (may be padded for disabled_turbo types)
-            const uint32_t n_embd_v_gqa = (uint32_t) v->ne[0];
 
             // Write value type
             const int32_t v_type_i = (int32_t) v->type;
@@ -2410,10 +2211,9 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
     for (const auto & layer : layers) {
         const uint32_t il = layer.il;
 
-        auto * k = layer.k_stream[strm];
+        const uint32_t n_embd_k_gqa = hparams.n_embd_k_gqa(il);
 
-        // Use actual tensor width (may be padded for disabled_turbo types)
-        const uint32_t n_embd_k_gqa = (uint32_t) k->ne[0];
+        auto * k = layer.k_stream[strm];
 
         // Read type of key
         int32_t k_type_i_ref;
@@ -2452,13 +2252,12 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
         for (const auto & layer : layers) {
             const uint32_t il = layer.il;
 
+            const uint32_t n_embd_v_gqa = hparams.n_embd_v_gqa(il);
+
             auto * v = layer.v_stream[strm];
             if (!v) {
                 continue;
             }
-
-            // Use actual tensor width (may be padded for disabled_turbo types)
-            const uint32_t n_embd_v_gqa = (uint32_t) v->ne[0];
 
             // Read type of value
             int32_t v_type_i_ref;
@@ -2619,18 +2418,6 @@ bool llama_kv_cache_context::apply() {
     kv->apply_ubatch(sinfos[i_cur], ubatches[i_cur]);
     n_kv = kv->get_n_kv(sinfos[i_cur]);
 
-    // InnerQ: check if CUDA calibration finalized and tensor needs update
-    /*
-    if (kv->get_disabled_turbo_innerq_scale_inv() != nullptr && disabled_turbo_innerq_needs_tensor_update()) {
-        ggml_tensor * t = kv->get_disabled_turbo_innerq_scale_inv();
-        if (t->buffer != nullptr) {
-            ggml_backend_tensor_set(t, g_innerq_scale_inv_host, 0, INNERQ_MAX_CHANNELS * sizeof(float));
-            disabled_turbo_innerq_mark_tensor_updated();
-            LLAMA_LOG_INFO("%s: InnerQ scale_inv tensor updated\n", __func__);
-        }
-    }
-    */
-
     return true;
 }
 
@@ -2663,26 +2450,6 @@ ggml_tensor * llama_kv_cache_context::get_k(ggml_context * ctx, int32_t il) cons
 ggml_tensor * llama_kv_cache_context::get_v(ggml_context * ctx, int32_t il) const {
     return kv->get_v(ctx, il, n_kv, sinfos[i_cur]);
 }
-
-// ggml_tensor * llama_kv_cache_context::get_disabled_turbo_rotation() const {
-//     return kv->get_disabled_turbo_rotation();
-// }
-// 
-// ggml_tensor * llama_kv_cache_context::get_disabled_turbo_rotation_inv() const {
-//     return kv->get_disabled_turbo_rotation_inv();
-// }
-// 
-// ggml_tensor * llama_kv_cache_context::get_disabled_turbo_rot_forward() const {
-//     return kv->get_disabled_turbo_rotation();
-// }
-// 
-// ggml_tensor * llama_kv_cache_context::get_disabled_turbo_rot_inverse() const {
-//     return kv->get_disabled_turbo_rotation_inv();
-// }
-// 
-// ggml_tensor * llama_kv_cache_context::get_disabled_turbo_innerq_scale_inv() const {
-//     return kv->get_disabled_turbo_innerq_scale_inv();
-// }
 
 ggml_tensor * llama_kv_cache_context::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il) const {
     return kv->cpy_k(ctx, k_cur, k_idxs, il, sinfos[i_cur]);
