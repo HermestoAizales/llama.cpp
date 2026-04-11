@@ -1298,9 +1298,7 @@ ggml_tensor * llama_kv_cache::get_k(ggml_context * ctx, int32_t il, uint32_t n_k
     const uint64_t kv_size      = get_size();
     const uint64_t n_embd_k_gqa = k->ne[0];
 
-    // For disabled_turbo-padded caches, n_embd_k_gqa may be larger than hparams value
-    const bool k_is_disabled_turbo = (k->type == GGML_TYPE_F16 || k->type == GGML_TYPE_F16 || k->type == GGML_TYPE_F16);
-    if (k_is_disabled_turbo) {
+    // For HISA/Standard caches, n_embd_k_gqa is taken from hparams
         assert(n_embd_k_gqa >= hparams.n_embd_k_gqa(il));
     } else {
         assert(n_embd_k_gqa == hparams.n_embd_k_gqa(il));
