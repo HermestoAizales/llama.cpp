@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - master
+      - feature/hisa
     paths: [
       '.github/workflows/build.yml',
       '.github/workflows/build-cmake-pkg.yml',
