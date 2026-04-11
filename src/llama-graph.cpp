@@ -1909,7 +1909,8 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
     // OPTIMIZATION: Pre-scale Q. 
     // Since (K * Q) * scale == K * (Q * scale), we scale Q once here 
     // to avoid multiple ggml_scale nodes after every MulMat.
-    ggml_tensor * q_scaled = ggml_scale(ctx0, q, kq_scale);
+    ggml_tensor * q_cont = ggml_cont(ctx0, q);
+    ggml_tensor * q_scaled = ggml_scale(ctx0, q_cont, kq_scale);
     cb(q_scaled, "hisa_q_scaled", il);
 
     // Cast K to F16 for block_pool to reduce bandwidth and memory footprint.
