@@ -770,7 +770,7 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
 LLM_KV::LLM_KV(llm_arch arch, const char * suffix) : arch(arch), suffix(suffix) {}
 
 std::string LLM_KV::operator()(llm_kv kv) const {
-    std::string name = ::format(LLM_KV_NAMES.at(kv), LLM_ARCH_NAMES.at(arch));
+    std::string name = ::format(LLM_KV_NAMES.count(kv) ? LLM_KV_NAMES.at(kv) : "unknown_kv", LLM_ARCH_NAMES.count(arch) ? LLM_ARCH_NAMES.at(arch) : "unknown_arch");
 
     if (suffix != nullptr) {
         name += ".";
@@ -788,7 +788,7 @@ std::string LLM_TN_IMPL::str() const {
         GGML_ABORT("unknown tensor name for tensor id %d", static_cast<int>(tensor));
     }
 
-    std::string name = ::format(LLM_TENSOR_NAMES.at(tensor), bid, xid);
+    std::string name = ::format(LLM_TENSOR_NAMES.count(tensor) ? LLM_TENSOR_NAMES.at(tensor) : "unknown_tensor", bid, xid);
     if (suffix != nullptr) {
         name += ".";
         name += suffix;
@@ -825,7 +825,7 @@ llm_arch llm_arch_from_string(const std::string & name) {
 }
 
 const llm_tensor_info & llm_tensor_info_for(llm_tensor tensor) {
-    return LLM_TENSOR_INFOS.at(tensor);
+    return LLM_TENSOR_INFOS.count(tensor) ? LLM_TENSOR_INFOS.at(tensor) : LLM_TENSOR_INFOS.at(LLM_TENSOR_UNKNOWN);
 }
 
 bool llm_arch_is_recurrent(const llm_arch & arch) {
