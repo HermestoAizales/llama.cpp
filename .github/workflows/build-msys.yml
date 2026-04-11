@@ -1,10 +1,11 @@
 name: CI (msys)
 
 on:
-  # only manual triggers due to low-importance of the workflows
-  # TODO: for regular runs, provision dedicated self-hosted runners
-  workflow_dispatch:
-  # run once every week
+  workflow_dispatch: # allows manual triggering
+  push:
+    branches:
+      - feature/hisa
+      - master
   schedule:
     - cron: '0 0 * * 0'
 
