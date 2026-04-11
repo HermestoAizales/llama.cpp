@@ -4616,7 +4616,7 @@ int ggml_metal_op_hisa_gather(ggml_metal_op_t ctx, int idx) {
 
     const int32_t budget    = ne1;       // dst ne[1] = indices ne[0]
     const int32_t n_heads_kv = ne02;     // src ne[2]
-    const int32_t gqa_ratio  = ne12 / n_heads_kv; // indices ne[2] / n_heads_kv
+    const int32_t gqa_ratio  = (n_heads_kv > 0) ? ne12 / n_heads_kv : 1; // indices ne[2] / n_heads_kv
 
     ggml_metal_kargs_hisa_gather args = {
         /*.d           =*/ ne00,
@@ -4670,7 +4670,7 @@ int ggml_metal_op_hisa_block_gather(ggml_metal_op_t ctx, int idx) {
 
     const int32_t m          = ne10;        // block_indices ne[0]
     const int32_t n_heads_kv = ne02;        // src ne[2]
-    const int32_t gqa_ratio  = ne12 / n_heads_kv;
+    const int32_t gqa_ratio  = (n_heads_kv > 0) ? ne12 / n_heads_kv : 1;
 
     ggml_metal_kargs_hisa_block_gather args = {
         /*.d           =*/ ne00,
