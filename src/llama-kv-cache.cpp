@@ -1299,12 +1299,10 @@ ggml_tensor * llama_kv_cache::get_k(ggml_context * ctx, int32_t il, uint32_t n_k
     const uint64_t n_embd_k_gqa = k->ne[0];
 
     // For HISA/Standard caches, n_embd_k_gqa is taken from hparams
-        assert(n_embd_k_gqa >= hparams.n_embd_k_gqa(il));
-    } else {
-        assert(n_embd_k_gqa == hparams.n_embd_k_gqa(il));
-    }
+    assert(n_embd_k_gqa >= hparams.n_embd_k_gqa(il));
 
     // Use padded head_dim for disabled_turbo types so the full padded data is returned
+    const bool k_is_disabled_turbo = (k->type == GGML_TYPE_F16 || k->type == GGML_TYPE_F32);
     const uint32_t head_k = hparams.n_embd_head_k(il);
     const uint32_t head_k_eff = (k_is_disabled_turbo && head_k % 128 != 0)
         ? ((head_k + 127) / 128) * 128 : head_k;
