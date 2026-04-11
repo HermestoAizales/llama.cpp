@@ -8,9 +8,20 @@ name: Fork CI
 # The upstream build.yml (30+ jobs) and release.yml are overkill for our fork.
 
 on:
-  push:
-    branches: ["feature/hisa"]
   workflow_dispatch:
+    inputs:
+      build_mac:
+        description: 'Build macOS ARM64'
+        type: boolean
+        default: false
+      build_win:
+        description: 'Build Windows CUDA/CPU'
+        type: boolean
+        default: false
+      build_linux:
+        description: 'Build Ubuntu ARM64'
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
@@ -24,6 +35,7 @@ jobs:
   # macOS ARM64 (Metal)
   # ──────────────────────────────────────────────
   macOS-arm64:
+    if: github.event.inputs.build_mac == 'true'
     runs-on: macos-14
     steps:
       - name: Clone
@@ -173,7 +185,7 @@ jobs:
             -DGGML_CUDA=ON ^
             -DLLAMA_BUILD_BORINGSSL=ON ^
             -DGGML_CUDA_CUB_3DOT2=ON
-          set /A NINJA_JOBS=%NUMBER_OF_PROCESSORS%-1
+          set /A NINJA_JOBS=%NUMBER_of_PROCESSORS%-1
           cmake --build build --config Release -j %NINJA_JOBS% --target ggml-cuda
 
       - name: Upload artifacts
