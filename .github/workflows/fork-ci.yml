@@ -24,7 +24,6 @@ jobs:
   # macOS ARM64 (Metal)
   # ──────────────────────────────────────────────
   macOS-arm64:
-    if: github.event.inputs.build_mac == 'true' || github.event_name == 'workflow_dispatch' && github.event.inputs.build_mac == 'true'
     runs-on: macos-14
     steps:
       - name: Clone
