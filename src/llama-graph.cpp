@@ -1906,12 +1906,14 @@ ggml_tensor * llm_graph_context::build_hisa_sparse_attn(
     ggml_tensor * k_bp = ggml_cont(ctx0, k);
     ggml_tensor * v_bp = ggml_cont(ctx0, v);
 
+    // Prepare Q in F32 for scoring to maintain precision during MulMat
+    ggml_tensor * q_f32 = ggml_cast(ctx0, q, GGML_TYPE_F32);
+    cb(q_f32, "hisa_q_f32", il);
+
     // Cast K to F16 for block_pool to reduce bandwidth and memory footprint.
     // F16 precision is sufficient for mean pooling in most cases.
-    ggml_tensor * k_bp = ggml_cont(ctx0, k);
-    ggml_tensor * v_bp = ggml_cont(ctx0, v);
     ggml_tensor * k_f16_pool = ggml_cast(ctx0, k_bp, GGML_TYPE_F16);
-    
+
     // Step 1: Block-level coarse filtering
     // k_blocks: [d, n_blocks, n_head_kv, n_stream] (F16)
     ggml_tensor * k_blocks = ggml_hisa_block_pool(ctx0, k_f16_pool, B);
