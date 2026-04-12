@@ -4916,7 +4916,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                 return false;
             } break;
         case GGML_OP_DUP:
-            {
+            return true;
         case GGML_OP_HISA_BLOCK_POOL:
             return true;
         case GGML_OP_HISA_GATHER:
@@ -4924,7 +4924,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_HISA_BLOCK_GATHER:
             return true;
         case GGML_OP_HISA_GATHER_MASK:
-            return true;              return true;
+            return true;
             } break;
         case GGML_OP_REPEAT:
             {
