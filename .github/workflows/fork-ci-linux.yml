@@ -1,8 +1,6 @@
 name: Fork CI Linux
 
 on:
-  push:
-    branches: ["feature/*", "master"]
   workflow_dispatch:
 
 concurrency:

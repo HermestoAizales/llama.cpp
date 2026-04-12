@@ -1,8 +1,6 @@
 name: Fork CI Windows
 
 on:
-  push:
-    branches: ["feature/*", "master"]
   workflow_dispatch:
 
 concurrency:
