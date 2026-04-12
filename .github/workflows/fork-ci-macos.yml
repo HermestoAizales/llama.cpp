@@ -1,0 +1,44 @@
+name: Fork CI macOS
+
+on:
+  push:
+    branches: ["feature/*", "master"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CMAKE_ARGS: "-DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DGGML_RPC=ON"
+
+jobs:
+  macOS-arm64:
+    runs-on: macos-14
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: fork-macos-arm64
+          evict-old-files: 1d
+
+      - name: Build
+        run: |
+          cmake -B build \
+            -DGGML_METAL_USE_BF16=ON \
+            -DGGML_METAL_EMBED_LIBRARY=ON \
+            -DCMAKE_INSTALL_RPATH='@loader_path' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release -j $(sysctl -n hw.logicalcpu)
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          path: build/bin/
+          name: llama-bin-macos-arm64
