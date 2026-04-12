@@ -4925,7 +4925,6 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
             return true;
         case GGML_OP_HISA_GATHER_MASK:
             return true;
-            } break;
         case GGML_OP_REPEAT:
             {
                 ggml_type src0_type = op->src[0]->type;
