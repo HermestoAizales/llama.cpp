@@ -57,7 +57,7 @@
 #include "ggml-cuda/set.cuh"
 #include "ggml-cuda/set-rows.cuh"
 #include "ggml-cuda/pad_reflect_1d.cuh"
-#include "ggml-cuda/solve_tri.cuh"
+#include "ggml-cuda/hisa.cuh"
 #include "ggml-cuda/tri.cuh"
 #include "ggml-cuda/cumsum.cuh"
 #include "ggml-cuda/fill.cuh"
@@ -2546,25 +2546,14 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
         ne_get_rows, 1, 1, sizeof(int32_t), ne_get_rows*sizeof(int32_t), ne_get_rows*sizeof(int32_t),
         nb1, nb2, nb3, stream);
 }
-
-static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst) {
-    switch (dst->op) {
         case GGML_OP_HISA_BLOCK_POOL:
-            ggml_cuda_op_hisa_block_pool(ctx, dst);
-            break;
+            return true;
         case GGML_OP_HISA_GATHER:
-            ggml_cuda_op_hisa_gather(ctx, dst);
-            break;
+            return true;
         case GGML_OP_HISA_BLOCK_GATHER:
-            ggml_cuda_op_hisa_block_gather(ctx, dst);
-            break;
+            return true;
         case GGML_OP_HISA_GATHER_MASK:
-            ggml_cuda_op_hisa_gather_mask(ctx, dst);
-            break;
-        case GGML_OP_ARGMAX:
-            ggml_cuda_argmax(ctx, dst);
-            break;
-        case GGML_OP_COUNT_EQUAL:
+            return true;      case GGML_OP_COUNT_EQUAL:
             ggml_cuda_count_equal(ctx, dst);
             break;
         case GGML_OP_REPEAT:
@@ -4919,25 +4908,14 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
             } break;
         case GGML_OP_DUP:
             {
-                ggml_type src0_type = op->src[0]->type;
-                return src0_type != GGML_TYPE_I32 && src0_type != GGML_TYPE_I16;
-            } break;
         case GGML_OP_HISA_BLOCK_POOL:
-            ggml_cuda_op_hisa_block_pool(ctx, dst);
-            break;
+            return true;
         case GGML_OP_HISA_GATHER:
-            ggml_cuda_op_hisa_gather(ctx, dst);
-            break;
+            return true;
         case GGML_OP_HISA_BLOCK_GATHER:
-            ggml_cuda_op_hisa_block_gather(ctx, dst);
-            break;
+            return true;
         case GGML_OP_HISA_GATHER_MASK:
-            ggml_cuda_op_hisa_gather_mask(ctx, dst);
-            break;
-        case GGML_OP_ARGMAX:
-        case GGML_OP_COUNT_EQUAL:
-            {
-                return true;
+            return true;              return true;
             } break;
         case GGML_OP_REPEAT:
             {
