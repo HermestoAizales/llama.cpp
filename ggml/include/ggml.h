@@ -577,6 +577,11 @@ extern "C" {
 
         GGML_OP_GLU,
 
+        GGML_OP_HISA_BLOCK_POOL,    // HISA: mean-pool K rows into blocks
+        GGML_OP_HISA_GATHER,        // HISA: gather rows by index list
+        GGML_OP_HISA_BLOCK_GATHER,  // HISA: gather full blocks by block index list
+        GGML_OP_HISA_GATHER_MASK,  // HISA: gather mask rows via two-level index mapping
+
         GGML_OP_COUNT,
     };
 
