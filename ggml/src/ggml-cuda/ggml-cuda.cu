@@ -2547,16 +2547,18 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
         nb1, nb2, nb3, stream);
 }
 
-static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst) {
-    switch (dst->op) {
         case GGML_OP_HISA_BLOCK_POOL:
-            return true;
+            ggml_cuda_op_hisa_block_pool(ctx, dst);
+            break;
         case GGML_OP_HISA_GATHER:
-            return true;
+            ggml_cuda_op_hisa_gather(ctx, dst);
+            break;
         case GGML_OP_HISA_BLOCK_GATHER:
-            return true;
+            ggml_cuda_op_hisa_block_gather(ctx, dst);
+            break;
         case GGML_OP_HISA_GATHER_MASK:
-            return true;
+            ggml_cuda_op_hisa_gather_mask(ctx, dst);
+            break;
         case GGML_OP_COUNT_EQUAL:
             ggml_cuda_count_equal(ctx, dst);
             break;
