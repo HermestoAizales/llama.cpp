@@ -2549,6 +2549,18 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
 
 static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst) {
     switch (dst->op) {
+        case GGML_OP_HISA_BLOCK_POOL:
+            ggml_cuda_op_hisa_block_pool(ctx, dst);
+            break;
+        case GGML_OP_HISA_GATHER:
+            ggml_cuda_op_hisa_gather(ctx, dst);
+            break;
+        case GGML_OP_HISA_BLOCK_GATHER:
+            ggml_cuda_op_hisa_block_gather(ctx, dst);
+            break;
+        case GGML_OP_HISA_GATHER_MASK:
+            ggml_cuda_op_hisa_gather_mask(ctx, dst);
+            break;
         case GGML_OP_ARGMAX:
             ggml_cuda_argmax(ctx, dst);
             break;
@@ -4910,6 +4922,18 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                 ggml_type src0_type = op->src[0]->type;
                 return src0_type != GGML_TYPE_I32 && src0_type != GGML_TYPE_I16;
             } break;
+        case GGML_OP_HISA_BLOCK_POOL:
+            ggml_cuda_op_hisa_block_pool(ctx, dst);
+            break;
+        case GGML_OP_HISA_GATHER:
+            ggml_cuda_op_hisa_gather(ctx, dst);
+            break;
+        case GGML_OP_HISA_BLOCK_GATHER:
+            ggml_cuda_op_hisa_block_gather(ctx, dst);
+            break;
+        case GGML_OP_HISA_GATHER_MASK:
+            ggml_cuda_op_hisa_gather_mask(ctx, dst);
+            break;
         case GGML_OP_ARGMAX:
         case GGML_OP_COUNT_EQUAL:
             {

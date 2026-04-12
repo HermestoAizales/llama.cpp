@@ -182,6 +182,8 @@ typedef struct {
 static_assert(sizeof(block_q1_0) == sizeof(ggml_half) + QK1_0 / 8, "wrong q1_0 block size/padding");
 
 #define QK4_0 32
+#define QR4_0 2
+#define QI4_0 (QK4_0 / (4 * QR4_0))
 typedef struct {
     ggml_half d;           // delta
     uint8_t qs[QK4_0 / 2]; // nibbles / quants
@@ -189,6 +191,8 @@ typedef struct {
 static_assert(sizeof(block_q4_0) == sizeof(ggml_half) + QK4_0 / 2, "wrong q4_0 block size/padding");
 
 #define QK4_1 32
+#define QR4_1 2
+#define QI4_1 (QK4_1 / (4 * QR4_1))
 typedef struct {
     GGML_EXTENSION union {
         struct {
