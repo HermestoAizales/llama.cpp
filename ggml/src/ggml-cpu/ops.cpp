@@ -11212,3 +11212,28 @@ void ggml_compute_forward_opt_step_sgd(const ggml_compute_params * params, ggml_
             }
     }
 }
+
+// HISA implementations (simple pass-through for CPU fallback)
+void ggml_compute_forward_hisa_block_pool(const ggml_compute_params * params, ggml_tensor * dst) {
+    GGML_UNUSED(params);
+    GGML_UNUSED(dst);
+    // TODO: implement HISA block pool on CPU
+}
+
+void ggml_compute_forward_hisa_gather(const ggml_compute_params * params, ggml_tensor * dst) {
+    GGML_UNUSED(params);
+    GGML_UNUSED(dst);
+    // TODO: implement HISA gather on CPU
+}
+
+void ggml_compute_forward_hisa_block_gather(const ggml_compute_params * params, ggml_tensor * dst) {
+    GGML_UNUSED(params);
+    GGML_UNUSED(dst);
+    // TODO: implement HISA block gather on CPU
+}
+
+void ggml_compute_forward_hisa_gather_mask(const ggml_compute_params * params, ggml_tensor * dst) {
+    GGML_UNUSED(params);
+    GGML_UNUSED(dst);
+    // TODO: implement HISA gather mask on CPU
+}

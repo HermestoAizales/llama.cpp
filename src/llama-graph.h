@@ -793,31 +793,30 @@ struct llm_graph_context {
            llm_norm_type   type,
                      int   il) const;
 
-    ggml_tensor * build_attn_mha(
-            ggml_tensor * q,
-            ggml_tensor * k,
-            ggml_tensor * v,
-            ggml_tensor * kq_mask,
-            ggml_tensor * sinks,
-            ggml_tensor * v_mla,
-            float   kq_scale,
-            int     il) const;
-
-    ggml_tensor * build_hisa_sparse_attn(
-            ggml_tensor * q,
-            ggml_tensor * k,
-            ggml_tensor * v,
-            ggml_tensor * kq_mask,
-            ggml_tensor * sinks,
-            ggml_tensor * v_mla,
-            float   kq_scale,
-            int     il) const;
+    ggml_tensor * build_ffn(
+             ggml_tensor * cur,
+             ggml_tensor * up,
+             ggml_tensor * up_b,
+             ggml_tensor * up_s,
+             ggml_tensor * gate,
+             ggml_tensor * gate_b,
+             ggml_tensor * gate_s,
+             ggml_tensor * down,
              ggml_tensor * down_b,
              ggml_tensor * down_s,
              ggml_tensor * act_scales,
          llm_ffn_op_type   type_op,
        llm_ffn_gate_type   type_gate,
                      int   il) const;
+
+    ggml_tensor * build_hisa_sparse_attn(
+             ggml_tensor * q,
+             ggml_tensor * k,
+             ggml_tensor * v,
+             ggml_tensor * mask,
+             uint32_t      n_kv,
+             uint32_t      n_groups,
+             uint32_t      block_size) const;
 
     // build MoE FFN without bias tensors
     ggml_tensor * build_moe_ffn(

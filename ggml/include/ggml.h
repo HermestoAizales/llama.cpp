@@ -580,7 +580,7 @@ extern "C" {
         GGML_OP_HISA_BLOCK_POOL,    // HISA: mean-pool K rows into blocks
         GGML_OP_HISA_GATHER,        // HISA: gather rows by index list
         GGML_OP_HISA_BLOCK_GATHER,  // HISA: gather full blocks by block index list
-        GGML_OP_HISA_GATHER_MASK,  // HISA: gather mask rows via two-level index mapping
+        GGML_OP_HISA_GATHER_MASK,   // HISA: gather mask rows via two-level index mapping
 
         GGML_OP_COUNT,
     };
@@ -864,6 +864,11 @@ extern "C" {
     GGML_API struct ggml_tensor * ggml_set_name   (      struct ggml_tensor * tensor, const char * name);
     GGML_ATTRIBUTE_FORMAT(2, 3)
     GGML_API struct ggml_tensor * ggml_format_name(      struct ggml_tensor * tensor, const char * fmt, ...);
+
+    GGML_API struct ggml_tensor * ggml_hisa_block_pool(struct ggml_context * ctx, struct ggml_tensor * src, uint32_t block_size);
+    GGML_API struct ggml_tensor * ggml_hisa_block_gather(struct ggml_context * ctx, struct ggml_tensor * src, struct ggml_tensor * indices, uint32_t block_size);
+    GGML_API struct ggml_tensor * ggml_hisa_gather(struct ggml_context * ctx, struct ggml_tensor * src, struct ggml_tensor * indices);
+    GGML_API struct ggml_tensor * ggml_hisa_gather_mask(struct ggml_context * ctx, struct ggml_tensor * mask, struct ggml_tensor * indices_topm, struct ggml_tensor * indices_budget, uint32_t block_size);
 
     // Tensor flags
     GGML_API void ggml_set_input(struct ggml_tensor * tensor);

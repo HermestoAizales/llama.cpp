@@ -1279,4 +1279,3 @@ jobs:
            GG_BUILD_KLEIDIAI=1 \
            GG_BUILD_EXTRA_TESTS_0=1 \
            bash ./ci/run.sh ./tmp/results ./tmp/mnt
-build trigger

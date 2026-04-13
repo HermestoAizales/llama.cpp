@@ -38,6 +38,10 @@ void ggml_compute_forward_cumsum(const struct ggml_compute_params * params, stru
 void ggml_compute_forward_mean(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_argmax(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_count_equal(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+void ggml_compute_forward_hisa_block_pool(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+void ggml_compute_forward_hisa_gather(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+void ggml_compute_forward_hisa_block_gather(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+void ggml_compute_forward_hisa_gather_mask(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_repeat(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_repeat_back(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_concat(const struct ggml_compute_params * params, struct ggml_tensor * dst);

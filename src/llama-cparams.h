@@ -40,6 +40,10 @@ struct llama_cparams {
     bool kv_unified;
     bool pipeline_parallel;
 
+    uint32_t hisa_block_size = 0;
+    uint32_t hisa_top_m     = 0;
+    uint32_t hisa_budget    = 0;
+
     enum llama_pooling_type pooling_type;
 
     ggml_backend_sched_eval_callback cb_eval;
