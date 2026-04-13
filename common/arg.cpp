@@ -1478,12 +1478,20 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
-        {"-sp", "--special"},
-        string_format("special tokens output enabled (default: %s)", params.special ? "true" : "false"),
+        {"--hisa"},
+        "use Hierarchical Indexed Sparse Attention",
         [](common_params & params) {
-            params.special = true;
+            params.hisa = true;
         }
-    ).set_examples({LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_SERVER}));
+    ).set_env("LLAMA_ARG_HISA"));
+    add_opt(common_arg(
+        {"--hisa-min-tokens"}, "N",
+        string_format("minimum tokens for HISA to be active (default: %d)", params.hisa_min_tokens),
+        [](common_params & params, int value) {
+            params.hisa_min_tokens = value;
+        }
+    ).set_env("LLAMA_ARG_HISA_MIN_TOKENS"));
+
     add_opt(common_arg(
         {"-cnv", "--conversation"},
         {"-no-cnv", "--no-conversation"},

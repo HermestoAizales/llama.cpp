@@ -430,6 +430,11 @@ struct common_params {
     float   yarn_beta_slow        = -1.0f; // YaRN high correction dim
     int32_t yarn_orig_ctx         =     0; // YaRN original context length
 
+    // HISA params
+    bool    hisa                   = false; // use Hierarchical Indexed Sparse Attention
+    int32_t hisa_min_tokens        = 1;      // minimum tokens for HISA to be active
+
+
     // offload params
     std::vector<ggml_backend_dev_t> devices; // devices to use for offloading
 
