@@ -455,6 +455,7 @@ struct mtmd_context {
         // set preprocessor
         switch (proj) {
             case PROJECTOR_TYPE_QWEN2A:
+            case PROJECTOR_TYPE_QWEN3A:
             case PROJECTOR_TYPE_QWEN25O:
                 {
                     // <|audio_bos|> ... (embeddings) ... <|audio_eos|>
@@ -1016,8 +1017,12 @@ float * mtmd_get_output_embd(mtmd_context * ctx) {
     return ctx->image_embd_v.data();
 }
 
-bool mtmd_decode_use_non_causal(mtmd_context * ctx) {
-    switch (ctx->proj_type_v()) {
+bool mtmd_decode_use_non_causal(mtmd_context * ctx, const mtmd_input_chunk * chunk) {
+    auto proj_type = ctx->proj_type_v();
+    if (chunk && chunk->type == MTMD_INPUT_CHUNK_TYPE_AUDIO) {
+        proj_type = ctx->proj_type_a();
+    }
+    switch (proj_type) {
         case PROJECTOR_TYPE_GEMMA3:
         case PROJECTOR_TYPE_GEMMA4V:
             return true;
@@ -1027,6 +1032,10 @@ bool mtmd_decode_use_non_causal(mtmd_context * ctx) {
 }
 
 bool mtmd_decode_use_mrope(mtmd_context * ctx) {
+    if (ctx->ctx_v == nullptr && ctx->proj_type_a() == PROJECTOR_TYPE_QWEN3A) {
+        // qwen3-asr
+        return true;
+    }
     switch (ctx->proj_type_v()) {
         case PROJECTOR_TYPE_QWEN2VL:
         case PROJECTOR_TYPE_QWEN25VL:
