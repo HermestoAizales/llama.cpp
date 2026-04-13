@@ -68,16 +68,6 @@ typedef sycl::half2 ggml_half2;
 #define GGML_COMMON_AGGR_U
 #define GGML_COMMON_AGGR_S data
 
-#else
-// For plain CPU/ARM backends, provide half type
-#ifdef __APPLE__
-#include <metal_stdlib>
-typedef half  ggml_half;
-typedef half2 ggml_half2;
-#else
-typedef uint16_t ggml_half;
-typedef uint32_t ggml_half2;
-#endif
 #define GGML_COMMON_DECL
 #endif
 
