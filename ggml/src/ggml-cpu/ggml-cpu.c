@@ -1976,19 +1976,39 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             } break;
         case GGML_OP_HISA_BLOCK_POOL:
             {
+                struct timespec ts_start, ts_end;
+                clock_gettime(CLOCK_MONOTONIC, &ts_start);
                 ggml_compute_forward_hisa_block_pool(params, tensor);
+                clock_gettime(CLOCK_MONOTONIC, &ts_end);
+                tensor->perf_hisa_us = (ts_end.tv_sec - ts_start.tv_sec) * 1000000ULL +
+                                       (ts_end.tv_nsec - ts_start.tv_nsec) / 1000ULL;
             } break;
         case GGML_OP_HISA_GATHER:
             {
+                struct timespec ts_start, ts_end;
+                clock_gettime(CLOCK_MONOTONIC, &ts_start);
                 ggml_compute_forward_hisa_gather(params, tensor);
+                clock_gettime(CLOCK_MONOTONIC, &ts_end);
+                tensor->perf_hisa_us = (ts_end.tv_sec - ts_start.tv_sec) * 1000000ULL +
+                                       (ts_end.tv_nsec - ts_start.tv_nsec) / 1000ULL;
             } break;
         case GGML_OP_HISA_BLOCK_GATHER:
             {
+                struct timespec ts_start, ts_end;
+                clock_gettime(CLOCK_MONOTONIC, &ts_start);
                 ggml_compute_forward_hisa_block_gather(params, tensor);
+                clock_gettime(CLOCK_MONOTONIC, &ts_end);
+                tensor->perf_hisa_us = (ts_end.tv_sec - ts_start.tv_sec) * 1000000ULL +
+                                       (ts_end.tv_nsec - ts_start.tv_nsec) / 1000ULL;
             } break;
         case GGML_OP_HISA_GATHER_MASK:
             {
+                struct timespec ts_start, ts_end;
+                clock_gettime(CLOCK_MONOTONIC, &ts_start);
                 ggml_compute_forward_hisa_gather_mask(params, tensor);
+                clock_gettime(CLOCK_MONOTONIC, &ts_end);
+                tensor->perf_hisa_us = (ts_end.tv_sec - ts_start.tv_sec) * 1000000ULL +
+                                       (ts_end.tv_nsec - ts_start.tv_nsec) / 1000ULL;
             } break;
         case GGML_OP_FLASH_ATTN_EXT:
             {
