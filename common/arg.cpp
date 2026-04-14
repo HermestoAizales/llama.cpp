@@ -1492,7 +1492,67 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_HISA_MIN_TOKENS"));
 
-    add_opt(common_arg(
+        {
+        common_arg arg_hisa_block;
+        arg_hisa_block.args = {"--hisa-block-size"};
+        arg_hisa_block.value_hint = "N";
+        arg_hisa_block.help = "block size for HISA sparse attention (default: 32)";
+        arg_hisa_block.handler_int = [](common_params & params, int value) { params.hisa_block_size = value; };
+        arg_hisa_block.set_env("LLAMA_ARG_HISA_BLOCK_SIZE");
+        add_opt(arg_hisa_block);
+    }
+
+    {
+        common_arg arg_hisa_budget_mode;
+        arg_hisa_budget_mode.args = {"--hisa-budget-mode"};
+        arg_hisa_budget_mode.value_hint = "N";
+        arg_hisa_budget_mode.help = "HISA budget mode (0=fixed, 1=adaptive, 2=percentage) (default: 0)";
+        arg_hisa_budget_mode.handler_int = [](common_params & params, int value) { params.hisa_budget_mode = value; };
+        arg_hisa_budget_mode.set_env("LLAMA_ARG_HISA_BUDGET_MODE");
+        add_opt(arg_hisa_budget_mode);
+    }
+
+    {
+        common_arg arg_hisa_budget_pct;
+        arg_hisa_budget_pct.args = {"--hisa-budget-pct"};
+        arg_hisa_budget_pct.value_hint = "N";
+        arg_hisa_budget_pct.help = "HISA budget percentage (0-100) (default: 100.0)";
+        arg_hisa_budget_pct.handler_int = [](common_params & params, int value) { params.hisa_budget_pct = static_cast<float>(value); };
+        arg_hisa_budget_pct.set_env("LLAMA_ARG_HISA_BUDGET_PCT");
+        add_opt(arg_hisa_budget_pct);
+    }
+
+    {
+        common_arg arg_hisa_adaptive;
+        arg_hisa_adaptive.args = {"--hisa-adaptive"};
+        arg_hisa_adaptive.value_hint = "BOOL";
+        arg_hisa_adaptive.help = "enable adaptive HISA budget (default: false)";
+        arg_hisa_adaptive.handler_bool = [](common_params & params, bool value) { params.hisa_adaptive = value; };
+        arg_hisa_adaptive.set_env("LLAMA_ARG_HISA_ADAPTIVE");
+        add_opt(arg_hisa_adaptive);
+    }
+
+    {
+        common_arg arg_hisa_per_layer;
+        arg_hisa_per_layer.args = {"--hisa-per-layer"};
+        arg_hisa_per_layer.value_hint = "BOOL";
+        arg_hisa_per_layer.help = "enable per-layer HISA configuration (default: false)";
+        arg_hisa_per_layer.handler_bool = [](common_params & params, bool value) { params.hisa_per_layer = value; };
+        arg_hisa_per_layer.set_env("LLAMA_ARG_HISA_PER_LAYER");
+        add_opt(arg_hisa_per_layer);
+    }
+
+    {
+        common_arg arg_hisa;
+        arg_hisa.args = {"--hisa"};
+        arg_hisa.value_hint = "BOOL";
+        arg_hisa.help = "use Hierarchical Indexed Sparse Attention (default: false)";
+        arg_hisa.handler_bool = [](common_params & params, bool value) { params.hisa = value; };
+        arg_hisa.set_env("LLAMA_ARG_HISA");
+        add_opt(arg_hisa);
+    }
+
+add_opt(common_arg(
         {"-cnv", "--conversation"},
         {"-no-cnv", "--no-conversation"},
         "whether to run in conversation mode:\n"

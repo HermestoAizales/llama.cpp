@@ -433,6 +433,11 @@ struct common_params {
     // HISA params
     bool    hisa                   = false; // use Hierarchical Indexed Sparse Attention
     int32_t hisa_min_tokens        = 1;      // minimum tokens for HISA to be active
+    int32_t hisa_block_size        = 32;    // block size for HISA sparse attention
+    int32_t hisa_budget_mode       = 0;      // budget mode: 0=fixed, 1=adaptive, 2=percentage
+    float   hisa_budget_pct        = 100.0f; // budget percentage (0-100)
+    bool    hisa_adaptive          = false;  // enable adaptive budget
+    bool    hisa_per_layer        = false;  // enable per-layer configuration
 
 
     // offload params
