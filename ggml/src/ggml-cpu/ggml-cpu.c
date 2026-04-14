@@ -38,8 +38,14 @@ static uint64_t* hisa_get_timing(void) {
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#if !defined(_WIN32)
 #include <pthread.h>
+#endif
+#if defined(_WIN32)
+static __declspec(thread) uint64_t hisa_timing_us = 0;
+#else
 static __thread uint64_t hisa_timing_us = 0;
+#endif
 #include <inttypes.h>
 #include <stdio.h>
 #include <float.h>
