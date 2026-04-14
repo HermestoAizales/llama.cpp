@@ -15,12 +15,12 @@
 #include "ggml.h"
 #include "common.h"
 
-static uint64_t hisa_timing_storage = 0;
 static uint64_t* hisa_get_timing(void) {
 #if defined(_WIN32)
     static __declspec(thread) uint64_t tls_val = 0;
     return &tls_val;
 #else
+    static uint64_t hisa_timing_storage = 0;
     return &hisa_timing_storage;
 #endif
 }
