@@ -42,48 +42,115 @@ static void get_output_dims(const ggml_tensor * dst,
 }
 
 // ============================================================ //
+// ============================================================ //
 // HISA Block Pool - CPU Implementation                         //
 // ============================================================ //
 
-void ggml_compute_forward_hisa_block_pool(const ggml_compute_params * params, ggml_tensor * dst) {
+// Fast path for common block sizes
+static void ggml_compute_forward_hisa_block_pool_32(const ggml_compute_params * params, ggml_tensor * dst) {
     if (params->ith != 0) return;
-    
     const ggml_tensor * src = dst->src[0];
     if (!src) return;
-    
     const int32_t block_size = ggml_get_op_params_i32(dst, 0);
-    if (block_size <= 0) return;
-    
+    if (block_size != 32) return;
     GGML_TENSOR_LOCALS(int64_t, ne0, src, ne)
     GGML_TENSOR_LOCALS(size_t,  nb0, src, nb)
     GGML_TENSOR_LOCALS(int64_t, ne,  dst,  ne)
     GGML_TENSOR_LOCALS(size_t,  nb,  dst,  nb)
-    
     const int64_t d = ne0;
-    const int64_t n_kv = ne1;
-    const int64_t n_heads = ne2;
-    const int64_t n_batch = ne3;
     const int64_t n_blocks = dst->ne[1];
-    
     const float * src_data = get_data_f32_const(src);
     float * dst_data = get_data_f32(dst);
-    
-    (void)d; (void)n_kv; (void)n_heads; (void)n_batch; (void)n_blocks;
-    
-    // Simple CPU implementation
     #pragma omp parallel for collapse(2) schedule(dynamic)
     for (int64_t iblk = 0; iblk < n_blocks; iblk++) {
-        for (int64_t ih = 0; ih < n_heads; ih++) {
-            const int64_t src_row_base = iblk * block_size;
-            const char * src_base = (const char *)src_data + ih * src->nb[2];
-            char * dst_base = (char *)dst_data + ih * dst->nb[2];
-            
+        for (int64_t ih = 0; ih < ne1; ih++) {
+            const float * src_base = (const float *)((const char *)src_data + ih * src->nb[2]);
+            float * dst_base = (float *)((char *)dst_data + ih * dst->nb[2]);
+            for (int64_t i = 0; i < 32; i += 8) {
+                float sum0=0,sum1=0,sum2=0,sum3=0,sum4=0,sum5=0,sum6=0,sum7=0;
+                for (int64_t j = 0; j < d; j += 8) {
+                    #pragma omp simd
+                    for (int k = 0; k < 8; k++) {
+                        if (i + k >= 32) continue;
+                        const float *row=&src_base[((iblk*32+i+k)*d)+j];
+                        sum0+=row[j+0]; sum1+=row[j+1]; sum2+=row[j+2]; sum3+=row[j+3];
+                        sum4+=row[j+4]; sum5+=row[j+5]; sum6+=row[j+6]; sum7+=row[j+7];
+                    }
+                }
+                dst_base[(i+0)*d]=sum0/(float)32; dst_base[(i+1)*d]=sum1/(float)32;
+                dst_base[(i+2)*d]=sum2/(float)32; dst_base[(i+3)*d]=sum3/(float)32;
+                dst_base[(i+4)*d]=sum4/(float)32; dst_base[(i+5)*d]=sum5/(float)32;
+                dst_base[(i+6)*d]=sum6/(float)32; dst_base[(i+7)*d]=sum7/(float)32;
+            }
+        }
+    }
+}
+
+static void ggml_compute_forward_hisa_block_pool_64(const ggml_compute_params * params, ggml_tensor * dst) {
+    if (params->ith != 0) return;
+    const ggml_tensor * src = dst->src[0];
+    if (!src) return;
+    const int32_t block_size = ggml_get_op_params_i32(dst, 0);
+    if (block_size != 64) return;
+    GGML_TENSOR_LOCALS(int64_t, ne0, src, ne)
+    GGML_TENSOR_LOCALS(size_t,  nb0, src, nb)
+    GGML_TENSOR_LOCALS(int64_t, ne,  dst,  ne)
+    GGML_TENSOR_LOCALS(size_t,  nb,  dst,  nb)
+    const int64_t d = ne0;
+    const int64_t n_blocks = dst->ne[1];
+    const float * src_data = get_data_f32_const(src);
+    float * dst_data = get_data_f32(dst);
+    #pragma omp parallel for collapse(2) schedule(dynamic)
+    for (int64_t iblk = 0; iblk < n_blocks; iblk++) {
+        for (int64_t ih = 0; ih < ne1; ih++) {
+            const float * src_base = (const float *)((const char *)src_data + ih * src->nb[2]);
+            float * dst_base = (float *)((char *)dst_data + ih * dst->nb[2]);
+            for (int64_t i = 0; i < 64; i += 8) {
+                float sum0=0,sum1=0,sum2=0,sum3=0,sum4=0,sum5=0,sum6=0,sum7=0;
+                for (int64_t j = 0; j < d; j += 8) {
+                    #pragma omp simd
+                    for (int k = 0; k < 8; k++) {
+                        if (i + k >= 64) continue;
+                        const float *row=&src_base[((iblk*64+i+k)*d)+j];
+                        sum0+=row[j+0]; sum1+=row[j+1]; sum2+=row[j+2]; sum3+=row[j+3];
+                        sum4+=row[j+4]; sum5+=row[j+5]; sum6+=row[j+6]; sum7+=row[j+7];
+                    }
+                }
+                dst_base[(i+0)*d]=sum0/64.0f; dst_base[(i+1)*d]=sum1/64.0f;
+                dst_base[(i+2)*d]=sum2/64.0f; dst_base[(i+3)*d]=sum3/64.0f;
+                dst_base[(i+4)*d]=sum4/64.0f; dst_base[(i+5)*d]=sum5/64.0f;
+                dst_base[(i+6)*d]=sum6/64.0f; dst_base[(i+7)*d]=sum7/64.0f;
+            }
+        }
+    }
+}
+
+void ggml_compute_forward_hisa_block_pool(const ggml_compute_params * params, ggml_tensor * dst) {
+    const int32_t block_size = ggml_get_op_params_i32(dst, 0);
+    if      (block_size == 32) return ggml_compute_forward_hisa_block_pool_32(params, dst);
+    else if (block_size == 64) return ggml_compute_forward_hisa_block_pool_64(params, dst);
+    if (params->ith != 0) return;
+    const ggml_tensor * src = dst->src[0];
+    if (!src) return;
+    GGML_TENSOR_LOCALS(int64_t, ne0, src, ne)
+    GGML_TENSOR_LOCALS(size_t,  nb0, src, nb)
+    GGML_TENSOR_LOCALS(int64_t, ne,  dst,  ne)
+    GGML_TENSOR_LOCALS(size_t,  nb,  dst,  nb)
+    const int64_t d = ne0;
+    const int64_t n_blocks = dst->ne[1];
+    const float * src_data = get_data_f32_const(src);
+    float * dst_data = get_data_f32(dst);
+    #pragma omp parallel for collapse(2) schedule(dynamic)
+    for (int64_t iblk = 0; iblk < n_blocks; iblk++) {
+        for (int64_t ih = 0; ih < ne1; ih++) {
+            const float * src_base = (const float *)((const char *)src_data + ih * src->nb[2]);
+            float * dst_base = (float *)((char *)dst_data + ih * dst->nb[2]);
             for (int64_t i = 0; i < block_size; i++) {
                 float sum = 0.0f;
                 for (int64_t j = 0; j < d; j++) {
-                    sum += ((const float *)src_base)[(src_row_base + i) * d + j];
+                    sum += ((const float *)src_base)[(iblk * block_size + i) * d + j];
                 }
-                ((float *)dst_base)[i * d] = sum / (float)block_size;
+                dst_base[i * d] = sum / (float)block_size;
             }
         }
     }
@@ -109,21 +176,19 @@ void ggml_compute_forward_hisa_gather(const ggml_compute_params * params, ggml_t
     GGML_TENSOR_LOCALS(size_t,  nb,  dst,  nb)
     
     const int64_t d = ne0;
-    const int64_t n_heads = ne1;
-    const int64_t n_batch = ne3;
     const int64_t n_tokens = indices->ne[0];
     
     const float * src_data = get_data_f32_const(src);
     const int32_t * idx_data = (const int32_t *)indices->data;
     float * dst_data = get_data_f32(dst);
     
-    (void)d; (void)n_heads; (void)n_batch; (void)n_tokens;
+    (void)d;  (void)n_tokens;
     (void)block_size;
     
     // Simple CPU implementation
     #pragma omp parallel for collapse(2) schedule(dynamic)
-    for (int64_t ib = 0; ib < n_batch; ib++) {
-        for (int64_t ih = 0; ih < n_heads; ih++) {
+    for (int64_t ib = 0; ib < src->ne[3]; ib++) {
+        for (int64_t ih = 0; ih < ne1; ih++) {
             for (int64_t i = 0; i < n_tokens; i++) {
                 const int32_t idx = idx_data[i];
                 if (idx < 0 || idx >= (int32_t)(ne0 / block_size)) {
@@ -167,17 +232,16 @@ void ggml_compute_forward_hisa_block_gather(const ggml_compute_params * params, 
     
     const int64_t d = ne0;
     const int64_t m = block_indices->ne[0];
-    const int64_t n_batch = ne3;
     
     const float * src_data = get_data_f32_const(src);
     const int32_t * idx_data = (const int32_t *)block_indices->data;
     float * dst_data = get_data_f32(dst);
     
-    (void)d; (void)m; (void)n_batch;
+    (void)d; (void)m; 
     (void)block_size;
     
     #pragma omp parallel for schedule(dynamic)
-    for (int64_t ib = 0; ib < n_batch; ib++) {
+    for (int64_t ib = 0; ib < src->ne[3]; ib++) {
         for (int64_t i = 0; i < m; i++) {
             const int32_t block_idx = idx_data[i];
             const int64_t src_row = block_idx * block_size;
