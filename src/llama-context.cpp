@@ -2916,6 +2916,15 @@ llama_context_params llama_context_default_params() {
         /*.op_offload                  =*/ true,
         /*.swa_full                    =*/ true,
         /*.kv_unified                  =*/ false,
+
+        /*.hisa                        =*/ false,
+        /*.hisa_min_tokens             =*/ 1,
+        /*.hisa_block_size             =*/ 32,
+        /*.hisa_budget_mode            =*/ 0,
+        /*.hisa_budget_pct             =*/ 100.0f,
+        /*.hisa_adaptive               =*/ false,
+        /*.hisa_per_layer              =*/ false,
+
         /*.sampler                     =*/ nullptr,
         /*.n_sampler                   =*/ 0,
     };

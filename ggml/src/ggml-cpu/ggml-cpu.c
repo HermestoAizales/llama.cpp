@@ -1974,6 +1974,22 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_fill(params, tensor);
             } break;
+        case GGML_OP_HISA_BLOCK_POOL:
+            {
+                ggml_compute_forward_hisa_block_pool(params, tensor);
+            } break;
+        case GGML_OP_HISA_GATHER:
+            {
+                ggml_compute_forward_hisa_gather(params, tensor);
+            } break;
+        case GGML_OP_HISA_BLOCK_GATHER:
+            {
+                ggml_compute_forward_hisa_block_gather(params, tensor);
+            } break;
+        case GGML_OP_HISA_GATHER_MASK:
+            {
+                ggml_compute_forward_hisa_gather_mask(params, tensor);
+            } break;
         case GGML_OP_FLASH_ATTN_EXT:
             {
                 ggml_compute_forward_flash_attn_ext(params, tensor);

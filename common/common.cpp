@@ -1477,6 +1477,15 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.swa_full          = params.swa_full;
     cparams.kv_unified        = params.kv_unified;
 
+    // HISA parameters
+    cparams.hisa              = params.hisa;
+    cparams.hisa_min_tokens   = params.hisa_min_tokens;
+    cparams.hisa_block_size   = params.hisa_block_size;
+    cparams.hisa_budget_mode  = params.hisa_budget_mode;
+    cparams.hisa_budget_pct   = params.hisa_budget_pct;
+    cparams.hisa_adaptive     = params.hisa_adaptive;
+    cparams.hisa_per_layer    = params.hisa_per_layer;
+
     cparams.type_k = params.cache_type_k;
     cparams.type_v = params.cache_type_v;
 
