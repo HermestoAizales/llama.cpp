@@ -1996,45 +1996,53 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 hisa_timing_us = 0;
 
+                #ifndef _WIN32
                 struct timespec ts_start, ts_end;
                 clock_gettime(CLOCK_MONOTONIC, &ts_start);
                 ggml_compute_forward_hisa_block_pool(params, tensor);
                 clock_gettime(CLOCK_MONOTONIC, &ts_end);
                 hisa_timing_us = (ts_end.tv_sec - ts_start.tv_sec) * 1000000ULL +
                                        (ts_end.tv_nsec - ts_start.tv_nsec) / 1000ULL;
+#endif
             } break;
         case GGML_OP_HISA_GATHER:
             {
                 hisa_timing_us = 0;
 
+                #ifndef _WIN32
                 struct timespec ts_start, ts_end;
                 clock_gettime(CLOCK_MONOTONIC, &ts_start);
                 ggml_compute_forward_hisa_gather(params, tensor);
                 clock_gettime(CLOCK_MONOTONIC, &ts_end);
                 hisa_timing_us = (ts_end.tv_sec - ts_start.tv_sec) * 1000000ULL +
                                        (ts_end.tv_nsec - ts_start.tv_nsec) / 1000ULL;
+#endif
             } break;
         case GGML_OP_HISA_BLOCK_GATHER:
             {
                 hisa_timing_us = 0;
 
+                #ifndef _WIN32
                 struct timespec ts_start, ts_end;
                 clock_gettime(CLOCK_MONOTONIC, &ts_start);
                 ggml_compute_forward_hisa_block_gather(params, tensor);
                 clock_gettime(CLOCK_MONOTONIC, &ts_end);
                 hisa_timing_us = (ts_end.tv_sec - ts_start.tv_sec) * 1000000ULL +
                                        (ts_end.tv_nsec - ts_start.tv_nsec) / 1000ULL;
+#endif
             } break;
         case GGML_OP_HISA_GATHER_MASK:
             {
                 hisa_timing_us = 0;
 
+                #ifndef _WIN32
                 struct timespec ts_start, ts_end;
                 clock_gettime(CLOCK_MONOTONIC, &ts_start);
                 ggml_compute_forward_hisa_gather_mask(params, tensor);
                 clock_gettime(CLOCK_MONOTONIC, &ts_end);
                 hisa_timing_us = (ts_end.tv_sec - ts_start.tv_sec) * 1000000ULL +
                                        (ts_end.tv_nsec - ts_start.tv_nsec) / 1000ULL;
+#endif
             } break;
         case GGML_OP_FLASH_ATTN_EXT:
             {
