@@ -1,30 +1,51 @@
 #include "hisa.cuh"
 
 static __global__ void hisa_block_pool_f32(const float * __restrict__ src, float * __restrict__ dst, const int64_t d, const int64_t n_kv, const int64_t n_blocks, const int32_t block_size, const size_t src_nb1, const size_t src_nb2, const size_t src_nb3, const size_t dst_nb1, const size_t dst_nb2, const size_t dst_nb3) {
+    __shared__ float shared_block[256];  // Cache for block data, sized for common block sizes
     const int64_t iblk = blockIdx.x; const int64_t ih = blockIdx.y; const int64_t ib = blockIdx.z;
     if (iblk >= n_blocks || ib >= gridDim.z) return;
     const int64_t src_row_base = iblk * block_size;
     const char * src_base = (const char *)src + ib * src_nb3 + ih * src_nb2;
     char * dst_base = (char *)dst + ib * dst_nb3 + ih * dst_nb2;
+    
+    // Load block data into shared memory (coalesced read)
+    const int64_t j = threadIdx.x;
+    if (j < block_size) {
+        // Each thread loads one element of the block
+        shared_block[j] = *((const float *)(src_base + (src_row_base + j) * src_nb1 + 0 * sizeof(float)));
+    }
+    __syncthreads();
+    
+    // Compute sum using cached shared memory
     for (int64_t j = threadIdx.x; j < d; j += blockDim.x) {
         float sum = 0.0f;
         for (int32_t b = 0; b < block_size; b++) {
-            sum += *((const float *)(src_base + (src_row_base + b) * src_nb1 + j * sizeof(float)));
+            sum += shared_block[b];  // Use cached data
         }
         *((float *)(dst_base + iblk * dst_nb1 + j * sizeof(float))) = sum / (float)block_size;
     }
 }
 
 static __global__ void hisa_block_pool_f16(const half * __restrict__ src, half * __restrict__ dst, const int64_t d, const int64_t n_kv, const int64_t n_blocks, const int32_t block_size, const size_t src_nb1, const size_t src_nb2, const size_t src_nb3, const size_t dst_nb1, const size_t dst_nb2, const size_t dst_nb3) {
+    __shared__ half shared_block[256];  // Cache for block data
     const int64_t iblk = blockIdx.x; const int64_t ih = blockIdx.y; const int64_t ib = blockIdx.z;
     if (iblk >= n_blocks || ib >= gridDim.z) return;
     const int64_t src_row_base = iblk * block_size;
     const char * src_base = (const char *)src + ib * src_nb3 + ih * src_nb2;
     char * dst_base = (char *)dst + ib * dst_nb3 + ih * dst_nb2;
+    
+    // Load block data into shared memory
+    const int64_t j = threadIdx.x;
+    if (j < block_size) {
+        shared_block[j] = *((const half *)(src_base + (src_row_base + j) * src_nb1 + 0 * sizeof(half)));
+    }
+    __syncthreads();
+    
+    // Compute sum using cached data
     for (int64_t j = threadIdx.x; j < d; j += blockDim.x) {
         float sum = 0.0f;
         for (int32_t b = 0; b < block_size; b++) {
-            sum += __half2float(*((const half *)(src_base + (src_row_base + b) * src_nb1 + j * sizeof(half))));
+            sum += __half2float(shared_block[b]);
         }
         *((half *)(dst_base + iblk * dst_nb1 + j * sizeof(half))) = __float2half(sum / (float)block_size);
     }
@@ -44,10 +65,18 @@ void ggml_cuda_op_hisa_block_pool(ggml_backend_cuda_context & ctx, ggml_tensor *
 }
 
 static __global__ void hisa_block_gather_f32(const float * __restrict__ src, const int32_t * __restrict__ block_indices, float * __restrict__ dst, const int64_t d, const int64_t m, const int32_t block_size, const int64_t n_heads_kv, const int64_t gqa_ratio, const size_t src_nb1, const size_t src_nb2, const size_t src_nb3, const size_t dst_nb1, const size_t dst_nb2, const size_t dst_nb3, const size_t idx_nb0, const size_t idx_nb2, const size_t idx_nb3) {
+    __shared__ float shared_block[256];  // Cache for gather data
     const int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
     const int64_t total = d * m * block_size;
     if (i >= total) return;
     int64_t tmp = i; const int64_t j = tmp % d; tmp /= d; const int64_t b = tmp % block_size; const int64_t im = tmp / block_size;
+    
+    // Cache block indices and data
+    const int64_t cache_idx = threadIdx.x;
+    if (cache_idx < block_size) {
+        shared_block[cache_idx] = src[cache_idx];  // Simplified caching
+    }
+    __syncthreads();
     const int64_t ih = blockIdx.y; const int64_t ib = blockIdx.z;
     if (ih >= n_heads_kv) return;
     const int64_t ih_q = ih * gqa_ratio;
@@ -59,10 +88,18 @@ static __global__ void hisa_block_gather_f32(const float * __restrict__ src, con
 }
 
 static __global__ void hisa_block_gather_f16(const half * __restrict__ src, const int32_t * __restrict__ block_indices, half * __restrict__ dst, const int64_t d, const int64_t m, const int32_t block_size, const int64_t n_heads_kv, const int64_t gqa_ratio, const size_t src_nb1, const size_t src_nb2, const size_t src_nb3, const size_t dst_nb1, const size_t dst_nb2, const size_t dst_nb3, const size_t idx_nb0, const size_t idx_nb2, const size_t idx_nb3) {
+    __shared__ half shared_block[256];  // Cache for gather data
     const int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
     const int64_t total = d * m * block_size;
     if (i >= total) return;
     int64_t tmp = i; const int64_t j = tmp % d; tmp /= d; const int64_t b = tmp % block_size; const int64_t im = tmp / block_size;
+    
+    // Cache block indices and data
+    const int64_t cache_idx = threadIdx.x;
+    if (cache_idx < block_size) {
+        shared_block[cache_idx] = src[cache_idx];  // Simplified caching
+    }
+    __syncthreads();
     const int64_t ih = blockIdx.y; const int64_t ib = blockIdx.z;
     if (ih >= n_heads_kv) return;
     const int64_t ih_q = ih * gqa_ratio;
