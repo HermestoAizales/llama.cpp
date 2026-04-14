@@ -1,53 +1,78 @@
 #include "hisa.cuh"
 
 static __global__ void hisa_block_pool_f32(const float * __restrict__ src, float * __restrict__ dst, const int64_t d, const int64_t n_kv, const int64_t n_blocks, const int32_t block_size, const size_t src_nb1, const size_t src_nb2, const size_t src_nb3, const size_t dst_nb1, const size_t dst_nb2, const size_t dst_nb3) {
-    __shared__ float shared_block[256];  // Cache for block data, sized for common block sizes
+    // Shared memory cache for block data
+    __shared__ float s_data[256];
+    // Warp-level reduction using shuffle
+    unsigned active_mask = __activemask();
+    
     const int64_t iblk = blockIdx.x; const int64_t ih = blockIdx.y; const int64_t ib = blockIdx.z;
     if (iblk >= n_blocks || ib >= gridDim.z) return;
     const int64_t src_row_base = iblk * block_size;
     const char * src_base = (const char *)src + ib * src_nb3 + ih * src_nb2;
     char * dst_base = (char *)dst + ib * dst_nb3 + ih * dst_nb2;
     
-    // Load block data into shared memory (coalesced read)
-    const int64_t j = threadIdx.x;
-    if (j < block_size) {
-        // Each thread loads one element of the block
-        shared_block[j] = *((const float *)(src_base + (src_row_base + j) * src_nb1 + 0 * sizeof(float)));
+    // Each thread accumulates its own sum
+    float thread_sum = 0.0f;
+    
+    // Coalesced load of block data into shared memory
+    int tid = threadIdx.x;
+    if (tid < block_size) {
+        s_data[tid] = *((const float *)(src_base + (src_row_base + tid) * src_nb1));
     }
     __syncthreads();
     
-    // Compute sum using cached shared memory
-    for (int64_t j = threadIdx.x; j < d; j += blockDim.x) {
-        float sum = 0.0f;
-        for (int32_t b = 0; b < block_size; b++) {
-            sum += shared_block[b];  // Use cached data
-        }
-        *((float *)(dst_base + iblk * dst_nb1 + j * sizeof(float))) = sum / (float)block_size;
+    // Compute with warp-shuffle reduction
+    for (int32_t b = tid; b < block_size; b += blockDim.x) {
+        thread_sum += s_data[b];
+    }
+    
+    // Warp-level shuffle reduction
+    for (int offset = warpSize / 2; offset > 0; offset /= 2) {
+        thread_sum += __shfl_down_sync(active_mask, thread_sum, offset);
+    }
+    
+    // One thread per warp writes result
+    if (tid % warpSize == 0) {
+        atomicAdd((float*)(dst_base + iblk * dst_nb1 + (tid / warpSize) * sizeof(float)), thread_sum / (float)block_size);
     }
 }
 
 static __global__ void hisa_block_pool_f16(const half * __restrict__ src, half * __restrict__ dst, const int64_t d, const int64_t n_kv, const int64_t n_blocks, const int32_t block_size, const size_t src_nb1, const size_t src_nb2, const size_t src_nb3, const size_t dst_nb1, const size_t dst_nb2, const size_t dst_nb3) {
-    __shared__ half shared_block[256];  // Cache for block data
+    // Shared memory cache for block data
+    __shared__ half s_data[256];
+    // Warp-level reduction using shuffle
+    unsigned active_mask = __activemask();
+    
     const int64_t iblk = blockIdx.x; const int64_t ih = blockIdx.y; const int64_t ib = blockIdx.z;
     if (iblk >= n_blocks || ib >= gridDim.z) return;
     const int64_t src_row_base = iblk * block_size;
     const char * src_base = (const char *)src + ib * src_nb3 + ih * src_nb2;
     char * dst_base = (char *)dst + ib * dst_nb3 + ih * dst_nb2;
     
-    // Load block data into shared memory
-    const int64_t j = threadIdx.x;
-    if (j < block_size) {
-        shared_block[j] = *((const half *)(src_base + (src_row_base + j) * src_nb1 + 0 * sizeof(half)));
+    // Each thread accumulates its own sum
+    float thread_sum = 0.0f;
+    
+    // Coalesced load of block data into shared memory
+    int tid = threadIdx.x;
+    if (tid < block_size) {
+        s_data[tid] = *((const half *)(src_base + (src_row_base + tid) * src_nb1));
     }
     __syncthreads();
     
-    // Compute sum using cached data
-    for (int64_t j = threadIdx.x; j < d; j += blockDim.x) {
-        float sum = 0.0f;
-        for (int32_t b = 0; b < block_size; b++) {
-            sum += __half2float(shared_block[b]);
-        }
-        *((half *)(dst_base + iblk * dst_nb1 + j * sizeof(half))) = __float2half(sum / (float)block_size);
+    // Compute with warp-shuffle reduction (convert to float for computation)
+    for (int32_t b = tid; b < block_size; b += blockDim.x) {
+        thread_sum += __half2float(s_data[b]);
+    }
+    
+    // Warp-level shuffle reduction
+    for (int offset = warpSize / 2; offset > 0; offset /= 2) {
+        thread_sum += __shfl_down_sync(active_mask, thread_sum, offset);
+    }
+    
+    // One thread per warp writes result
+    if (tid % warpSize == 0) {
+        atomicAdd((float*)(dst_base + iblk * dst_nb1 + (tid / warpSize) * sizeof(float)), thread_sum / (float)block_size);
     }
 }
 
