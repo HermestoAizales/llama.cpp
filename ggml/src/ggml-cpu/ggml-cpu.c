@@ -15,6 +15,16 @@
 #include "ggml.h"
 #include "common.h"
 
+static uint64_t hisa_timing_storage = 0;
+static uint64_t* hisa_get_timing(void) {
+#if defined(_WIN32)
+    static __declspec(thread) uint64_t tls_val = 0;
+    return &tls_val;
+#else
+    return &hisa_timing_storage;
+#endif
+}
+
 #if defined(_MSC_VER) || defined(__MINGW32__)
 #include <malloc.h> // using malloc.h with MSC/MINGW
 #elif !defined(__FreeBSD__) && !defined(__NetBSD__) && !defined(__OpenBSD__)
@@ -1978,6 +1988,8 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             } break;
         case GGML_OP_HISA_BLOCK_POOL:
             {
+                hisa_timing_us = 0;
+
                 struct timespec ts_start, ts_end;
                 clock_gettime(CLOCK_MONOTONIC, &ts_start);
                 ggml_compute_forward_hisa_block_pool(params, tensor);
@@ -1987,6 +1999,8 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             } break;
         case GGML_OP_HISA_GATHER:
             {
+                hisa_timing_us = 0;
+
                 struct timespec ts_start, ts_end;
                 clock_gettime(CLOCK_MONOTONIC, &ts_start);
                 ggml_compute_forward_hisa_gather(params, tensor);
@@ -1996,6 +2010,8 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             } break;
         case GGML_OP_HISA_BLOCK_GATHER:
             {
+                hisa_timing_us = 0;
+
                 struct timespec ts_start, ts_end;
                 clock_gettime(CLOCK_MONOTONIC, &ts_start);
                 ggml_compute_forward_hisa_block_gather(params, tensor);
@@ -2005,6 +2021,8 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             } break;
         case GGML_OP_HISA_GATHER_MASK:
             {
+                hisa_timing_us = 0;
+
                 struct timespec ts_start, ts_end;
                 clock_gettime(CLOCK_MONOTONIC, &ts_start);
                 ggml_compute_forward_hisa_gather_mask(params, tensor);
