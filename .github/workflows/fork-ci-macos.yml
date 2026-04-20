@@ -24,7 +24,7 @@ jobs:
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.21
         with:
-          key: fork-macos-arm64
+          key: fork-macos-arm64-v4-hisa
           evict-old-files: 1d
 
       - name: Build
