@@ -27,6 +27,8 @@ jobs:
           key: fork-macos-arm64-v4-hisa
           evict-old-files: 1d
 
+      - name: Dump ggml.h for debug
+        run: cat ggml/include/ggml.h
       - name: Build
         run: |
           cmake -B build \
