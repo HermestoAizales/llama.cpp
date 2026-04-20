@@ -1,0 +1,215 @@
+--- /dev/fd/63	2026-04-14 04:53:46.086671206 +0200
++++ ggml/src/ggml-cpu/ops.cpp	2026-04-14 04:53:31.322662850 +0200
+@@ -8,6 +8,12 @@
+ #include "unary-ops.h"
+ #include "vec.h"
+ 
++// Helper functions for data access
++static inline float * get_data_f32_const(const struct ggml_tensor * t) { return ggml_get_data_f32(t); }
++static inline float * get_data_f32(struct ggml_tensor * t) { return ggml_get_data_f32(t); }
++static inline uint16_t * get_data_hf16(struct ggml_tensor * t) { return (uint16_t *)ggml_get_data(t); }
++static inline const uint16_t * get_data_hf16_const(const struct ggml_tensor * t) { return (const uint16_t *)t->data; }
++
+ #include <algorithm>
+ #include <cfloat>
+ #include <cmath>
+@@ -11212,3 +11218,199 @@
+             }
+     }
+ }
++
++static void ggml_compute_forward_hisa_block_pool_32(const struct ggml_compute_params * params, struct ggml_tensor * dst) {
++    if (params->ith != 0) return;
++    const struct ggml_tensor * src = dst->src[0];
++    if (!src) return;
++    const int32_t block_size = ggml_get_op_params_i32(dst, 0);
++    if (block_size != 32) return;
++    GGML_TENSOR_LOCALS(int64_t, ne0, src, ne)
++    GGML_TENSOR_LOCALS(size_t,  nb0, src, nb)
++    GGML_TENSOR_LOCALS(int64_t, ne,  dst,  ne)
++    GGML_TENSOR_LOCALS(size_t,  nb,  dst,  nb)
++    const int64_t d = ne0;
++    const int64_t n_heads = ne2;
++    const int64_t n_blocks = dst->ne[1];
++    const float * src_data = get_data_f32_const(src);
++    float * dst_data = get_data_f32(dst);
++    #pragma omp parallel for collapse(2) schedule(dynamic)
++    for (int64_t iblk = 0; iblk < n_blocks; iblk++) {
++        for (int64_t ih = 0; ih < n_heads; ih++) {
++            const float * src_base = (const float *)((const char *)src_data + ih * src->nb[2]);
++            float * dst_base = (float *)((char *)dst_data + ih * dst->nb[2]);
++            for (int64_t i = 0; i < 32; i += 8) {
++                float sum0=0,sum1=0,sum2=0,sum3=0,sum4=0,sum5=0,sum6=0,sum7=0;
++                for (int64_t j = 0; j < d; j += 8) {
++                    #pragma omp simd
++                    for (int64_t k = 0; k < 8 && i + k < 32; k++) {
++                        const float *row = &src_base[((iblk*32+i+k)*d)+j];
++                        sum0+=row[j+0]; sum1+=row[j+1]; sum2+=row[j+2]; sum3+=row[j+3];
++                        sum4+=row[j+4]; sum5+=row[j+5]; sum6+=row[j+6]; sum7+=row[j+7];
++                    }
++                }
++                dst_base[(i+0)*d]=sum0/32.0f; dst_base[(i+1)*d]=sum1/32.0f;
++                dst_base[(i+2)*d]=sum2/32.0f; dst_base[(i+3)*d]=sum3/32.0f;
++                dst_base[(i+4)*d]=sum4/32.0f; dst_base[(i+5)*d]=sum5/32.0f;
++                dst_base[(i+6)*d]=sum6/32.0f; dst_base[(i+7)*d]=sum7/32.0f;
++            }
++        }
++    }
++}
++
++static void ggml_compute_forward_hisa_block_pool_64(const struct ggml_compute_params * params, struct ggml_tensor * dst) {
++    if (params->ith != 0) return;
++    const struct ggml_tensor * src = dst->src[0];
++    if (!src) return;
++    const int32_t block_size = ggml_get_op_params_i32(dst, 0);
++    if (block_size != 64) return;
++    GGML_TENSOR_LOCALS(int64_t, ne0, src, ne)
++    GGML_TENSOR_LOCALS(size_t,  nb0, src, nb)
++    GGML_TENSOR_LOCALS(int64_t, ne,  dst,  ne)
++    GGML_TENSOR_LOCALS(size_t,  nb,  dst,  nb)
++    const int64_t d = ne0;
++    const int64_t n_heads = ne2;
++    const int64_t n_blocks = dst->ne[1];
++    const float * src_data = get_data_f32_const(src);
++    float * dst_data = get_data_f32(dst);
++    #pragma omp parallel for collapse(2) schedule(dynamic)
++    for (int64_t iblk = 0; iblk < n_blocks; iblk++) {
++        for (int64_t ih = 0; ih < n_heads; ih++) {
++            const float * src_base = (const float *)((const char *)src_data + ih * src->nb[2]);
++            float * dst_base = (float *)((char *)dst_data + ih * dst->nb[2]);
++            for (int64_t i = 0; i < 64; i += 8) {
++                float sum0=0,sum1=0,sum2=0,sum3=0,sum4=0,sum5=0,sum6=0,sum7=0;
++                for (int64_t j = 0; j < d; j += 8) {
++                    #pragma omp simd
++                    for (int64_t k = 0; k < 8 && i + k < 64; k++) {
++                        const float *row = &src_base[((iblk*64+i+k)*d)+j];
++                        sum0+=row[j+0]; sum1+=row[j+1]; sum2+=row[j+2]; sum3+=row[j+3];
++                        sum4+=row[j+4]; sum5+=row[j+5]; sum6+=row[j+6]; sum7+=row[j+7];
++                    }
++                }
++                dst_base[(i+0)*d]=sum0/64.0f; dst_base[(i+1)*d]=sum1/64.0f;
++                dst_base[(i+2)*d]=sum2/64.0f; dst_base[(i+3)*d]=sum3/64.0f;
++                dst_base[(i+4)*d]=sum4/64.0f; dst_base[(i+5)*d]=sum5/64.0f;
++                dst_base[(i+6)*d]=sum6/64.0f; dst_base[(i+7)*d]=sum7/64.0f;
++            }
++        }
++    }
++}
++
++static void ggml_compute_forward_hisa_gather_common(const struct ggml_compute_params * params, struct ggml_tensor * dst, int64_t d) {
++    if (params->ith != 0) return;
++    const struct ggml_tensor * src = dst->src[0];
++    const struct ggml_tensor * indices = dst->src[1];
++    if (!src || !indices) return;
++    const int32_t block_size = ggml_get_op_params_i32(dst, 0);
++    if (block_size <= 0) return;
++    GGML_TENSOR_LOCALS(int64_t, ne0, src, ne)
++    GGML_TENSOR_LOCALS(size_t,  nb0, src, nb)
++    GGML_TENSOR_LOCALS(int64_t, ne,  dst,  ne)
++    GGML_TENSOR_LOCALS(size_t,  nb,  dst,  nb)
++    const int64_t n_heads = ne1;
++    const int64_t n_batch = ne3;
++    const int64_t n_tokens = indices->ne[0];
++    const float * src_data = get_data_f32_const(src);
++    const int32_t * idx_data = (const int32_t *)indices->data;
++    float * dst_data = get_data_f32(dst);
++    const int PREFETCH_DIST = 16;
++    #pragma omp parallel for collapse(2) schedule(dynamic)
++    for (int64_t ib = 0; ib < n_batch; ib++) {
++        for (int64_t ih = 0; ih < n_heads; ih++) {
++            for (int64_t i = 0; i < n_tokens; i++) {
++                if (i + PREFETCH_DIST < n_tokens) {
++                    const int32_t future_idx = idx_data[i + PREFETCH_DIST];
++                    __builtin_prefetch(&src_data[(future_idx%ne0)*d], 0, 0);
++                }
++                const int32_t idx = idx_data[i];
++                if (idx < 0 || idx >= (int32_t)(ne0 / block_size)) {
++                    float *out = &((float *)((char *)dst_data + ib*dst->nb[3] + ih*dst->nb[2]))[i*d];
++                    #pragma omp simd
++                    for (int64_t j = 0; j < d; j++) out[j] = 0.0f;
++                    continue;
++                }
++                const int64_t src_row = idx * block_size;
++                float *dst_row = &((float *)((char *)dst_data + ib*dst->nb[3] + ih*dst->nb[2]))[i*d];
++                const float *src_row_data = &src_data[src_row*d];
++                #pragma omp simd
++                for (int64_t j = 0; j < d; j++) dst_row[j] = src_row_data[j];
++            }
++        }
++    }
++}
++
++void ggml_compute_forward_hisa_block_gather(const struct ggml_compute_params * params, struct ggml_tensor * dst) {
++    if (params->ith != 0) return;
++    const struct ggml_tensor * src = dst->src[0];
++    const struct ggml_tensor * block_indices = dst->src[1];
++    if (!src || !block_indices) return;
++    const int32_t block_size = ggml_get_op_params_i32(dst, 0);
++    if (block_size <= 0) return;
++    GGML_TENSOR_LOCALS(int64_t, ne0, src, ne)
++    GGML_TENSOR_LOCALS(size_t,  nb0, src, nb)
++    GGML_TENSOR_LOCALS(int64_t, ne,  dst,  ne)
++    GGML_TENSOR_LOCALS(size_t,  nb,  dst,  nb)
++    const int64_t d = ne0;
++    const int64_t m = block_indices->ne[0];
++    const int64_t n_batch = ne3;
++    const float * src_data = get_data_f32_const(src);
++    const int32_t * idx_data = (const int32_t *)block_indices->data;
++    float * dst_data = get_data_f32(dst);
++    const int64_t CACHE_LINE = 64 / sizeof(float);
++    #pragma omp parallel for schedule(dynamic)
++    for (int64_t ib = 0; ib < n_batch; ib++) {
++        for (int64_t i = 0; i < m; i += CACHE_LINE) {
++            const int64_t chunk_end = (i + CACHE_LINE < m) ? i + CACHE_LINE : m;
++            for (int64_t j = i; j < chunk_end; j++) {
++                const int32_t block_idx = idx_data[j];
++                const int64_t src_row = block_idx * block_size;
++                float *dst_ptr = &((float *)((char *)dst_data + ib * dst->nb[3]))[j * d];
++                const float *src_ptr = &src_data[ib * src->nb[3] + src_row * d];
++                #pragma omp simd
++                for (int64_t k = 0; k < d; k++) {
++                    dst_ptr[k] = src_ptr[k];
++                }
++            }
++        }
++    }
++}
++
++static void ggml_compute_forward_hisa_gather_mask_4bit(const struct ggml_compute_params * params, struct ggml_tensor * dst) {
++    if (params->ith != 0) return;
++    const struct ggml_tensor * kq_mask = dst->src[0];
++    const struct ggml_tensor * topm_indices = dst->src[1];
++    const struct ggml_tensor * top_budget_indices = dst->src[2];
++    if (!kq_mask || !topm_indices || !top_budget_indices) return;
++    const int32_t block_size = ggml_get_op_params_i32(dst, 0);
++    if (block_size <= 0) return;
++    GGML_TENSOR_LOCALS(int64_t, ne0, kq_mask, ne)
++    const int64_t ne1_val = kq_mask->ne[1];
++    const int64_t ne3_val = kq_mask->ne[3];
++    GGML_TENSOR_LOCALS(size_t,  nb0, kq_mask, nb)
++    GGML_TENSOR_LOCALS(size_t,  nb,  dst,  nb)
++    const int T = (int)ne1_val;
++    const int S = (int)ne3_val;
++    const int budget = top_budget_indices->ne[0];
++    const uint16_t * kq_data = get_data_hf16_const(kq_mask);
++    const int32_t * topm_data = (const int32_t *)topm_indices->data;
++    const int32_t * topb_data = (const int32_t *)top_budget_indices->data;
++    uint16_t * dst_data = get_data_hf16(dst);
++    const int total = budget * T * S;
++    #pragma omp parallel for schedule(static)
++    for (int idx = 0; idx < total; idx++) {
++        const int s = idx / (budget * T);
++        int rem = idx - s * budget * T;
++        const int j = rem / T;
++        const int t = rem - j * T;
++        const int32_t cand_idx = topb_data[j];
++        const int32_t block_ord = cand_idx / block_size;
++        const int32_t block_off = cand_idx % block_size;
++        const int32_t block_idx = topm_data[block_ord];
++        const int32_t abs_pos = block_idx * block_size + block_off;
++        ((uint16_t *)((char *)dst_data + s * dst->nb[3] +
++                       t * dst->nb[1] + abs_pos * dst->nb[0]))[0] =
++            kq_data[s * kq_mask->nb[3] +
++                    t * kq_mask->nb[1] + abs_pos * kq_mask->nb[0]];
++    }
++}

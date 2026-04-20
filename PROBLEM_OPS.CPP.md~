@@ -1,0 +1,31 @@
+Problem description: ops.cpp HISA implementation integration issues
+
+Current state:
+- The upstream base file (from git show upstream/master:ggml/src/ggml-cpu/ops.cpp, 11214 lines) was restored.
+- HISA functions (block_pool_32, block_pool_64, gather_common, gather, block_gather, gather_mask) need to be correctly integrated.
+- The file currently compiles (after fixes) but there were issues:
+  1. Missing helper functions get_data_hf16_const and get_data_hf16 in scope
+  2. Unused variable n_kv
+  3. Spurious "}  // namespace" at end
+  4. The patching process was fragile and produced duplicates/syntax errors
+
+Root cause:
+- The original patch (hisa_cpu_optimizations.patch) was designed against the pre-HISA source and its hunks include patch metadata (+,- lines) that must be stripped.
+- Manual text replacements broke scoping and introduced syntax errors.
+- The helpers were never properly inserted into the file.
+
+What needs to be done next (after restart):
+1. Start from clean upstream base (done via git checkout upstream/master -- ggml/src/ggml-cpu/ops.cpp or cp /tmp/base_ops.cpp).
+2. Carefully extract ONLY the C code (no patch metadata) for the 6 HISA functions.
+3. Insert them BEFORE the final `}` of the file (or before any other namespace closing brace), ensuring:
+   - No duplicate definitions
+   - No stray `}` or namespace text
+4. Add missing helpers (get_data_hf16_const, get_data_hf16) near the top after get_data_f32_const.
+5. Remove any unused variables (e.g., n_kv).
+6. Verify with: make -C build-linux && nm -D build-linux/bin/libggml-cpu.so | grep hisa
+7. Commit and push.
+
+Notes:
+- The HISA functions are: block_pool_32, block_pool_64, gather_common, gather, block_gather, gather_mask (4bit specialized).
+- They depend on GGML_TENSOR_LOCALS macros — these are fine as long as the functions are placed in the same file scope.
+- The upstream file uses `src->ne[3]`, `ne[1]`, `ne[3]` etc. — no standalone `ne[]` array, use tensor->ne[] or the locals created by GGML_TENSOR_LOCALS.
