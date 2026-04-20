@@ -1073,6 +1073,10 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "OPT_STEP_SGD",
 
     "GLU",
+    "HISA_BLOCK_POOL",
+    "HISA_GATHER",
+    "HISA_BLOCK_GATHER",
+    "HISA_GATHER_MASK",
 };
 
 static_assert(GGML_OP_COUNT == 104, "GGML_OP_COUNT != 104");
@@ -1183,6 +1187,10 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "sgd(x)",
 
     "glu(x)",
+    "hisa_block_pool(x)",
+    "hisa_gather(x,y)",
+    "hisa_block_gather(x,y)",
+    "hisa_gather_mask(x,y,z)",
 };
 
 static_assert(GGML_OP_COUNT == 104, "GGML_OP_COUNT != 104");
