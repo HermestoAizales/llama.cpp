@@ -109,7 +109,7 @@ mtmd_context_params mtmd_context_params_default() {
         /* use_gpu           */ true,
         /* print_timings     */ true,
         /* n_threads         */ 4,
-        /* image_marker      */ MTMD_DEFAULT_IMAGE_MARKER,
+        /* image_marker      */ nullptr,
         /* media_marker      */ mtmd_default_marker(),
         /* flash_attn_type   */ LLAMA_FLASH_ATTN_TYPE_AUTO,
         /* warmup            */ true,
@@ -131,6 +131,7 @@ struct mtmd_context {
     int n_threads;
     std::string media_marker;
     const int n_embd_text;
+    llama_rope_type decoder_rope;
 
     // these are not token, but strings used to mark the beginning and end of image/audio embeddings
     std::string img_beg;
@@ -167,9 +168,10 @@ struct mtmd_context {
         print_timings(ctx_params.print_timings),
         n_threads    (ctx_params.n_threads),
         media_marker (ctx_params.media_marker),
-        n_embd_text  (llama_model_n_embd_inp(text_model))
+        n_embd_text  (llama_model_n_embd_inp(text_model)),
+        decoder_rope (llama_model_rope_type(text_model))
     {
-        if (std::string(ctx_params.image_marker) != MTMD_DEFAULT_IMAGE_MARKER) {
+        if (ctx_params.image_marker != nullptr) {
             throw std::runtime_error("custom image_marker is not supported anymore, use media_marker instead");
         }
 
@@ -584,9 +586,6 @@ struct mtmd_tokenizer {
         parse_special = text->parse_special;
         input_text    = text->text;
         vocab         = llama_model_get_vocab(ctx->text_model);
-
-        // for compatibility, we convert image marker to media marker
-        string_replace_all(input_text, MTMD_DEFAULT_IMAGE_MARKER, ctx->media_marker);
     }
 
     int32_t tokenize(mtmd_input_chunks * output) {
@@ -1032,20 +1031,8 @@ bool mtmd_decode_use_non_causal(mtmd_context * ctx, const mtmd_input_chunk * chu
 }
 
 bool mtmd_decode_use_mrope(mtmd_context * ctx) {
-    if (ctx->ctx_v == nullptr && ctx->proj_type_a() == PROJECTOR_TYPE_QWEN3A) {
-        // qwen3-asr
-        return true;
-    }
-    switch (ctx->proj_type_v()) {
-        case PROJECTOR_TYPE_QWEN2VL:
-        case PROJECTOR_TYPE_QWEN25VL:
-        case PROJECTOR_TYPE_QWEN3VL:
-        case PROJECTOR_TYPE_GLM4V:
-        case PROJECTOR_TYPE_PADDLEOCR:
-            return true;
-        default:
-            return false;
-    }
+    return ctx->decoder_rope == LLAMA_ROPE_TYPE_MROPE
+        || ctx->decoder_rope == LLAMA_ROPE_TYPE_IMROPE;
 }
 
 bool mtmd_support_vision(mtmd_context * ctx) {
@@ -1249,11 +1236,14 @@ size_t mtmd_image_tokens_get_ny(const mtmd_image_tokens * image_tokens) {
     return image_tokens->ny;
 }
 
-mtmd_decoder_pos mtmd_image_tokens_get_decoder_pos(const mtmd_image_tokens * image_tokens, size_t i) {
+mtmd_decoder_pos mtmd_image_tokens_get_decoder_pos(const mtmd_image_tokens * image_tokens, llama_pos pos_0, size_t i) {
     mtmd_decoder_pos pos;
-    pos.t = 0;
-    pos.x = i % image_tokens->nx;
-    pos.y = i / image_tokens->nx;
+    // M-RoPE logic
+    // TODO: support other types of position encoding if needed
+    pos.t = pos_0;
+    pos.x = pos_0 + (i % image_tokens->nx);
+    pos.y = pos_0 + (i / image_tokens->nx);
+    pos.z = 0; // unused for now
     return pos;
 }
 
