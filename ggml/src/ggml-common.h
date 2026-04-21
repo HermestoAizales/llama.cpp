@@ -70,6 +70,7 @@ typedef sycl::half2 ggml_half2;
 
 #else
 // For plain CPU/ARM backends, provide half type
+#include <stdint.h>
 typedef uint16_t ggml_half;
 typedef uint32_t ggml_half2;
 #define GGML_COMMON_DECL
