@@ -73,6 +73,8 @@ typedef sycl::half2 ggml_half2;
 #include <stdint.h>
 typedef uint16_t ggml_half;
 typedef uint32_t ggml_half2;
+#define GGML_COMMON_AGGR_U
+#define GGML_COMMON_AGGR_S
 #define GGML_COMMON_DECL
 #endif
 
