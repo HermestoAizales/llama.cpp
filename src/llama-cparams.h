@@ -37,8 +37,10 @@ struct llama_cparams {
     bool no_perf;
     bool warmup;
     bool op_offload;
-    bool kv_unified;
+    bool kv_unified;  // use a unified buffer across the input sequences when computing the attention
     bool pipeline_parallel;
+    bool hisa;              // use Hierarchical Indexed Sparse Attention
+    int32_t hisa_block_size; // block size for HISA sparse attention
 
     enum llama_pooling_type pooling_type;
 

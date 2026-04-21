@@ -10547,3 +10547,247 @@ kernel void kernel_count_equal(
 typedef decltype(kernel_count_equal<int32_t>) kernel_count_equal_t;
 
 template [[host_name("kernel_count_equal_i32")]] kernel kernel_count_equal_t kernel_count_equal<int32_t>;
+
+// ============================================================
+// HISA (Hierarchical Indexed Sparse Attention) Metal Kernels
+// ============================================================
+
+// HISA_BLOCK_POOL: mean-pool K rows into blocks
+threadgroup align(64) typedef struct { float s_data[256]; } hisa_block_pool_shmem;
+
+kernel void kernel_hisa_block_pool_f32(
+        constant ggml_metal_kargs_hisa_block_pool & args,
+        device const float * src,
+        device       float * dst,
+        uint3   tgpig[[threadgroup_position_in_grid]],
+        ushort  tid[[thread_index_in_threadgroup]],
+        ushort3 ntg[[threads_per_threadgroup]]) {
+
+    const int32_t iblk = tgpig.x;
+    const int32_t ih = tgpig.y;
+    const int32_t ib = tgpig.z;
+
+    if (iblk >= args.n_blocks || ib >= args.n_batch) return;
+
+    device const float * src_base = (device const float *)((const char *)src + ib * args.src_nb3 + ih * args.src_nb2);
+    device       float * dst_base = (device       float *)((const char *)dst + ib * args.dst_nb3 + ih * args.dst_nb2);
+
+    threadgroup hisa_block_pool_shmem & shmem = *reinterpret_cast<threadgroup hisa_block_pool_shmem *>(get_threadgroup_memory(1));
+
+    // Coalesced load of block data into shared memory
+    float thread_sum = 0.0f;
+    for (int b = tid; b < args.block_size; b += ntg.x) {
+        shmem.s_data[b] = src_base[(iblk * args.block_size + b) * args.d];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Compute sum reduction
+    for (int b = tid; b < args.block_size; b += ntg.x) {
+        thread_sum += shmem.s_data[b];
+    }
+
+    // SIMD-group reduction
+    for (int offset = ntg.x / 2; offset > 0; offset /= 2) {
+        thread_sum += simd_shuffle_down(thread_sum, offset);
+    }
+
+    // One thread per SIMD group writes result
+    if (tid % ntg.x == 0) {
+        int simd_idx = tid / ntg.x;
+        atomic_fetch_add_explicit(&dst_base[iblk * args.d + simd_idx], thread_sum / (float)args.block_size, memory_order_relaxed);
+    }
+}
+
+kernel void kernel_hisa_block_pool_f16(
+        constant ggml_metal_kargs_hisa_block_pool & args,
+        device const half * src,
+        device       half * dst,
+        uint3   tgpig[[threadgroup_position_in_grid]],
+        ushort  tid[[thread_index_in_threadgroup]],
+        ushort3 ntg[[threads_per_threadgroup]]) {
+
+    const int32_t iblk = tgpig.x;
+    const int32_t ih = tgpig.y;
+    const int32_t ib = tgpig.z;
+
+    if (iblk >= args.n_blocks || ib >= args.n_batch) return;
+
+    device const half * src_base = (device const half *)((const char *)src + ib * args.src_nb3 + ih * args.src_nb2);
+    device       half * dst_base = (device       half *)((const char *)dst + ib * args.dst_nb3 + ih * args.dst_nb2);
+
+    threadgroup hisa_block_pool_shmem & shmem = *reinterpret_cast<threadgroup hisa_block_pool_shmem *>(get_threadgroup_memory(1));
+
+    float thread_sum = 0.0f;
+    for (int b = tid; b < args.block_size; b += ntg.x) {
+        shmem.s_data[b] = src_base[(iblk * args.block_size + b) * args.d];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (int b = tid; b < args.block_size; b += ntg.x) {
+        thread_sum += (float)shmem.s_data[b];
+    }
+
+    for (int offset = ntg.x / 2; offset > 0; offset /= 2) {
+        thread_sum += simd_shuffle_down(thread_sum, offset);
+    }
+
+    if (tid % ntg.x == 0) {
+        int simd_idx = tid / ntg.x;
+        atomic_fetch_add_explicit(&dst_base[iblk * args.d + simd_idx], thread_sum / (float)args.block_size, memory_order_relaxed);
+    }
+}
+
+// HISA_GATHER: gather rows by index list
+kernel void kernel_hisa_gather_f32(
+        constant ggml_metal_kargs_hisa_gather & args,
+        device const float * src,
+        device const int32_t * indices,
+        device       float * dst,
+        uint gid[[thread_position_in_grid]]) {
+
+    if (gid >= args.d * args.budget) return;
+
+    const int64_t j = gid % args.d;
+    const int64_t is = gid / args.d;
+
+    const uint3 tgpig [[threadgroup_position_in_grid]] = uint3(gid % args.n_heads_kv, 0, 0);
+    // Simplified: use global grid for simplicity
+    // We'll dispatch per element with 1D grid
+    const int64_t ih = gid / (args.d * args.budget) % args.n_heads_kv;
+    if (ih >= args.n_heads_kv) return;
+
+    // Actually, let's use a simpler approach - thread per output element
+    // Re-compute based on simple 1D layout
+}
+
+// Simpler HISA_GATHER: one thread per output element
+kernel void kernel_hisa_gather_f32_simple(
+        constant ggml_metal_kargs_hisa_gather & args,
+        device const float * src,
+        device const int32_t * indices,
+        device       float * dst,
+        uint gid[[thread_position_in_grid]]) {
+
+    // Layout: [budget * n_heads_kv * n_batch, d]
+    const int64_t total = args.d * args.budget * args.n_heads_kv * args.n_batch;
+    if (gid >= total) return;
+
+    int64_t tmp = gid;
+    const int64_t ib = tmp / (args.d * args.budget * args.n_heads_kv); tmp %= (args.d * args.budget * args.n_heads_kv);
+    const int64_t ih = tmp / (args.d * args.budget); tmp %= (args.d * args.budget);
+    const int64_t is = tmp / args.d;
+    const int64_t j = tmp % args.d;
+
+    if (ih >= args.n_heads_kv) return;
+
+    const int32_t idx_val = *(const int32_t *)((const char *)indices + is * args.idx_nb0 + ih * args.idx_nb2 + ib * args.idx_nb3);
+    *((float *)((char *)dst + ib * args.dst_nb3 + ih * args.dst_nb2 + is * args.dst_nb1 + j * sizeof(float))) =
+        *((const float *)((const char *)src + ib * args.src_nb3 + ih * args.src_nb2 + idx_val * args.src_nb1 + j * sizeof(float)));
+}
+
+kernel void kernel_hisa_gather_f16_simple(
+        constant ggml_metal_kargs_hisa_gather & args,
+        device const half * src,
+        device const int32_t * indices,
+        device       half * dst,
+        uint gid[[thread_position_in_grid]]) {
+
+    const int64_t total = args.d * args.budget * args.n_heads_kv * args.n_batch;
+    if (gid >= total) return;
+
+    int64_t tmp = gid;
+    const int64_t ib = tmp / (args.d * args.budget * args.n_heads_kv); tmp %= (args.d * args.budget * args.n_heads_kv);
+    const int64_t ih = tmp / (args.d * args.budget); tmp %= (args.d * args.budget);
+    const int64_t is = tmp / args.d;
+    const int64_t j = tmp % args.d;
+
+    if (ih >= args.n_heads_kv) return;
+
+    const int32_t idx_val = *(const int32_t *)((const char *)indices + is * args.idx_nb0 + ih * args.idx_nb2 + ib * args.idx_nb3);
+    *((half *)((char *)dst + ib * args.dst_nb3 + ih * args.dst_nb2 + is * args.dst_nb1 + j * sizeof(half))) =
+        *((const half *)((const char *)src + ib * args.src_nb3 + ih * args.src_nb2 + idx_val * args.src_nb1 + j * sizeof(half)));
+}
+
+// HISA_BLOCK_GATHER: gather full blocks by block index list
+kernel void kernel_hisa_block_gather_f32(
+        constant ggml_metal_kargs_hisa_block_gather & args,
+        device const float * src,
+        device const int32_t * block_indices,
+        device       float * dst,
+        uint gid[[thread_position_in_grid]]) {
+
+    // Layout: [m * n_heads_kv * n_batch, d * block_size]
+    const int64_t total = args.d * args.m * args.block_size * args.n_heads_kv * args.n_batch;
+    if (gid >= total) return;
+
+    int64_t tmp = gid;
+    const int64_t ib = tmp / (args.d * args.m * args.block_size * args.n_heads_kv); tmp %= (args.d * args.m * args.block_size * args.n_heads_kv);
+    const int64_t ih = tmp / (args.d * args.m * args.block_size); tmp %= (args.d * args.m * args.block_size);
+    const int64_t im = tmp / (args.d * args.block_size); tmp %= (args.d * args.block_size);
+    const int64_t b = tmp / args.d;
+    const int64_t j = tmp % args.d;
+
+    if (ih >= args.n_heads_kv) return;
+
+    const int32_t blk_idx = *(const int32_t *)((const char *)block_indices + im * args.idx_nb0 + ih * args.idx_nb2 + ib * args.idx_nb3);
+    const int32_t src_row = blk_idx * args.block_size + (int32_t)b;
+    const int64_t dst_row = im * args.block_size + b;
+
+    *((float *)((char *)dst + ib * args.dst_nb3 + ih * args.dst_nb2 + dst_row * args.dst_nb1 + j * sizeof(float))) =
+        *((const float *)((const char *)src + ib * args.src_nb3 + ih * args.src_nb2 + src_row * args.src_nb1 + j * sizeof(float)));
+}
+
+kernel void kernel_hisa_block_gather_f16(
+        constant ggml_metal_kargs_hisa_block_gather & args,
+        device const half * src,
+        device const int32_t * block_indices,
+        device       half * dst,
+        uint gid[[thread_position_in_grid]]) {
+
+    const int64_t total = args.d * args.m * args.block_size * args.n_heads_kv * args.n_batch;
+    if (gid >= total) return;
+
+    int64_t tmp = gid;
+    const int64_t ib = tmp / (args.d * args.m * args.block_size * args.n_heads_kv); tmp %= (args.d * args.m * args.block_size * args.n_heads_kv);
+    const int64_t ih = tmp / (args.d * args.m * args.block_size); tmp %= (args.d * args.m * args.block_size);
+    const int64_t im = tmp / (args.d * args.block_size); tmp %= (args.d * args.block_size);
+    const int64_t b = tmp / args.d;
+    const int64_t j = tmp % args.d;
+
+    if (ih >= args.n_heads_kv) return;
+
+    const int32_t blk_idx = *(const int32_t *)((const char *)block_indices + im * args.idx_nb0 + ih * args.idx_nb2 + ib * args.idx_nb3);
+    const int32_t src_row = blk_idx * args.block_size + (int32_t)b;
+    const int64_t dst_row = im * args.block_size + b;
+
+    *((half *)((char *)dst + ib * args.dst_nb3 + ih * args.dst_nb2 + dst_row * args.dst_nb1 + j * sizeof(half))) =
+        *((const half *)((const char *)src + ib * args.src_nb3 + ih * args.src_nb2 + src_row * args.src_nb1 + j * sizeof(half)));
+}
+
+// HISA_GATHER_MASK: gather mask rows via two-level index mapping
+kernel void kernel_hisa_gather_mask_f16(
+        constant ggml_metal_kargs_hisa_gather_mask & args,
+        device const half * kq_mask,
+        device const int32_t * topm_indices,
+        device const int32_t * top_budget_indices,
+        device       half * dst,
+        uint gid[[thread_position_in_grid]]) {
+
+    const int total = args.budget * args.T * args.S;
+    if (gid >= total) return;
+
+    int s = gid / (args.budget * args.T);
+    int remainder = gid - s * args.budget * args.T;
+    int j = remainder / args.T;
+    int t = remainder - j * args.T;
+
+    const int32_t cand_idx = *(const int32_t *)((const char *)top_budget_indices + j * args.topb_nb0 + s * args.topb_nb3);
+    const int32_t block_ord = cand_idx / args.block_size;
+    const int32_t block_off = cand_idx % args.block_size;
+    const int32_t block_idx = *(const int32_t *)((const char *)topm_indices + block_ord * args.topm_nb0 + s * args.topm_nb3);
+    const int32_t abs_pos = block_idx * args.block_size + block_off;
+
+    *((half *)((char *)dst + s * args.dst_nb3 + t * args.dst_nb1 + abs_pos * args.dst_nb0)) =
+        *((const half *)((const char *)kq_mask + s * args.mask_nb3 + t * args.mask_nb1 + abs_pos * args.mask_nb0));
+}
+

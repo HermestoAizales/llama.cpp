@@ -88,6 +88,10 @@
 #define FC_SUM_ROWS                    1400
 #define FC_UPSCALE                     1500
 #define FC_GATED_DELTA_NET             1600
+#define FC_HISA_BLOCK_POOL             1700
+#define FC_HISA_GATHER                 1800
+#define FC_HISA_BLOCK_GATHER           1900
+#define FC_HISA_GATHER_MASK            2000
 
 // op-specific constants
 #define OP_FLASH_ATTN_EXT_NQPSG 8
@@ -1134,5 +1138,79 @@ typedef struct {
 typedef struct {
     int64_t  np;
 } ggml_metal_kargs_opt_step_sgd;
+
+// HISA kernel argument structs
+
+typedef struct {
+    int32_t  block_size;
+    int32_t  n_blocks;
+    int32_t  n_heads;
+    int32_t  n_batch;
+    int64_t  d;
+    uint64_t src_nb1;
+    uint64_t src_nb2;
+    uint64_t src_nb3;
+    uint64_t dst_nb1;
+    uint64_t dst_nb2;
+    uint64_t dst_nb3;
+} ggml_metal_kargs_hisa_block_pool;
+
+typedef struct {
+    int32_t  block_size;
+    int32_t  budget;
+    int32_t  n_heads_kv;
+    int32_t  gqa_ratio;
+    int64_t  d;
+    uint64_t src_nb1;
+    uint64_t src_nb2;
+    uint64_t src_nb3;
+    uint64_t dst_nb1;
+    uint64_t dst_nb2;
+    uint64_t dst_nb3;
+    uint64_t idx_nb0;
+    uint64_t idx_nb2;
+    uint64_t idx_nb3;
+} ggml_metal_kargs_hisa_gather;
+
+typedef struct {
+    int32_t  block_size;
+    int32_t  n_heads_kv;
+    int32_t  gqa_ratio;
+    int64_t  d;
+    int64_t  m;
+    uint64_t src_nb1;
+    uint64_t src_nb2;
+    uint64_t src_nb3;
+    uint64_t dst_nb1;
+    uint64_t dst_nb2;
+    uint64_t dst_nb3;
+    uint64_t idx_nb0;
+    uint64_t idx_nb2;
+    uint64_t idx_nb3;
+} ggml_metal_kargs_hisa_block_gather;
+
+typedef struct {
+    int32_t  block_size;
+    int32_t  n_kv;
+    int32_t  T;
+    int32_t  S;
+    int32_t  budget;
+    uint64_t mask_nb0;
+    uint64_t mask_nb1;
+    uint64_t mask_nb2;
+    uint64_t mask_nb3;
+    uint64_t dst_nb0;
+    uint64_t dst_nb1;
+    uint64_t dst_nb2;
+    uint64_t dst_nb3;
+    uint64_t topm_nb0;
+    uint64_t topm_nb1;
+    uint64_t topm_nb2;
+    uint64_t topm_nb3;
+    uint64_t topb_nb0;
+    uint64_t topb_nb1;
+    uint64_t topb_nb2;
+    uint64_t topb_nb3;
+} ggml_metal_kargs_hisa_gather_mask;
 
 #endif // GGML_METAL_IMPL

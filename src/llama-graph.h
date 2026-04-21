@@ -714,6 +714,10 @@ struct llm_graph_context {
     const llama_cparams & cparams;
     const llama_ubatch  & ubatch;
 
+    // HISA parameters
+    bool    hisa;
+    int32_t hisa_block_size;
+
     const int64_t n_embd;
     const int64_t n_layer;
     const int64_t n_rot;
