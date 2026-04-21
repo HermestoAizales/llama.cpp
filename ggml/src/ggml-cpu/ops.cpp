@@ -11338,6 +11338,7 @@ void ggml_compute_forward_hisa_block_pool(const ggml_compute_params * params, gg
 
 void ggml_compute_forward_hisa_gather(const ggml_compute_params * params, ggml_tensor * dst) {
     if (params->ith != 0) return;
+    printf("[HISA] executing hisa_gather\n");
     
     const ggml_tensor * src = dst->src[0];
     const ggml_tensor * indices = dst->src[1];
@@ -11389,6 +11390,7 @@ void ggml_compute_forward_hisa_gather(const ggml_compute_params * params, ggml_t
 
 void ggml_compute_forward_hisa_block_gather(const ggml_compute_params * params, ggml_tensor * dst) {
     if (params->ith != 0) return;
+    printf("[HISA] executing hisa_block_gather\n");
     
     const ggml_tensor * src = dst->src[0];
     const ggml_tensor * block_indices = dst->src[1];
@@ -11429,6 +11431,7 @@ void ggml_compute_forward_hisa_block_gather(const ggml_compute_params * params, 
 
 void ggml_compute_forward_hisa_gather_mask(const ggml_compute_params * params, ggml_tensor * dst) {
     if (params->ith != 0) return;
+    printf("[HISA] executing hisa_gather_mask\n");
     
     const ggml_tensor * kq_mask = dst->src[0];
     const ggml_tensor * topm_indices = dst->src[1];
