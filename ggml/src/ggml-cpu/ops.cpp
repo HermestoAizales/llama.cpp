@@ -11227,6 +11227,7 @@ static inline uint16_t * get_data_hf16(ggml_tensor * t) { return (uint16_t *)t->
 
 static void ggml_compute_forward_hisa_block_pool_32(const ggml_compute_params * params, ggml_tensor * dst) {
     if (params->ith != 0) return;
+    printf("[HISA] executing hisa_block_pool_32\n");
     const ggml_tensor * src = dst->src[0];
     if (!src) return;
     const int32_t block_size = ggml_get_op_params_i32(dst, 0);
@@ -11266,6 +11267,7 @@ static void ggml_compute_forward_hisa_block_pool_32(const ggml_compute_params * 
 
 static void ggml_compute_forward_hisa_block_pool_64(const ggml_compute_params * params, ggml_tensor * dst) {
     if (params->ith != 0) return;
+    printf("[HISA] executing hisa_block_pool_64\n");
     const ggml_tensor * src = dst->src[0];
     if (!src) return;
     const int32_t block_size = ggml_get_op_params_i32(dst, 0);
