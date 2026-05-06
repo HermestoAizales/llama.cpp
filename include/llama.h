@@ -376,6 +376,7 @@ extern "C" {
                           // ref: https://github.com/ggml-org/llama.cpp/pull/14363
         bool hisa;        // use Hierarchical Indexed Sparse Attention
         int32_t hisa_block_size; // block size for HISA sparse attention (0 = auto)
+        int32_t hisa_min_tokens; // min KV tokens before HISA activates (0 = always on)
 
         // [EXPERIMENTAL]
         // backend sampler chain configuration (make sure the caller keeps the sampler chains alive)

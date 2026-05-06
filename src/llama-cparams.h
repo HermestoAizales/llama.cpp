@@ -41,6 +41,7 @@ struct llama_cparams {
     bool pipeline_parallel;
     bool hisa;              // use Hierarchical Indexed Sparse Attention
     int32_t hisa_block_size; // block size for HISA sparse attention
+    int32_t hisa_min_tokens; // minimum KV tokens before HISA activates (0 = always on)
 
     enum llama_pooling_type pooling_type;
 

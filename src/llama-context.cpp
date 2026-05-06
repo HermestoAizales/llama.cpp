@@ -55,6 +55,7 @@ llama_context::llama_context(
     cparams.warmup           = false;
     cparams.hisa             = params.hisa;
     cparams.hisa_block_size  = params.hisa_block_size;
+    cparams.hisa_min_tokens  = params.hisa_min_tokens;
 
     cparams.n_ctx            = params.n_ctx           == 0    ? hparams.n_ctx_train           : params.n_ctx;
     cparams.rope_freq_base   = params.rope_freq_base  == 0.0f ? hparams.rope_freq_base_train  : params.rope_freq_base;
@@ -3169,6 +3170,7 @@ llama_context_params llama_context_default_params() {
         /*.kv_unified                  =*/ false,
         /*.hisa                        =*/ false,
         /*.hisa_block_size             =*/ 0,
+        /*.hisa_min_tokens             =*/ 0,
         /*.sampler                     =*/ nullptr,
         /*.n_sampler                   =*/ 0,
     };
