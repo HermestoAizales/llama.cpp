@@ -1,6 +1,19 @@
 #ifndef GGML_METAL_IMPL
 #define GGML_METAL_IMPL
 
+// kernel parameters for mat-mat threadgroups
+//
+// TODO: become function constants
+
+#define SZ_SIMDGROUP 16
+#define N_MM_NK 2
+#define N_MM_NK_TOTAL (SZ_SIMDGROUP * N_MM_NK)
+
+#define N_MM_BLOCK_X 4
+#define N_MM_BLOCK_Y 2
+#define N_MM_SIMD_GROUP_X 2
+#define N_MM_SIMD_GROUP_Y 2
+
 // kernel parameters for mat-vec threadgroups
 //
 // N_R0: number of src0 rows to process per simdgroup
@@ -131,6 +144,7 @@
 #define OP_UNARY_NUM_CEIL        118
 #define OP_UNARY_NUM_ROUND       119
 #define OP_UNARY_NUM_TRUNC       120
+#define OP_UNARY_NUM_XIELU       121
 
 #define OP_SUM_ROWS_NUM_SUM_ROWS 10
 #define OP_SUM_ROWS_NUM_MEAN     11
@@ -1021,6 +1035,29 @@ typedef struct {
 } ggml_metal_kargs_pad_reflect_1d;
 
 typedef struct {
+    int64_t  ne00;
+    int64_t  ne01;
+    int64_t  ne02;
+    int64_t  ne03;
+    uint64_t nb00;
+    uint64_t nb01;
+    uint64_t nb02;
+    uint64_t nb03;
+    int64_t  ne0;
+    int64_t  ne1;
+    int64_t  ne2;
+    int64_t  ne3;
+    uint64_t nb0;
+    uint64_t nb1;
+    uint64_t nb2;
+    uint64_t nb3;
+    int32_t  s0;
+    int32_t  s1;
+    int32_t  s2;
+    int32_t  s3;
+} ggml_metal_kargs_roll;
+
+typedef struct {
     uint64_t nb1;
     int      dim;
     int      max_period;
@@ -1159,6 +1196,7 @@ typedef struct {
     int32_t  block_size;
     int32_t  budget;
     int32_t  n_heads_kv;
+    int32_t  n_batch;
     int32_t  gqa_ratio;
     int64_t  d;
     uint64_t src_nb1;
@@ -1175,6 +1213,7 @@ typedef struct {
 typedef struct {
     int32_t  block_size;
     int32_t  n_heads_kv;
+    int32_t  n_batch;
     int32_t  gqa_ratio;
     int64_t  d;
     int64_t  m;

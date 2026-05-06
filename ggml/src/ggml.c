@@ -53,6 +53,21 @@
 
 #define UNUSED GGML_UNUSED
 
+uint64_t ggml_graph_next_uid(void) {
+#ifdef _MSC_VER
+#if defined(_WIN32)
+    static volatile LONG counter = 1;
+    return (uint64_t) InterlockedIncrement(&counter) - 1;
+#else
+    static volatile long long counter = 1;
+    return (uint64_t) _InterlockedIncrement64(&counter) - 1;
+#endif
+#else
+    static uint64_t counter = 1;
+    return __atomic_fetch_add(&counter, 1, __ATOMIC_RELAXED);
+#endif
+}
+
 // Needed for ggml_fp32_to_bf16_row()
 #if defined(__AVX512BF16__)
 #if defined(_MSC_VER)
@@ -1063,9 +1078,14 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "OPT_STEP_SGD",
 
     "GLU",
+
+    "HISA_BLOCK_POOL",
+    "HISA_GATHER",
+    "HISA_BLOCK_GATHER",
+    "HISA_GATHER_MASK",
 };
 
-static_assert(GGML_OP_COUNT == 100, "GGML_OP_COUNT != 96");
+static_assert(GGML_OP_COUNT == 104, "GGML_OP_COUNT != 104");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1159,6 +1179,11 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "A X = B, A triangular, solve X",
     "gated_delta_net(q, k, v, g, beta, s)",
 
+    "hisa_block_pool(k, n_rows, block_size)",
+    "hisa_gather(k, idx)",
+    "hisa_block_gather(k, idx, block_size)",
+    "hisa_gather_mask(k, idx, idx2)",
+
     "unary(x)",
 
     "map_custom(x)",
@@ -1175,7 +1200,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "glu(x)",
 };
 
-static_assert(GGML_OP_COUNT == 100, "GGML_OP_COUNT != 96");
+static_assert(GGML_OP_COUNT == 104, "GGML_OP_COUNT != 104");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -3247,6 +3272,16 @@ void ggml_mul_mat_set_prec(
     const int32_t prec_i32 = (int32_t) prec;
 
     ggml_set_op_params_i32(a, 0, prec_i32);
+}
+
+void ggml_mul_mat_set_hint(
+        struct ggml_tensor * a,
+        enum ggml_op_hint    hint) {
+    GGML_ASSERT(a->op == GGML_OP_MUL_MAT);
+
+    const int32_t hint_i32 = (int32_t) hint;
+
+    ggml_set_op_params_i32(a, 1, hint_i32);
 }
 
 // ggml_mul_mat_id
@@ -5380,6 +5415,128 @@ void ggml_flash_attn_ext_add_sinks(
     a->src[4] = sinks;
 }
 
+// ggml_hisa_block_pool
+// Mean-pool K rows into blocks.
+// src: [d, n_rows, n_heads, n_batch] -> dst: [d, n_blocks, n_heads, n_batch]
+// where n_blocks = n_rows / block_size.
+struct ggml_tensor * ggml_hisa_block_pool(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * src,
+        int64_t               n_rows,
+        int                   block_size) {
+    GGML_ASSERT(src->type == GGML_TYPE_F32);
+    GGML_ASSERT(n_rows > 0);
+    GGML_ASSERT(block_size > 0);
+    GGML_ASSERT(n_rows % block_size == 0);
+
+    const int64_t d       = src->ne[0];
+    const int64_t n_heads = src->ne[2];
+    const int64_t n_batch = src->ne[3];
+    const int64_t n_blocks = n_rows / block_size;
+
+    int64_t ne[4] = { d, n_blocks, n_heads, n_batch };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    int32_t params[2] = { (int32_t)n_rows, (int32_t)block_size };
+    ggml_set_op_params(result, params, sizeof(params));
+
+    result->op     = GGML_OP_HISA_BLOCK_POOL;
+    result->src[0] = src;
+
+    return result;
+}
+
+// ggml_hisa_gather
+// Gather rows by index list.
+// src: [d, n_rows, n_heads, n_batch], idx: [n_indices] -> dst: [d, n_indices, n_heads, n_batch]
+struct ggml_tensor * ggml_hisa_gather(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * src,
+        struct ggml_tensor  * idx) {
+    GGML_ASSERT(src->type == GGML_TYPE_F32);
+    GGML_ASSERT(idx->type == GGML_TYPE_I32);
+    GGML_ASSERT(idx->ne[1] == 1);
+    GGML_ASSERT(idx->ne[2] == 1);
+    GGML_ASSERT(idx->ne[3] == 1);
+
+    const int64_t n_indices = idx->ne[0];
+    const int64_t d         = src->ne[0];
+    const int64_t n_heads   = src->ne[2];
+    const int64_t n_batch   = src->ne[3];
+
+    int64_t ne[4] = { d, n_indices, n_heads, n_batch };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    result->op     = GGML_OP_HISA_GATHER;
+    result->src[0] = src;
+    result->src[1] = idx;
+
+    return result;
+}
+
+// ggml_hisa_block_gather
+// Gather full blocks by block index list.
+// src: [d, n_blocks, n_heads, n_batch], idx: [n_indices] -> dst: [d, n_indices, n_heads, n_batch]
+struct ggml_tensor * ggml_hisa_block_gather(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * src,
+        struct ggml_tensor  * idx,
+        int                   block_size) {
+    GGML_ASSERT(src->type == GGML_TYPE_F32);
+    GGML_ASSERT(idx->type == GGML_TYPE_I32);
+    GGML_ASSERT(idx->ne[1] == 1);
+    GGML_ASSERT(idx->ne[2] == 1);
+    GGML_ASSERT(idx->ne[3] == 1);
+    GGML_ASSERT(block_size > 0);
+
+    const int64_t n_indices = idx->ne[0];
+    const int64_t d         = src->ne[0];
+    const int64_t n_heads   = src->ne[2];
+    const int64_t n_batch   = src->ne[3];
+
+    int64_t ne[4] = { d, n_indices, n_heads, n_batch };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    int32_t params[1] = { (int32_t)block_size };
+    ggml_set_op_params(result, params, sizeof(params));
+
+    result->op     = GGML_OP_HISA_BLOCK_GATHER;
+    result->src[0] = src;
+    result->src[1] = idx;
+
+    return result;
+}
+
+// ggml_hisa_gather_mask
+// Gather mask rows via two-level index mapping.
+// src: [d, n_kv, n_heads, n_batch], idx: [n_tokens, n_heads, n_batch], idx2: [n_indices]
+// idx2 selects from idx (not src directly), producing dst: [d, n_indices, n_heads, n_batch]
+struct ggml_tensor * ggml_hisa_gather_mask(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * src,
+        struct ggml_tensor  * idx,
+        struct ggml_tensor  * idx2,
+        int64_t               n_indices) {
+    GGML_ASSERT(src->type == GGML_TYPE_F32);
+    GGML_ASSERT(idx->type == GGML_TYPE_I32);
+    GGML_ASSERT(idx2->type == GGML_TYPE_I32);
+    GGML_ASSERT(idx->ne[2] == idx2->ne[1]); // n_heads must match
+
+    const int64_t d         = src->ne[0];
+    const int64_t n_heads   = idx->ne[1];
+    const int64_t n_batch   = idx->ne[2];
+
+    int64_t ne[4] = { d, n_indices, n_heads, n_batch };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    result->op     = GGML_OP_HISA_GATHER_MASK;
+    result->src[0] = src;
+    result->src[1] = idx;
+    result->src[2] = idx2;
+
+    return result;
+}
+
 // ggml_flash_attn_back
 
 struct ggml_tensor * ggml_flash_attn_back(
@@ -7098,6 +7255,7 @@ struct ggml_cgraph * ggml_new_graph_custom(struct ggml_context * ctx, size_t siz
         /*.use_counts   =*/ use_counts_ptr,
         /*.hash_table   =*/ { hash_size, hash_used, hash_keys_ptr },
         /*.order        =*/ GGML_CGRAPH_EVAL_ORDER_LEFT_TO_RIGHT,
+        /*.uid          =*/ 0,
     };
 
     ggml_hash_set_reset(&cgraph->visited_hash_set);
@@ -7125,6 +7283,7 @@ struct ggml_cgraph ggml_graph_view(struct ggml_cgraph * cgraph0, int i0, int i1)
         /*.use_counts       =*/ cgraph0->use_counts,
         /*.visited_hash_set =*/ cgraph0->visited_hash_set,
         /*.order            =*/ cgraph0->order,
+        /*.uid              =*/ 0
     };
 
     return cgraph;
@@ -7644,7 +7803,7 @@ size_t ggml_quantize_chunk(
                int64_t   nrows,
                int64_t   n_per_row,
            const float * imatrix) {
-    const int64_t n = (int64_t) nrows * n_per_row;
+    const int64_t n = nrows * n_per_row;
 
     if (ggml_quantize_requires_imatrix(type)) {
         GGML_ASSERT(imatrix != NULL);
@@ -7661,21 +7820,21 @@ size_t ggml_quantize_chunk(
     size_t result = 0;
 
     switch (type) {
-        case GGML_TYPE_Q1_0:    result = quantize_q1_0(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
-        case GGML_TYPE_Q4_0:    result = quantize_q4_0(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
-        case GGML_TYPE_Q4_1:    result = quantize_q4_1(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
-        case GGML_TYPE_Q5_0:    result = quantize_q5_0(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
-        case GGML_TYPE_Q5_1:    result = quantize_q5_1(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
-        case GGML_TYPE_Q8_0:    result = quantize_q8_0(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
-        case GGML_TYPE_MXFP4:   result = quantize_mxfp4(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
-        case GGML_TYPE_NVFP4:   result = quantize_nvfp4(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
-        case GGML_TYPE_Q2_K:    result = quantize_q2_K(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
-        case GGML_TYPE_Q3_K:    result = quantize_q3_K(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
-        case GGML_TYPE_Q4_K:    result = quantize_q4_K(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
-        case GGML_TYPE_Q5_K:    result = quantize_q5_K(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
-        case GGML_TYPE_Q6_K:    result = quantize_q6_K(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
-        case GGML_TYPE_TQ1_0:   result = quantize_tq1_0(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
-        case GGML_TYPE_TQ2_0:   result = quantize_tq2_0(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_Q1_0:    result = quantize_q1_0   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_Q4_0:    result = quantize_q4_0   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_Q4_1:    result = quantize_q4_1   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_Q5_0:    result = quantize_q5_0   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_Q5_1:    result = quantize_q5_1   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_Q8_0:    result = quantize_q8_0   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_MXFP4:   result = quantize_mxfp4  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_NVFP4:   result = quantize_nvfp4  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_Q2_K:    result = quantize_q2_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_Q3_K:    result = quantize_q3_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_Q4_K:    result = quantize_q4_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_Q5_K:    result = quantize_q5_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_Q6_K:    result = quantize_q6_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_TQ1_0:   result = quantize_tq1_0  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_TQ2_0:   result = quantize_tq2_0  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_IQ2_XXS: result = quantize_iq2_xxs(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_IQ2_XS:  result = quantize_iq2_xs (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_IQ3_XXS: result = quantize_iq3_xxs(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
@@ -7740,9 +7899,9 @@ struct ggml_threadpool_params ggml_threadpool_params_default(int n_threads) {
 }
 
 bool ggml_threadpool_params_match(const struct ggml_threadpool_params * p0, const struct ggml_threadpool_params * p1) {
-    if (p0->n_threads      != p1->n_threads  )    return false;
-    if (p0->prio           != p1->prio       )    return false;
-    if (p0->poll           != p1->poll       )    return false;
-    if (p0->strict_cpu     != p1->strict_cpu )    return false;
+    if (p0->n_threads  != p1->n_threads  ) return false;
+    if (p0->prio       != p1->prio       ) return false;
+    if (p0->poll       != p1->poll       ) return false;
+    if (p0->strict_cpu != p1->strict_cpu ) return false;
     return memcmp(p0->cpumask, p1->cpumask, GGML_MAX_N_THREADS) == 0;
 }
