@@ -2445,6 +2445,13 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
             {
                 n_tasks = 1;
             } break;
+        case GGML_OP_HISA_BLOCK_POOL:
+        case GGML_OP_HISA_GATHER:
+        case GGML_OP_HISA_BLOCK_GATHER:
+        case GGML_OP_HISA_GATHER_MASK:
+            {
+                n_tasks = n_threads;
+            } break;
         case GGML_OP_COUNT:
             {
                 GGML_ABORT("fatal error");

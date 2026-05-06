@@ -1936,7 +1936,9 @@ ggml_tensor * llm_graph_context::build_pos_bias(ggml_tensor * pos_bucket, ggml_t
     return pos_bias;
 }
 
-// HISA attention path — block pool + flash attention
+// HISA attention path — block pool K & V, then flash attention over blocks
+// This reduces the KV sequence length by block_size, performing attention over
+// block-averaged key/value representations instead of individual tokens.
 static ggml_tensor * build_attn_hisa(
         const llm_graph_context & ctx,
         ggml_tensor * q,
@@ -1960,13 +1962,18 @@ static ggml_tensor * build_attn_hisa(
     const int64_t n_kv = k->ne[1];
     const int32_t block_size = cparams.hisa_block_size;
 
-    // Block pool: mean-pool K rows into blocks
+    // Block pool: mean-pool K and V rows into blocks
+    // This reduces sequence length from n_kv to n_kv/block_size
     ggml_tensor * pooled_k = ggml_hisa_block_pool(ctx.ctx0, k, n_kv, block_size);
     ctx.cb(pooled_k, "hisa_pooled_k", il);
 
+    // V must be pooled with the same block size to match K's reduced dimension
+    ggml_tensor * pooled_v = ggml_hisa_block_pool(ctx.ctx0, v, n_kv, block_size);
+    ctx.cb(pooled_v, "hisa_pooled_v", il);
+
     // Cast to F16 if needed for flash attention
     ggml_tensor * pk = pooled_k;
-    ggml_tensor * pv = v;
+    ggml_tensor * pv = pooled_v;
     if (pk->type == GGML_TYPE_F32) {
         pk = ggml_cast(ctx.ctx0, pk, GGML_TYPE_F16);
     }
@@ -1977,7 +1984,8 @@ static ggml_tensor * build_attn_hisa(
     ggml_tensor * cur = ggml_flash_attn_ext(ctx.ctx0, q, pk, pv, kq_mask, kq_scale,
                               ctx.hparams.f_max_alibi_bias,
                               ctx.hparams.attn_soft_cap ? ctx.hparams.f_attn_logit_softcapping : 0.0f);
-    ctx.cb(cur, "hisa_fattn", il);
+    // Use standard fattn naming so the scheduler can parse the layer index
+    ctx.cb(cur, LLAMA_TENSOR_NAME_FATTN, il);
 
     ggml_flash_attn_ext_add_sinks(cur, sinks);
     ggml_flash_attn_ext_set_prec(cur, GGML_PREC_F32);

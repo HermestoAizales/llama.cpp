@@ -10665,6 +10665,7 @@ void ggml_compute_forward_gated_delta_net(
 
 // ggml_compute_forward_hisa_block_pool
 // Mean-pool K rows into blocks
+// Supports F32 and F16 source/destination types
 void ggml_compute_forward_hisa_block_pool(
         const ggml_compute_params * params,
         ggml_tensor * dst) {
@@ -10673,10 +10674,7 @@ void ggml_compute_forward_hisa_block_pool(
     const int64_t n_rows     = ggml_get_op_params_i32(dst, 0);
     const int32_t block_size = ggml_get_op_params_i32(dst, 1);
 
-    const float * src0_data = (const float *) src0->data;
-    float * dst_data = (float *) dst->data;
-
-    const int64_t d      = src0->ne[0];
+    const int64_t d       = src0->ne[0];
     const int64_t n_heads = src0->ne[2];
     const int64_t n_batch = src0->ne[3];
     const int64_t n_blocks = n_rows / block_size;
@@ -10686,34 +10684,54 @@ void ggml_compute_forward_hisa_block_pool(
     const size_t nb2 = src0->nb[2];
     const size_t nb3 = src0->nb[3];
 
-    // dst strides
     const size_t d_nb1 = dst->nb[1];
     const size_t d_nb2 = dst->nb[2];
     const size_t d_nb3 = dst->nb[3];
 
-    // Simple single-threaded implementation
     const int64_t total_blocks = n_blocks * n_heads * n_batch;
 
-    for (int64_t blk = 0; blk < total_blocks; blk++) {
-        const int64_t ib = blk % n_blocks;
-        const int64_t ih = (blk / n_blocks) % n_heads;
-        const int64_t ibt = blk / (n_blocks * n_heads);
+    if (src0->type == GGML_TYPE_F32) {
+        const float * src0_data = (const float *) src0->data;
+        float * dst_data = (float *) dst->data;
 
-        // Pointer to output block
-        float * dst_ptr = (float *)((char *)dst_data + ib * d_nb1 + ih * d_nb2 + ibt * d_nb3);
+        for (int64_t blk = 0; blk < total_blocks; blk++) {
+            const int64_t ib = blk % n_blocks;
+            const int64_t ih = (blk / n_blocks) % n_heads;
+            const int64_t ibt = blk / (n_blocks * n_heads);
 
-        // Pointer to first row of this block in source
-        const float * src_row0 = (const float *)((const char *)src0_data + ib * block_size * nb1 + ih * nb2 + ibt * nb3);
+            float * dst_ptr = (float *)((char *)dst_data + ib * d_nb1 + ih * d_nb2 + ibt * d_nb3);
+            const float * src_ptr = (const float *)((const char *)src0_data + ib * block_size * nb1 + ih * nb2 + ibt * nb3);
 
-        // Mean-pool: average over block_size rows
-        for (int64_t di = 0; di < d; di++) {
-            float sum = 0.0f;
-            for (int bs = 0; bs < block_size; bs++) {
-                sum += *(const float *)((char *)src_row0 + di * nb0);
-                src_row0 += nb1 / sizeof(float); // move to next row
+            for (int64_t di = 0; di < d; di++) {
+                float sum = 0.0f;
+                for (int bs = 0; bs < block_size; bs++) {
+                    sum += src_ptr[di + bs * nb1 / sizeof(float)];
+                }
+                dst_ptr[di] = sum / (float)block_size;
             }
-            dst_ptr[di] = sum / (float)block_size;
         }
+    } else if (src0->type == GGML_TYPE_F16) {
+        const ggml_fp16_t * src0_data = (const ggml_fp16_t *) src0->data;
+        ggml_fp16_t * dst_data = (ggml_fp16_t *) dst->data;
+
+        for (int64_t blk = 0; blk < total_blocks; blk++) {
+            const int64_t ib = blk % n_blocks;
+            const int64_t ih = (blk / n_blocks) % n_heads;
+            const int64_t ibt = blk / (n_blocks * n_heads);
+
+            ggml_fp16_t * dst_ptr = (ggml_fp16_t *)((char *)dst_data + ib * d_nb1 + ih * d_nb2 + ibt * d_nb3);
+            const ggml_fp16_t * src_ptr = (const ggml_fp16_t *)((const char *)src0_data + ib * block_size * nb1 + ih * nb2 + ibt * nb3);
+
+            for (int64_t di = 0; di < d; di++) {
+                float sum = 0.0f;
+                for (int bs = 0; bs < block_size; bs++) {
+                    sum += ggml_fp16_to_fp32(src_ptr[di + bs * nb1 / sizeof(ggml_fp16_t)]);
+                }
+                dst_ptr[di] = ggml_fp32_to_fp16(sum / (float)block_size);
+            }
+        }
+    } else {
+        GGML_ABORT("hisa_block_pool: unsupported type %s", ggml_type_name(src0->type));
     }
 }
 

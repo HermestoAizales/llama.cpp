@@ -5424,7 +5424,6 @@ struct ggml_tensor * ggml_hisa_block_pool(
         struct ggml_tensor  * src,
         int64_t               n_rows,
         int                   block_size) {
-    GGML_ASSERT(src->type == GGML_TYPE_F32);
     GGML_ASSERT(n_rows > 0);
     GGML_ASSERT(block_size > 0);
     GGML_ASSERT(n_rows % block_size == 0);
@@ -5435,7 +5434,8 @@ struct ggml_tensor * ggml_hisa_block_pool(
     const int64_t n_blocks = n_rows / block_size;
 
     int64_t ne[4] = { d, n_blocks, n_heads, n_batch };
-    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+    // Preserve the source tensor type (F16, F32, etc.)
+    struct ggml_tensor * result = ggml_new_tensor(ctx, src->type, 4, ne);
 
     int32_t params[2] = { (int32_t)n_rows, (int32_t)block_size };
     ggml_set_op_params(result, params, sizeof(params));
