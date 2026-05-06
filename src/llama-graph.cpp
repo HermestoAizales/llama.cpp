@@ -1937,121 +1937,70 @@ ggml_tensor * llm_graph_context::build_pos_bias(ggml_tensor * pos_bucket, ggml_t
     return pos_bias;
 }
 
-// HISA attention path — block-pool K for coarse attention, then gather
-// original KV tokens from the most relevant blocks for fine-grained attention.
-//
-// Pipeline:
-//   1. Block-pool K into n_blocks = n_kv/block_size blocks
-//   2. Flash attention over pooled K (coarse, finds relevant blocks)
-//   3. Gather original K,V tokens from top blocks
-//   4. Flash attention over gathered KV (fine-grained, exact tokens)
-//
-// This preserves quality because the final attention uses original (unpooled)
-// KV tokens, while the coarse step reduces the search space efficiently.
+// Forward declaration: shared MHA implementation
+static ggml_tensor * build_attn_mha_impl(
+        const llm_graph_context & ctx,
+        ggml_tensor * q,
+        ggml_tensor * k,
+        ggml_tensor * v,
+        ggml_tensor * kq_b,
+        ggml_tensor * kq_mask,
+        ggml_tensor * sinks,
+        ggml_tensor * v_mla,
+              float   kq_scale,
+                int   il,
+        bool   is_hisa);
+
+// HISA attention path — currently a pass-through to standard attention.
+// The HISA pipeline (block-pool → coarse attention → top-K gather → fine attention)
+// will be implemented incrementally. For now this validates the parameter flow
+// and graph construction without quality loss.
+// TODO: Implement coarse attention over pooled K for block selection
+// TODO: Implement top-K block gathering based on coarse attention scores
 static ggml_tensor * build_attn_hisa(
         const llm_graph_context & ctx,
         ggml_tensor * q,
         ggml_tensor * k,
         ggml_tensor * v,
-        ggml_tensor * /*kq_b*/,
+        ggml_tensor * kq_b,
         ggml_tensor * kq_mask,
         ggml_tensor * sinks,
         ggml_tensor * v_mla,
               float   kq_scale,
                 int   il) {
-    const auto & cparams = ctx.cparams;
-    const auto n_stream = k->ne[3];
-
-    q = ggml_view_4d(ctx.ctx0, q, q->ne[0], q->ne[1], q->ne[2]/n_stream, n_stream, q->nb[1], q->nb[2], q->nb[3]/n_stream, 0);
-
-    q = ggml_permute(ctx.ctx0, q, 0, 2, 1, 3);
-    k = ggml_permute(ctx.ctx0, k, 0, 2, 1, 3);
-    v = ggml_permute(ctx.ctx0, v, 0, 2, 1, 3);
-
-    const int64_t n_kv = k->ne[1];
-    const int32_t block_size = cparams.hisa_block_size;
-
-    // Step 1: Block-pool K for coarse attention
-    // [d, n_kv, n_heads, n_batch] -> [d, n_blocks, n_heads, n_batch]
-    ggml_tensor * pooled_k = ggml_hisa_block_pool(ctx.ctx0, k, n_kv, block_size);
-    ctx.cb(pooled_k, "hisa_pooled_k", il);
-
-    // Step 2: Coarse flash attention over pooled K
-    // Use a uniform mask for the coarse step (all blocks initially visible)
-    // The pooled V is used only to compute attention weights, not for the final output
-    ggml_tensor * pooled_v = ggml_hisa_block_pool(ctx.ctx0, v, n_kv, block_size);
-    ctx.cb(pooled_v, "hisa_pooled_v", il);
-
-    // Cast pooled K/V to F16 for flash attention if needed
-    ggml_tensor * pk = pooled_k;
-    ggml_tensor * pv = pooled_v;
-    if (pk->type == GGML_TYPE_F32) {
-        pk = ggml_cast(ctx.ctx0, pk, GGML_TYPE_F16);
-    }
-    if (pv->type == GGML_TYPE_F32) {
-        pv = ggml_cast(ctx.ctx0, pv, GGML_TYPE_F16);
-    }
-
-    // Coarse attention: determines which blocks are relevant
-    ggml_tensor * coarse_attn = ggml_flash_attn_ext(ctx.ctx0, q, pk, pv, kq_mask, kq_scale,
-                              ctx.hparams.f_max_alibi_bias,
-                              ctx.hparams.attn_soft_cap ? ctx.hparams.f_attn_logit_softcapping : 0.0f);
-    ctx.cb(coarse_attn, "hisa_coarse_attn", il);
-    ggml_flash_attn_ext_add_sinks(coarse_attn, sinks);
-    ggml_flash_attn_ext_set_prec(coarse_attn, GGML_PREC_F32);
-
-    // Step 3: For now, gather ALL blocks (no top-K selection yet)
-    // This is a quality-preserving fallback: attention over all original tokens
-    // but computed through the HISA pipeline for validation
-    // TODO: Add top-K block selection based on coarse attention scores
-    // For now, fall through to standard attention on original K,V
-    // (This validates the pipeline without quality loss)
-
-    // Step 4: Fine-grained attention on original (unpooled) K,V
-    // Cast original K/V to F16 for flash attention if needed
-    ggml_tensor * fk = k;
-    ggml_tensor * fv = v;
-    if (fk->type == GGML_TYPE_F32) {
-        fk = ggml_cast(ctx.ctx0, fk, GGML_TYPE_F16);
-    }
-    if (fv->type == GGML_TYPE_F32) {
-        fv = ggml_cast(ctx.ctx0, fv, GGML_TYPE_F16);
-    }
-
-    ggml_tensor * cur = ggml_flash_attn_ext(ctx.ctx0, q, fk, fv, kq_mask, kq_scale,
-                              ctx.hparams.f_max_alibi_bias,
-                              ctx.hparams.attn_soft_cap ? ctx.hparams.f_attn_logit_softcapping : 0.0f);
-    ctx.cb(cur, LLAMA_TENSOR_NAME_FATTN, il);
-
-    ggml_flash_attn_ext_add_sinks(cur, sinks);
-    ggml_flash_attn_ext_set_prec(cur, GGML_PREC_F32);
-
-    // MLA post-processing
-    if (v_mla) {
-        cur = ggml_permute(ctx.ctx0, cur, 0, 2, 1, 3);
-        cur = ggml_mul_mat(ctx.ctx0, v_mla, cur);
-        ctx.cb(cur, "hisa_fattn_mla", il);
-        cur = ggml_permute(ctx.ctx0, cur, 0, 2, 1, 3);
-        cur = ggml_cont(ctx.ctx0, cur);
-    }
-
-    cur = ggml_reshape_2d(ctx.ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
-
-    ggml_build_forward_expand(ctx.gf, cur);
-
-    return cur;
+    // Delegate to standard MHA — HISA sparse selection not yet active
+    // This ensures identical output quality while the pipeline is built out
+    return build_attn_mha_impl(ctx, q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il, true);
 }
 
-ggml_tensor * llm_graph_context::build_attn_mha(
-         ggml_tensor * q,
-         ggml_tensor * k,
-         ggml_tensor * v,
-         ggml_tensor * kq_b,
-         ggml_tensor * kq_mask,
-         ggml_tensor * sinks,
-         ggml_tensor * v_mla,
-               float   kq_scale,
-                 int   il) const {
+// Static helper: standard MHA implementation shared between normal and HISA paths
+static ggml_tensor * build_attn_mha_impl(
+        const llm_graph_context & ctx,
+        ggml_tensor * q,
+        ggml_tensor * k,
+        ggml_tensor * v,
+        ggml_tensor * kq_b,
+        ggml_tensor * kq_mask,
+        ggml_tensor * sinks,
+        ggml_tensor * v_mla,
+              float   kq_scale,
+                int   il,
+        bool   is_hisa) {
+    const auto & hparams = ctx.hparams;
+    const auto & cparams = ctx.cparams;
+    ggml_context * ctx0 = ctx.ctx0;
+    const auto arch = ctx.arch;
+    const auto n_head = ctx.n_head;
+    const auto n_tokens = ctx.n_tokens;
+    // Use ctx.cb() directly — it's a const reference wrapper
+    auto sched = ctx.sched;
+    auto backend_cpu = ctx.backend_cpu;
+
+    GGML_UNUSED(is_hisa); // Reserved for future HISA-specific logic
+    GGML_UNUSED(n_head);  // Used only in legacy path
+    GGML_UNUSED(n_tokens); // Used only in legacy path
+
+    // Original build_attn_mha code follows:
     const bool v_trans = v->nb[1] > v->nb[2];
 
     // split the batch into streams if needed
@@ -2073,109 +2022,102 @@ ggml_tensor * llm_graph_context::build_attn_mha(
             v = ggml_transpose(ctx0, v);
         }
 
-        // this can happen when KV cache is not used (e.g. an embedding model with non-causal attn)
         if (k->type == GGML_TYPE_F32) {
             k = ggml_cast(ctx0, k, GGML_TYPE_F16);
         }
-
         if (v->type == GGML_TYPE_F32) {
             v = ggml_cast(ctx0, v, GGML_TYPE_F16);
         }
 
         cur = ggml_flash_attn_ext(ctx0, q, k, v, kq_mask, kq_scale, hparams.f_max_alibi_bias,
                                   hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f);
-        cb(cur, LLAMA_TENSOR_NAME_FATTN, il);
+        ctx.cb(cur, LLAMA_TENSOR_NAME_FATTN, il);
 
         ggml_flash_attn_ext_add_sinks(cur, sinks);
         ggml_flash_attn_ext_set_prec (cur, GGML_PREC_F32);
 
         if (v_mla) {
-#if 0
-            // v_mla can be applied as a matrix-vector multiplication with broadcasting across dimension 3 == n_tokens.
-            // However, the code is optimized for dimensions 0 and 1 being large, so this is inefficient.
-            cur = ggml_reshape_4d(ctx0, cur, v_mla->ne[0], 1, n_head, n_tokens);
-            cur = ggml_mul_mat(ctx0, v_mla, cur);
-#else
-            // It's preferable to do the calculation as a matrix-matrix multiplication with n_tokens in dimension 1.
-            // The permutations are noops and only change how the tensor data is interpreted.
             cur = ggml_permute(ctx0, cur, 0, 2, 1, 3);
             cur = ggml_mul_mat(ctx0, v_mla, cur);
-            cb(cur, "fattn_mla", il);
+            ctx.cb(cur, "fattn_mla", il);
             cur = ggml_permute(ctx0, cur, 0, 2, 1, 3);
-            cur = ggml_cont(ctx0, cur); // Needed because ggml_reshape_2d expects contiguous inputs.
-#endif
+            cur = ggml_cont(ctx0, cur);
         }
 
         cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
     } else {
         ggml_tensor * kq = ggml_mul_mat(ctx0, k, q);
-        cb(kq, "kq", il);
-
-        // note: this op tends to require high floating point range
-        //       while for some models F16 is enough, for others it is not, so we default to F32 here
+        ctx.cb(kq, "kq", il);
         ggml_mul_mat_set_prec(kq, GGML_PREC_F32);
 
         if (arch == LLM_ARCH_GROK) {
-            // need to do the following:
-            // multiply by attn_output_multiplier
-            // and then :
-            // kq = 30 * tanh(kq / 30)
-            // before the softmax below
-
             kq = ggml_tanh(ctx0, ggml_scale(ctx0, kq, hparams.f_attn_out_scale / hparams.f_attn_logit_softcapping));
-            cb(kq, "kq_tanh", il);
+            ctx.cb(kq, "kq_tanh", il);
             kq = ggml_scale(ctx0, kq, hparams.f_attn_logit_softcapping);
-            cb(kq, "kq_scaled", il);
+            ctx.cb(kq, "kq_scaled", il);
         }
 
         if (hparams.attn_soft_cap) {
             kq = ggml_scale(ctx0, kq, 1.0f / hparams.f_attn_logit_softcapping);
-            cb(kq, "kq_scaled_1", il);
+            ctx.cb(kq, "kq_scaled_1", il);
             kq = ggml_tanh (ctx0, kq);
-            cb(kq, "kq_tanh", il);
+            ctx.cb(kq, "kq_tanh", il);
             kq = ggml_scale(ctx0, kq, hparams.f_attn_logit_softcapping);
-            cb(kq, "kq_scaled_2", il);
+            ctx.cb(kq, "kq_scaled_2", il);
         }
 
         if (kq_b) {
             kq = ggml_add(ctx0, kq, kq_b);
-            cb(kq, "kq_plus_kq_b", il);
+            ctx.cb(kq, "kq_plus_kq_b", il);
         }
 
         kq = ggml_soft_max_ext(ctx0, kq, kq_mask, kq_scale, hparams.f_max_alibi_bias);
         ggml_soft_max_add_sinks(kq, sinks);
-        cb(kq, "kq_soft_max", il);
+        ctx.cb(kq, "kq_soft_max", il);
 
         if (!v_trans) {
-            // note: avoid this branch
             v = ggml_cont(ctx0, ggml_transpose(ctx0, v));
-            cb(v, "v_cont", il);
+            ctx.cb(v, "v_cont", il);
         }
 
         ggml_tensor * kqv = ggml_mul_mat(ctx0, v, kq);
-        cb(kqv, "kqv", il);
+        ctx.cb(kqv, "kqv", il);
 
-        // for MLA with the absorption optimization, we need to "decompress" from MQA back to MHA
         if (v_mla) {
             kqv = ggml_mul_mat(ctx0, v_mla, kqv);
-            cb(kqv, "kqv_mla", il);
+            ctx.cb(kqv, "kqv_mla", il);
         }
 
         cur = ggml_permute(ctx0, kqv, 0, 2, 1, 3);
-
-        // recombine streams
         cur = ggml_cont_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
 
         if (!cparams.offload_kqv) {
-            // all nodes between the KV store and the attention output are run on the CPU
             ggml_backend_sched_set_tensor_backend(sched, cur, backend_cpu);
         }
     }
 
-    ggml_build_forward_expand(gf, cur);
+    ggml_build_forward_expand(ctx.gf, cur);
 
     return cur;
 }
+
+ggml_tensor * llm_graph_context::build_attn_mha(
+         ggml_tensor * q,
+         ggml_tensor * k,
+         ggml_tensor * v,
+         ggml_tensor * kq_b,
+         ggml_tensor * kq_mask,
+         ggml_tensor * sinks,
+         ggml_tensor * v_mla,
+               float   kq_scale,
+                 int   il) const {
+    return build_attn_mha_impl(*this, q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il, false);
+}
+
+#if 0 // Legacy body - replaced by build_attn_mha_impl
+// (legacy code removed)
+#endif
+
 
 llm_graph_input_attn_no_cache * llm_graph_context::build_attn_inp_no_cache() const {
     auto inp = std::make_unique<llm_graph_input_attn_no_cache>(hparams, cparams);
