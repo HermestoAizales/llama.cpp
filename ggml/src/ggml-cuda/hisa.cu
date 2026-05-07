@@ -32,14 +32,20 @@ static __global__ void hisa_block_pool_f16(const half * __restrict__ src, half *
 
 void ggml_cuda_op_hisa_block_pool(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * src = dst->src[0];
-    const float * src_d = (const float *)src->data;
-    float * dst_d = (float *)dst->data;
     cudaStream_t stream = ctx.stream();
     const int32_t block_size = ggml_get_op_params_i32(dst, 0);
     const int64_t d = src->ne[0], n_kv = src->ne[1], n_heads = src->ne[2], n_batch = src->ne[3], n_blocks = dst->ne[1];
     const dim3 block_dims(256, 1, 1), grid_dims(n_blocks, n_heads, n_batch);
     if (n_blocks > 0 && n_heads > 0 && n_batch > 0 && d > 0) {
-        hisa_block_pool_f32<<<grid_dims, block_dims, 0, stream>>>(src_d, dst_d, d, n_kv, n_blocks, block_size, src->nb[1], src->nb[2], src->nb[3], dst->nb[1], dst->nb[2], dst->nb[3]);
+        if (src->type == GGML_TYPE_F16) {
+            hisa_block_pool_f16<<<grid_dims, block_dims, 0, stream>>>(
+                (const half *)src->data, (half *)dst->data, d, n_kv, n_blocks, block_size,
+                src->nb[1], src->nb[2], src->nb[3], dst->nb[1], dst->nb[2], dst->nb[3]);
+        } else {
+            hisa_block_pool_f32<<<grid_dims, block_dims, 0, stream>>>(
+                (const float *)src->data, (float *)dst->data, d, n_kv, n_blocks, block_size,
+                src->nb[1], src->nb[2], src->nb[3], dst->nb[1], dst->nb[2], dst->nb[3]);
+        }
     }
 }
 
@@ -75,7 +81,7 @@ static __global__ void hisa_block_gather_f16(const half * __restrict__ src, cons
 
 void ggml_cuda_op_hisa_block_gather(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * src = dst->src[0]; const ggml_tensor * block_indices = dst->src[1];
-    const float * src_d = (const float *)src->data; const int32_t * idx_d = (const int32_t *)block_indices->data; float * dst_d = (float *)dst->data;
+    const int32_t * idx_d = (const int32_t *)block_indices->data;
     cudaStream_t stream = ctx.stream();
     const int32_t block_size = ggml_get_op_params_i32(dst, 0);
     const int64_t d = src->ne[0], n_heads_kv = src->ne[2], n_batch = src->ne[3], m = block_indices->ne[0];
@@ -83,7 +89,19 @@ void ggml_cuda_op_hisa_block_gather(ggml_backend_cuda_context & ctx, ggml_tensor
     const int64_t total_per_head_batch = d * m * block_size;
     const dim3 block_dims(256, 1, 1), grid_dims((total_per_head_batch + 255) / 256, n_heads_kv, n_batch);
     if (total_per_head_batch > 0 && n_heads_kv > 0 && n_batch > 0) {
-        hisa_block_gather_f32<<<grid_dims, block_dims, 0, stream>>>(src_d, idx_d, dst_d, d, m, block_size, n_heads_kv, gqa_ratio, src->nb[1], src->nb[2], src->nb[3], dst->nb[1], dst->nb[2], dst->nb[3], block_indices->nb[0], block_indices->nb[2], block_indices->nb[3]);
+        if (src->type == GGML_TYPE_F16) {
+            hisa_block_gather_f16<<<grid_dims, block_dims, 0, stream>>>(
+                (const half *)src->data, idx_d, (half *)dst->data, d, m, block_size,
+                n_heads_kv, gqa_ratio, src->nb[1], src->nb[2], src->nb[3],
+                dst->nb[1], dst->nb[2], dst->nb[3], block_indices->nb[0],
+                block_indices->nb[2], block_indices->nb[3]);
+        } else {
+            hisa_block_gather_f32<<<grid_dims, block_dims, 0, stream>>>(
+                (const float *)src->data, idx_d, (float *)dst->data, d, m, block_size,
+                n_heads_kv, gqa_ratio, src->nb[1], src->nb[2], src->nb[3],
+                dst->nb[1], dst->nb[2], dst->nb[3], block_indices->nb[0],
+                block_indices->nb[2], block_indices->nb[3]);
+        }
     }
 }
 
@@ -115,7 +133,7 @@ static __global__ void hisa_gather_f16(const half * __restrict__ src, const int3
 
 void ggml_cuda_op_hisa_gather(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * src = dst->src[0]; const ggml_tensor * indices = dst->src[1];
-    const float * src_d = (const float *)src->data; const int32_t * idx_d = (const int32_t *)indices->data; float * dst_d = (float *)dst->data;
+    const int32_t * idx_d = (const int32_t *)indices->data;
     cudaStream_t stream = ctx.stream();
     const int32_t block_size = ggml_get_op_params_i32(dst, 0);
     const int64_t d = src->ne[0], n_heads_kv = src->ne[2], n_batch = src->ne[3], budget = indices->ne[0];
@@ -123,9 +141,23 @@ void ggml_cuda_op_hisa_gather(ggml_backend_cuda_context & ctx, ggml_tensor * dst
     const int64_t total_per_head_batch = d * budget;
     const dim3 block_dims(256, 1, 1), grid_dims((total_per_head_batch + 255) / 256, n_heads_kv, n_batch);
     if (total_per_head_batch > 0 && n_heads_kv > 0 && n_batch > 0) {
-        hisa_gather_f32<<<grid_dims, block_dims, 0, stream>>>(src_d, idx_d, dst_d, d, budget, n_heads_kv, gqa_ratio, src->nb[1], src->nb[2], src->nb[3], dst->nb[1], dst->nb[2], dst->nb[3], indices->nb[0], indices->nb[2], indices->nb[3]);
+        if (src->type == GGML_TYPE_F16) {
+            hisa_gather_f16<<<grid_dims, block_dims, 0, stream>>>(
+                (const half *)src->data, idx_d, (half *)dst->data, d, budget,
+                n_heads_kv, gqa_ratio, src->nb[1], src->nb[2], src->nb[3],
+                dst->nb[1], dst->nb[2], dst->nb[3], indices->nb[0],
+                indices->nb[2], indices->nb[3]);
+        } else {
+            hisa_gather_f32<<<grid_dims, block_dims, 0, stream>>>(
+                (const float *)src->data, idx_d, (float *)dst->data, d, budget,
+                n_heads_kv, gqa_ratio, src->nb[1], src->nb[2], src->nb[3],
+                dst->nb[1], dst->nb[2], dst->nb[3], indices->nb[0],
+                indices->nb[2], indices->nb[3]);
+        }
     }
 }
+
+// hisa_gather_mask only supports F16 input (kq_mask), no F32 variant needed
 
 static __global__ void hisa_gather_mask_f16(const half * __restrict__ kq_mask, const int32_t * __restrict__ topm_indices, const int32_t * __restrict__ top_budget_indices, half * __restrict__ dst, const int block_size, const int n_kv, const int T, const int budget, const int S, const size_t mask_nb0, const size_t mask_nb1, const size_t mask_nb2, const size_t mask_nb3, const size_t dst_nb0, const size_t dst_nb1, const size_t dst_nb2, const size_t dst_nb3, const size_t topm_nb0, const size_t topm_nb1, const size_t topm_nb2, const size_t topm_nb3, const size_t topb_nb0, const size_t topb_nb1, const size_t topb_nb2, const size_t topb_nb3) {
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
