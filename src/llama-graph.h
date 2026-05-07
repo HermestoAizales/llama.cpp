@@ -728,6 +728,7 @@ struct llm_graph_context {
     float   hisa_sparsity;
     bool    hisa_sink_protect;
     float   hisa_sparsity_scale;
+    bool    hisa_per_head;
 
     const int64_t n_embd;
     const int64_t n_layer;

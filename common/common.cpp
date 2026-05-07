@@ -1520,6 +1520,7 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.hisa_sparsity     = params.hisa_sparsity;
     cparams.hisa_sink_protect = params.hisa_sink_protect;
     cparams.hisa_sparsity_scale = params.hisa_sparsity_scale;
+    cparams.hisa_per_head       = params.hisa_per_head;
 
     cparams.type_k = params.cache_type_k;
     cparams.type_v = params.cache_type_v;

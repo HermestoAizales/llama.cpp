@@ -45,6 +45,7 @@ struct llama_cparams {
     float hisa_sparsity;    // fraction of blocks to select (0.0=all, 0.5=half, 0.9=top 10%)
     bool hisa_sink_protect; // protect attention sink tokens (block 0) from eviction
     float hisa_sparsity_scale; // layer-adaptive sparsity scale (0.0=uniform, 1.0=pyramid)
+    bool hisa_per_head; // per-head sparse attention: select Top-K blocks per KV-head
 
     enum llama_pooling_type pooling_type;
 

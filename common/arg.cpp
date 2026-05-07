@@ -1539,6 +1539,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.hisa_sparsity_scale = std::stof(value);
         }
     ).set_env("LLAMA_ARG_HISA_SPARSITY_SCALE"));
+    add_opt(common_arg(
+        {"--hisa-per-head"},
+        "enable per-head sparse attention (SnapKV-inspired)",
+        [](common_params & params) {
+            params.hisa_per_head = true;
+        }
+    ).set_env("LLAMA_ARG_HISA_PER_HEAD"));
 
     add_opt(common_arg(
         {"-cnv", "--conversation"},

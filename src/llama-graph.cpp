@@ -938,6 +938,7 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     hisa_sparsity    (cparams.hisa_sparsity),
     hisa_sink_protect(cparams.hisa_sink_protect),
     hisa_sparsity_scale(cparams.hisa_sparsity_scale),
+    hisa_per_head    (cparams.hisa_per_head),
     freq_base        (cparams.rope_freq_base),
     freq_scale       (cparams.rope_freq_scale),
     ext_factor       (cparams.yarn_ext_factor),
@@ -1999,6 +2000,7 @@ static ggml_tensor * build_attn_hisa(
     const bool    sink_protect = ctx.hisa_sink_protect;
     const float   sparsity_scale = ctx.hisa_sparsity_scale;
     const int64_t n_layer = ctx.n_layer;
+    const bool    per_head = ctx.hisa_per_head;
 
     GGML_UNUSED(kq_b);
     GGML_UNUSED(sinks);
@@ -2049,119 +2051,152 @@ static ggml_tensor * build_attn_hisa(
     ctx.cb(coarse_last, "hisa_coarse_last", il);
     // coarse_last: [n_blocks, n_head_kv, 1, n_batch]
 
-    // Sum over heads: permute to [n_head_kv, n_blocks, 1, n_batch], then sum_rows
+    // Step 4c: Per-Head vs Global block scores
+    //
+    // coarse_last: [n_blocks, n_head_kv, 1, n_batch]
     ggml_tensor * coarse_perm = ggml_permute(ctx0, coarse_last, 1, 0, 2, 3);
     // coarse_perm: [n_head_kv, n_blocks, 1, n_batch]
-    ggml_tensor * block_scores = ggml_sum_rows(ctx0, coarse_perm);
+
+    ggml_tensor * block_scores;
+    if (per_head) {
+        // Per-head mode: keep scores per head as [n_head_kv, n_blocks]
+        block_scores = ggml_reshape_2d(ctx0, coarse_perm, n_blocks, n_head_kv);
+    } else {
+        // Global mode (default): sum over heads → [1, n_blocks, 1, n_batch]
+        block_scores = ggml_sum_rows(ctx0, coarse_perm);
+    }
     ctx.cb(block_scores, "hisa_block_scores", il);
-    // block_scores: [1, n_blocks, 1, n_batch]
 
     // Step 5: Top-K block selection
-    // Flatten to 1D for argsort: [n_blocks]
-    ggml_tensor * block_scores_1d = ggml_reshape_1d(ctx0, block_scores, n_blocks);
-    ctx.cb(block_scores_1d, "hisa_block_scores_1d", il);
 
     // Compute layer-adaptive sparsity (PyramidKV, Cai et al. 2024)
-    //
-    // Earlier layers can be compressed more aggressively while later layers
-    // need more context. We interpolate sparsity based on layer position:
-    //   layer 0:            sparsity * (1 + scale/2)  [more compression]
-    //   layer n_layer-1:    sparsity * (1 - scale/2)  [less compression]
-    //
-    // At scale=0.0 this reduces to uniform sparsity (current behavior).
-    // At scale=1.0 the first layer uses 1.5x sparsity, the last 0.5x.
     float effective_sparsity = sparsity;
     if (sparsity_scale > 0.0f && n_layer > 1) {
-        // Layer position: 0.0 at first layer, 1.0 at last layer
         float layer_pos = (float)il / (float)(n_layer - 1);
-        // Scale factor: +scale/2 at first layer, -scale/2 at last layer
         float scale_factor = 1.0f + (0.5f - layer_pos) * sparsity_scale;
         effective_sparsity = sparsity * scale_factor;
-        // Clamp to valid range
         if (effective_sparsity < 0.0f) effective_sparsity = 0.0f;
         if (effective_sparsity > 0.95f) effective_sparsity = 0.95f;
     }
 
-    // Compute number of blocks to select based on effective sparsity
-    // effective_sparsity=0.0 → select all blocks
-    // effective_sparsity=0.5 → select half
-    // effective_sparsity=0.9 → select top 10%
     int n_select = (int)roundf((1.0f - effective_sparsity) * (float)n_blocks);
     if (n_select < 1) n_select = 1;
     if (n_select > (int)n_blocks) n_select = (int)n_blocks;
 
-    // Step 5b: Attention Sink Protection (StreamingLLM, Xiao et al. 2023)
-    //
-    // The first block (block 0) contains initial tokens that act as
-    // "attention sinks" — they receive disproportionately high attention
-    // scores and are critical for model stability. Evicting them causes
-    // severe quality degradation.
-    //
-    // We ensure block 0 is always selected by adding a large constant
-    // to its score before sorting. This is a no-op when block 0 already
-    // has a high score (common case due to the sink phenomenon).
-    if (sink_protect && n_select < (int)n_blocks && n_blocks > 1) {
-        // Create a boost tensor: [sink_boost, 0, 0, ..., 0]
-        // where sink_boost = 1e10 (well above any normal attention score)
-        const float sink_boost = 1e10f;
-        std::vector<float> boost_data(n_blocks, 0.0f);
-        boost_data[0] = sink_boost;
-        ggml_tensor * boost = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_blocks);
-        memcpy(boost->data, boost_data.data(), n_blocks * sizeof(float));
-        block_scores_1d = ggml_add(ctx0, block_scores_1d, boost);
-        ctx.cb(block_scores_1d, "hisa_block_scores_1d_sink", il);
+    // Step 5b: Build top-K block indices (global or per-head)
+    ggml_tensor *topk_indices;
+    int n_select_total;
+
+    if (per_head) {
+        // Per-Head Sparse Attention (SnapKV, Li et al. 2024)
+        //
+        // block_scores: [n_head_kv, n_blocks] — separate scores per KV-head
+        // We select Top-K blocks per head independently, then concatenate.
+        // Duplicates are acceptable (union semantics).
+        //
+        // For each KV-head h:
+        //   1. Extract head h's scores as 1D tensor [n_blocks]
+        //   2. Apply sink protection (boost block 0)
+        //   3. argsort descending → top-K indices
+        // Then concatenate all per-head results.
+        n_select_total = (int)n_head_kv * n_select;
+
+        std::vector<ggml_tensor *> head_topk_tensors;
+        head_topk_tensors.reserve(n_head_kv);
+
+        for (int64_t h = 0; h < n_head_kv; h++) {
+            // Extract head h's scores: block_scores[h, :] → [n_blocks]
+            ggml_tensor *head_scores = ggml_view_1d(ctx0, block_scores,
+                n_blocks, h * n_blocks * sizeof(float));
+
+            // Sink protection: boost block 0
+            if (sink_protect && n_select < (int)n_blocks && n_blocks > 1) {
+                const float sink_boost_val = 1e10f;
+                std::vector<float> boost_data(n_blocks, 0.0f);
+                boost_data[0] = sink_boost_val;
+                ggml_tensor *boost = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_blocks);
+                memcpy(boost->data, boost_data.data(), n_blocks * sizeof(float));
+                head_scores = ggml_add(ctx0, head_scores, boost);
+            }
+
+            // Argsort descending
+            ggml_tensor *head_sorted = ggml_argsort(ctx0, head_scores, GGML_SORT_ORDER_DESC);
+
+            // Take top-K
+            ggml_tensor *head_topk = ggml_view_1d(ctx0, head_sorted, n_select, 0);
+            head_topk_tensors.push_back(head_topk);
+        }
+
+        // Concatenate all per-head top-K indices
+        // ggml_concat only takes 2 tensors, so we chain them
+        topk_indices = head_topk_tensors[0];
+        for (size_t t = 1; t < head_topk_tensors.size(); t++) {
+            topk_indices = ggml_concat(ctx0, topk_indices, head_topk_tensors[t], 0);
+        }
+        ctx.cb(topk_indices, "hisa_per_head_topk", il);
+        // topk_indices: [n_head_kv * n_select] (I32), may contain duplicates
+
+    } else {
+        // Global mode (default): single Top-K over summed head scores
+        // block_scores: [1, n_blocks, 1, n_batch]
+        n_select_total = n_select;
+
+        ggml_tensor *block_scores_1d = ggml_reshape_1d(ctx0, block_scores, n_blocks);
+        ctx.cb(block_scores_1d, "hisa_block_scores_1d", il);
+
+        // Sink protection
+        if (sink_protect && n_select < (int)n_blocks && n_blocks > 1) {
+            const float sink_boost = 1e10f;
+            std::vector<float> boost_data(n_blocks, 0.0f);
+            boost_data[0] = sink_boost;
+            ggml_tensor *boost = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_blocks);
+            memcpy(boost->data, boost_data.data(), n_blocks * sizeof(float));
+            block_scores_1d = ggml_add(ctx0, block_scores_1d, boost);
+            ctx.cb(block_scores_1d, "hisa_block_scores_1d_sink", il);
+        }
+
+        ggml_tensor *sorted_indices = ggml_argsort(ctx0, block_scores_1d, GGML_SORT_ORDER_DESC);
+        ctx.cb(sorted_indices, "hisa_sorted_indices", il);
+
+        topk_indices = ggml_view_1d(ctx0, sorted_indices, n_select, 0);
+        ctx.cb(topk_indices, "hisa_topk_indices", il);
     }
 
-    // Get sorted indices (descending by score → top-K = first K indices)
-    ggml_tensor * sorted_indices = ggml_argsort(ctx0, block_scores_1d, GGML_SORT_ORDER_DESC);
-    ctx.cb(sorted_indices, "hisa_sorted_indices", il);
-    // sorted_indices: [n_blocks] (I32)
-
-    // Take first n_select indices (top-K by score)
-    ggml_tensor * topk_indices = ggml_view_1d(ctx0, sorted_indices, n_select, 0);
-    ctx.cb(topk_indices, "hisa_topk_indices", il);
-    // topk_indices: [n_select] (I32)
-
-    const int64_t n_gathered = (int64_t)n_select * block_size;
+    const int64_t n_gathered = (int64_t)n_select_total * block_size;
 
     // Step 6: Expand block indices to token indices for mask gathering.
     // Each block b contains tokens [b*block_size .. (b+1)*block_size-1].
-    // We need to gather the corresponding mask rows.
     //
-    // topk_indices: [n_select] (I32) -> convert to F32 for arithmetic
-    ggml_tensor * block_idx_f = ggml_cast(ctx0, topk_indices, GGML_TYPE_F32);
-    // base = block_idx_f * block_size: [n_select] (F32)
-    ggml_tensor * base = ggml_scale(ctx0, block_idx_f, (float)block_size);
+    // topk_indices: [n_select_total] (I32) -> convert to F32 for arithmetic
+    ggml_tensor *block_idx_f = ggml_cast(ctx0, topk_indices, GGML_TYPE_F32);
+    // base = block_idx_f * block_size: [n_select_total] (F32)
+    ggml_tensor *base = ggml_scale(ctx0, block_idx_f, (float)block_size);
     // offsets = arange(0, block_size): [block_size] (F32)
-    ggml_tensor * offsets = ggml_arange(ctx0, 0.0f, (float)block_size, 1.0f);
+    ggml_tensor *offsets = ggml_arange(ctx0, 0.0f, (float)block_size, 1.0f);
     //
-    // Broadcast: base [n_select, 1] + offsets [1, block_size] -> [n_select, block_size]
-    // Using ggml_repeat_4d to repeat along dimensions:
-    //   base_2d: reshape base to [n_select, 1, 1, 1], repeat to [n_select, block_size, 1, 1]
-    //   offs_2d: reshape offsets to [1, block_size, 1, 1], repeat to [n_select, block_size, 1, 1]
-    //   sum -> [n_select, block_size, 1, 1] -> reshape to [n_select * block_size]
-    ggml_tensor * base_4d = ggml_reshape_4d(ctx0, base, n_select, 1, 1, 1);
-    ggml_tensor * offs_4d = ggml_reshape_4d(ctx0, offsets, 1, block_size, 1, 1);
-    ggml_tensor * base_rep = ggml_repeat_4d(ctx0, base_4d, n_select, block_size, 1, 1);
-    ggml_tensor * offs_rep = ggml_repeat_4d(ctx0, offs_4d, n_select, block_size, 1, 1);
-    ggml_tensor * token_idx_f = ggml_add(ctx0, base_rep, offs_rep);
-    // token_idx_f: [n_select, block_size, 1, 1] -> [n_gathered] (F32)
-    ggml_tensor * token_idx_1d = ggml_reshape_1d(ctx0, token_idx_f, n_gathered);
+    // Broadcast: base [n_select_total, 1] + offsets [1, block_size] -> [n_select_total, block_size]
+    ggml_tensor *base_4d = ggml_reshape_4d(ctx0, base, n_select_total, 1, 1, 1);
+    ggml_tensor *offs_4d = ggml_reshape_4d(ctx0, offsets, 1, block_size, 1, 1);
+    ggml_tensor *base_rep = ggml_repeat_4d(ctx0, base_4d, n_select_total, block_size, 1, 1);
+    ggml_tensor *offs_rep = ggml_repeat_4d(ctx0, offs_4d, n_select_total, block_size, 1, 1);
+    ggml_tensor *token_idx_f = ggml_add(ctx0, base_rep, offs_rep);
+    // token_idx_f: [n_select_total, block_size, 1, 1] -> [n_gathered] (F32)
+    ggml_tensor *token_idx_1d = ggml_reshape_1d(ctx0, token_idx_f, n_gathered);
     // Cast to I32 for ggml_hisa_gather
-    ggml_tensor * token_indices = ggml_cast(ctx0, token_idx_1d, GGML_TYPE_I32);
+    ggml_tensor *token_indices = ggml_cast(ctx0, token_idx_1d, GGML_TYPE_I32);
     ctx.cb(token_indices, "hisa_token_indices", il);
     // token_indices: [n_gathered] (I32)
 
     // Gather mask rows: kq_mask is [n_kv, n_tokens, 1, n_stream]
     // View as [n_kv, n_tokens * n_stream] (2D), gather rows
     int64_t mask_cols = kq_mask->ne[1] * kq_mask->ne[2] * kq_mask->ne[3];
-    ggml_tensor * mask_2d = ggml_view_2d(ctx0, kq_mask, kq_mask->ne[0], mask_cols,
+    ggml_tensor *mask_2d = ggml_view_2d(ctx0, kq_mask, kq_mask->ne[0], mask_cols,
                                        kq_mask->nb[1], 0);
-    ggml_tensor * mask_gathered_2d = ggml_hisa_gather(ctx0, mask_2d, token_indices);
+    ggml_tensor *mask_gathered_2d = ggml_hisa_gather(ctx0, mask_2d, token_indices);
     ctx.cb(mask_gathered_2d, "hisa_mask_gathered_2d", il);
     // mask_gathered_2d: [n_gathered, n_tokens * n_stream] (F32)
     // Reshape back to 4D: [n_gathered, n_tokens, 1, n_stream]
-    ggml_tensor * kq_mask_gathered = ggml_reshape_4d(ctx0, mask_gathered_2d,
+    ggml_tensor *kq_mask_gathered = ggml_reshape_4d(ctx0, mask_gathered_2d,
                                                     n_gathered, kq_mask->ne[1],
                                                     kq_mask->ne[2], kq_mask->ne[3]);
     ctx.cb(kq_mask_gathered, "hisa_kq_mask_gathered", il);

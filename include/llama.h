@@ -380,6 +380,7 @@ extern "C" {
         float hisa_sparsity; // fraction of blocks to select (0.0=all, 0.5=half, 0.9=top 10%)
         bool hisa_sink_protect; // protect attention sink tokens (block 0) from eviction (default: true)
         float hisa_sparsity_scale; // layer-adaptive sparsity scale (0.0=uniform, 1.0=pyramid, default: 0.0)
+        bool hisa_per_head; // per-head sparse attention: select Top-K blocks per KV-head (default: false)
 
         // [EXPERIMENTAL]
         // backend sampler chain configuration (make sure the caller keeps the sampler chains alive)

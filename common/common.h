@@ -445,6 +445,7 @@ struct common_params {
     float   hisa_sparsity          = 0.5f;  // fraction of blocks to select (0.0=all, 0.5=half, 0.9=top 10%)
     bool    hisa_sink_protect      = true;   // protect attention sink tokens (block 0) from eviction
     float   hisa_sparsity_scale    = 0.0f;  // layer-adaptive sparsity scale (0.0=uniform, 1.0=pyramid)
+    bool    hisa_per_head          = false;  // per-head sparse attention (SnapKV-inspired)
 
 
     // offload params
