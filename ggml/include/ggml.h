@@ -2597,24 +2597,10 @@ extern "C" {
             struct ggml_context * ctx,
             struct ggml_tensor  * src);
 
-    // Store residual state directly into a host buffer at byte offset
-    // dst_host: host memory buffer, dst_off: byte offset into buffer
-    GGML_API void ggml_residual_store_host(
-            struct ggml_tensor  * src,
-            void                * dst_host,
-            size_t                dst_off);
-
     // Restore residual state: src: [d, n_tokens, 1, 1] -> dst: [d, n_tokens, 1, 1] (copy from checkpoint buffer)
     GGML_API struct ggml_tensor * ggml_residual_restore(
             struct ggml_context * ctx,
             struct ggml_tensor  * src);
-
-    // Restore residual state directly from a host buffer at byte offset into dst
-    // src_host: host memory buffer, src_off: byte offset into buffer
-    GGML_API void ggml_residual_restore_host(
-            struct ggml_tensor  * dst,
-            const void          * src_host,
-            size_t                src_off);
 
     // custom operators
 
