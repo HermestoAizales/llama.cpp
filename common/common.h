@@ -447,6 +447,8 @@ struct common_params {
     float   hisa_sparsity_scale    = 0.0f;  // layer-adaptive sparsity scale (0.0=uniform, 1.0=pyramid)
     bool    hisa_per_head          = false;  // per-head sparse attention (SnapKV-inspired)
 
+    // Bounded KV cache params
+    int32_t kv_cache_bounded       = 0;      // bounded KV cache: max active tokens (0 = unlimited)
 
     // offload params
     std::vector<ggml_backend_dev_t> devices; // devices to use for offloading

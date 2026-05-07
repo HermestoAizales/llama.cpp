@@ -1548,6 +1548,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_env("LLAMA_ARG_HISA_PER_HEAD"));
 
     add_opt(common_arg(
+        {"--kv-cache-bounded"}, "N",
+        "bounded KV cache: max active tokens (0 = unlimited, default: 0)",
+        [](common_params & params, int value) {
+            params.kv_cache_bounded = value;
+        }
+    ).set_env("LLAMA_ARG_KV_CACHE_BOUNDED"));
+    add_opt(common_arg(
         {"-cnv", "--conversation"},
         {"-no-cnv", "--no-conversation"},
         "whether to run in conversation mode:\n"

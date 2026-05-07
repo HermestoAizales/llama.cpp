@@ -10954,6 +10954,35 @@ void ggml_compute_forward_residual_store(
     memcpy(dst->data, src0->data, nbytes);
 }
 
+// ggml_residual_store_host: store residual directly to host buffer
+// NOTE: This is a synchronous host-side operation, NOT a graph op.
+// Call after graph execution to persist tensor data.
+// For GPU tensors, uses ggml_backend_tensor_get with a temporary staging buffer.
+void ggml_residual_store_host(
+        struct ggml_tensor  * src,
+        void                * dst_host,
+        size_t                dst_off) {
+    const int64_t d        = src->ne[0];
+    const int64_t n_tokens = src->ne[1];
+    const size_t nbytes    = d * n_tokens * ggml_type_size(src->type);
+
+    ggml_backend_tensor_get(src, (char *)dst_host + dst_off, 0, nbytes);
+}
+
+// ggml_residual_restore_host: restore residual directly from host buffer
+// NOTE: This is a synchronous host-side operation, NOT a graph op.
+// Call before graph execution to load persisted tensor data.
+void ggml_residual_restore_host(
+        struct ggml_tensor  * dst,
+        const void          * src_host,
+        size_t                src_off) {
+    const int64_t d        = dst->ne[0];
+    const int64_t n_tokens = dst->ne[1];
+    const size_t nbytes    = d * n_tokens * ggml_type_size(dst->type);
+
+    ggml_backend_tensor_set(dst, (const char *)src_host + src_off, 0, nbytes);
+}
+
 // ggml_compute_forward_residual_restore
 // Restore residual state from checkpoint buffer (simple copy)
 void ggml_compute_forward_residual_restore(

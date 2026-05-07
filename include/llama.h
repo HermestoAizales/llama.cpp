@@ -381,6 +381,7 @@ extern "C" {
         bool hisa_sink_protect; // protect attention sink tokens (block 0) from eviction (default: true)
         float hisa_sparsity_scale; // layer-adaptive sparsity scale (0.0=uniform, 1.0=pyramid, default: 0.0)
         bool hisa_per_head; // per-head sparse attention: select Top-K blocks per KV-head (default: false)
+        int32_t kv_cache_bounded; // bounded KV cache: max active tokens (0 = unlimited, default: 0)
 
         // [EXPERIMENTAL]
         // backend sampler chain configuration (make sure the caller keeps the sampler chains alive)

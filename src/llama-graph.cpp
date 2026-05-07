@@ -939,6 +939,7 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     hisa_sink_protect(cparams.hisa_sink_protect),
     hisa_sparsity_scale(cparams.hisa_sparsity_scale),
     hisa_per_head    (cparams.hisa_per_head),
+    kv_cache_bounded (cparams.kv_cache_bounded),
     freq_base        (cparams.rope_freq_base),
     freq_scale       (cparams.rope_freq_scale),
     ext_factor       (cparams.yarn_ext_factor),
@@ -2623,6 +2624,15 @@ ggml_tensor * llm_graph_context::build_attn(
         cur = ggml_add(ctx0, cur, wo_b);
     }
 
+    // Store residual checkpoint for bounded KV cache
+    if (kv_cache_bounded > 0) {
+        ggml_tensor * res_store = ggml_residual_store(ctx0, cur);
+        char name_buf[64];
+        snprintf(name_buf, sizeof(name_buf), "res_ckpt_%d", il);
+        ggml_set_name(res_store, name_buf);
+        ggml_build_forward_expand(gf, res_store);
+    }
+
     return cur;
 }
 
@@ -2805,6 +2815,15 @@ ggml_tensor * llm_graph_context::build_attn(
 
     if (wo_b) {
         cur = ggml_add(ctx0, cur, wo_b);
+    }
+
+    // Store residual checkpoint for bounded KV cache
+    if (kv_cache_bounded > 0) {
+        char name_buf[64];
+        snprintf(name_buf, sizeof(name_buf), "res_ckpt_%d", il);
+        ggml_tensor * res_store = ggml_residual_store(ctx0, cur);
+        ggml_set_name(res_store, name_buf);
+        ggml_build_forward_expand(gf, res_store);
     }
 
     return cur;

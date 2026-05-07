@@ -208,6 +208,34 @@ public:
     void set_input_k_rot(ggml_tensor * dst) const;
     void set_input_v_rot(ggml_tensor * dst) const;
 
+    // Bounded KV cache: residual checkpoints (public for access from llama_context)
+    // Stores the residual stream output after each attention layer.
+    // Layout: [n_tokens][n_embd] in FP16
+    bool    bounded_kv   = false;  // bounded KV mode active
+    int64_t n_embd_res   = 0;      // residual embedding dimension
+    int32_t max_bounded  = 0;      // max active KV tokens
+    // Residual checkpoint buffer (FP16, host memory)
+    // Layout: [kv_size][n_embd_res] in FP16
+    std::vector<uint8_t> res_buffer;
+    // For each cell (0..kv_size-1), tracks whether a residual checkpoint exists
+    std::vector<bool>    res_valid;
+    // Number of stored checkpoints
+    int32_t n_res_checkpoints = 0;
+
+    // Initialize bounded KV cache with residual checkpoint buffer
+    void init_bounded_kv(const llama_cparams & cparams, const llama_hparams & hparams, uint32_t kv_size);
+    // Store residual for a single position. pos is the global position in the cache.
+    // data points to n_embd_res values in the given type (F32 or F16).
+    void residual_store(int32_t pos, const void * data, ggml_type type);
+    // Check if residual checkpoint exists for position
+    bool residual_exists(int32_t pos) const;
+    // Invalidate residual checkpoint for a range of positions [p0, p1]
+    void residual_invalidate(llama_pos p0, llama_pos p1);
+    // Access residual data for position (FP16). Returns nullptr if not available.
+    const ggml_fp16_t * residual_data(int32_t pos) const;
+    // Check if we have exceeded the bounded budget
+    bool residual_budget_exceeded() const { return bounded_kv && n_res_checkpoints > max_bounded; }
+
 private:
     const llama_model & model;
     const llama_hparams & hparams;
