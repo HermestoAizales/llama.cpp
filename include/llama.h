@@ -379,6 +379,7 @@ extern "C" {
         int32_t hisa_min_tokens; // min KV tokens before HISA activates (0 = always on)
         float hisa_sparsity; // fraction of blocks to select (0.0=all, 0.5=half, 0.9=top 10%)
         bool hisa_sink_protect; // protect attention sink tokens (block 0) from eviction (default: true)
+        float hisa_sparsity_scale; // layer-adaptive sparsity scale (0.0=uniform, 1.0=pyramid, default: 0.0)
 
         // [EXPERIMENTAL]
         // backend sampler chain configuration (make sure the caller keeps the sampler chains alive)

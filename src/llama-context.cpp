@@ -3174,6 +3174,7 @@ llama_context_params llama_context_default_params() {
         /*.hisa_min_tokens             =*/ 0,
         /*.hisa_sparsity               =*/ 0.5f,
         /*.hisa_sink_protect           =*/ true,
+        /*.hisa_sparsity_scale         =*/ 0.0f,
         /*.samplers                    =*/ nullptr,
         /*.n_sampler                   =*/ 0,
     };

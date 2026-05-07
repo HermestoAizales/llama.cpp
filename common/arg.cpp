@@ -1532,6 +1532,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.hisa_sink_protect = (value == "1" || value == "true");
         }
     ).set_env("LLAMA_ARG_HISA_SINK_PROTECT"));
+    add_opt(common_arg(
+        {"--hisa-sparsity-scale"}, "F",
+        string_format("HISA layer-adaptive sparsity scale, 0.0=uniform, 1.0=pyramid (default: %.1f)", (double)params.hisa_sparsity_scale),
+        [](common_params & params, const std::string & value) {
+            params.hisa_sparsity_scale = std::stof(value);
+        }
+    ).set_env("LLAMA_ARG_HISA_SPARSITY_SCALE"));
 
     add_opt(common_arg(
         {"-cnv", "--conversation"},

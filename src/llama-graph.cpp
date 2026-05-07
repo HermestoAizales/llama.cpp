@@ -937,6 +937,7 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     hisa_min_tokens  (cparams.hisa_min_tokens),
     hisa_sparsity    (cparams.hisa_sparsity),
     hisa_sink_protect(cparams.hisa_sink_protect),
+    hisa_sparsity_scale(cparams.hisa_sparsity_scale),
     freq_base        (cparams.rope_freq_base),
     freq_scale       (cparams.rope_freq_scale),
     ext_factor       (cparams.yarn_ext_factor),
@@ -1996,6 +1997,8 @@ static ggml_tensor * build_attn_hisa(
     const int32_t min_tokens = ctx.hisa_min_tokens;
     const float   sparsity   = ctx.hisa_sparsity;
     const bool    sink_protect = ctx.hisa_sink_protect;
+    const float   sparsity_scale = ctx.hisa_sparsity_scale;
+    const int64_t n_layer = ctx.n_layer;
 
     GGML_UNUSED(kq_b);
     GGML_UNUSED(sinks);
@@ -2058,9 +2061,32 @@ static ggml_tensor * build_attn_hisa(
     ggml_tensor * block_scores_1d = ggml_reshape_1d(ctx0, block_scores, n_blocks);
     ctx.cb(block_scores_1d, "hisa_block_scores_1d", il);
 
-    // Compute number of blocks to select based on sparsity parameter
-    // sparsity=0.0 → select all blocks, sparsity=0.5 → select half, sparsity=0.9 → select top 10%
-    int n_select = (int)roundf((1.0f - sparsity) * (float)n_blocks);
+    // Compute layer-adaptive sparsity (PyramidKV, Cai et al. 2024)
+    //
+    // Earlier layers can be compressed more aggressively while later layers
+    // need more context. We interpolate sparsity based on layer position:
+    //   layer 0:            sparsity * (1 + scale/2)  [more compression]
+    //   layer n_layer-1:    sparsity * (1 - scale/2)  [less compression]
+    //
+    // At scale=0.0 this reduces to uniform sparsity (current behavior).
+    // At scale=1.0 the first layer uses 1.5x sparsity, the last 0.5x.
+    float effective_sparsity = sparsity;
+    if (sparsity_scale > 0.0f && n_layer > 1) {
+        // Layer position: 0.0 at first layer, 1.0 at last layer
+        float layer_pos = (float)il / (float)(n_layer - 1);
+        // Scale factor: +scale/2 at first layer, -scale/2 at last layer
+        float scale_factor = 1.0f + (0.5f - layer_pos) * sparsity_scale;
+        effective_sparsity = sparsity * scale_factor;
+        // Clamp to valid range
+        if (effective_sparsity < 0.0f) effective_sparsity = 0.0f;
+        if (effective_sparsity > 0.95f) effective_sparsity = 0.95f;
+    }
+
+    // Compute number of blocks to select based on effective sparsity
+    // effective_sparsity=0.0 → select all blocks
+    // effective_sparsity=0.5 → select half
+    // effective_sparsity=0.9 → select top 10%
+    int n_select = (int)roundf((1.0f - effective_sparsity) * (float)n_blocks);
     if (n_select < 1) n_select = 1;
     if (n_select > (int)n_blocks) n_select = (int)n_blocks;
 

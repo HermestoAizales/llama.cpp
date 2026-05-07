@@ -444,6 +444,7 @@ struct common_params {
     int32_t hisa_block_size        = 0;      // HISA block size (0 = auto from hisa_min_tokens * 4)
     float   hisa_sparsity          = 0.5f;  // fraction of blocks to select (0.0=all, 0.5=half, 0.9=top 10%)
     bool    hisa_sink_protect      = true;   // protect attention sink tokens (block 0) from eviction
+    float   hisa_sparsity_scale    = 0.0f;  // layer-adaptive sparsity scale (0.0=uniform, 1.0=pyramid)
 
 
     // offload params
