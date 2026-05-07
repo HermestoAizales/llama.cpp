@@ -235,6 +235,8 @@ public:
     const ggml_fp16_t * residual_data(int32_t pos) const;
     // Check if we have exceeded the bounded budget
     bool residual_budget_exceeded() const { return bounded_kv && n_res_checkpoints > max_bounded; }
+    // Evict oldest KV entries to make room for n_new_tokens
+    void evict_bounded(uint32_t n_new_tokens);
 
 private:
     const llama_model & model;

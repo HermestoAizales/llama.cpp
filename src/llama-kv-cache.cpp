@@ -649,6 +649,15 @@ llama_memory_context_ptr llama_kv_cache::init_batch(
             break;
         }
 
+        // Evict oldest KV entries if bounded cache is full
+        if (bounded_kv) {
+            uint32_t n_new_tokens = 0;
+            for (const auto & ub : ubatches) {
+                n_new_tokens += ub.n_tokens;
+            }
+            evict_bounded(n_new_tokens);
+        }
+
         auto sinfos = prepare(ubatches);
         if (sinfos.empty()) {
             break;
@@ -2372,6 +2381,57 @@ void llama_kv_cache::init_bounded_kv(const llama_cparams & cparams, const llama_
 
     LLAMA_LOG_INFO("%s: bounded KV cache initialized: max_bounded=%d, n_embd_res=%ld, buffer_size=%zu MB\n",
             __func__, max_bounded, (long)n_embd_res, res_total_bytes / (1024 * 1024));
+}
+
+void llama_kv_cache::evict_bounded(uint32_t n_new_tokens) {
+    if (!bounded_kv) return;
+    if (max_bounded == 0) return;
+
+    // Count currently used cells across all streams
+    uint32_t n_used = 0;
+    for (uint32_t s = 0; s < n_stream; ++s) {
+        n_used += v_cells[s].get_used();
+    }
+
+    // Check if we need to evict
+    if ((int32_t)(n_used + n_new_tokens) <= max_bounded) {
+        return; // enough space
+    }
+
+    // Number of tokens to evict (evict enough to fit new tokens + 10% headroom)
+    uint32_t n_evict = (n_used + n_new_tokens) - (uint32_t)max_bounded;
+    uint32_t headroom = (uint32_t)max_bounded / 10;
+    if (headroom > n_evict) {
+        n_evict = headroom;
+    }
+
+    LLAMA_LOG_DEBUG("%s: evicting %d tokens (used=%d, new=%d, max=%d)\n",
+            __func__, n_evict, n_used, n_new_tokens, max_bounded);
+
+    // Evict oldest tokens from each stream
+    for (uint32_t s = 0; s < n_stream && n_evict > 0; ++s) {
+        auto & cells = v_cells[s];
+
+        // Collect all used cell indices and sort by position (oldest first)
+        std::vector<std::pair<llama_pos, uint32_t>> pos_idx;
+        const uint32_t n_cells = cells.size();
+        for (uint32_t idx = 0; idx < n_cells; ++idx) {
+            llama_pos p = cells.pos_get(idx);
+            if (p >= 0) {
+                pos_idx.emplace_back(p, idx);
+            }
+        }
+        std::sort(pos_idx.begin(), pos_idx.end());
+
+        // Evict oldest positions (but keep residual checkpoints!)
+        for (const auto & [pos, idx] : pos_idx) {
+            if (n_evict == 0) break;
+            cells.rm(idx);
+            n_evict--;
+        }
+    }
+
+    LLAMA_LOG_DEBUG("%s: eviction complete\n", __func__);
 }
 
 void llama_kv_cache::residual_store(int32_t pos, const void * data, ggml_type type) {
