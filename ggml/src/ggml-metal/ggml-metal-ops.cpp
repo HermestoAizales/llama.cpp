@@ -489,6 +489,14 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
             {
                 n_fuse = ggml_metal_op_hisa_gather_mask(ctx, idx);
             } break;
+        case GGML_OP_RESIDUAL_STORE:
+            {
+                n_fuse = ggml_metal_op_residual_store(ctx, idx);
+            } break;
+        case GGML_OP_RESIDUAL_RESTORE:
+            {
+                n_fuse = ggml_metal_op_residual_restore(ctx, idx);
+            } break;
         default:
             {
                 GGML_LOG_ERROR("%s: error: node %3d, op = %8s not implemented\n", __func__, idx, ggml_op_name(node->op));
@@ -4895,4 +4903,32 @@ int ggml_metal_op_hisa_gather_mask(ggml_metal_op_t ctx, int idx) {
     ggml_metal_encoder_dispatch_threadgroups(enc, tg_count, 1, 1, n_threads, 1, 1);
 
     return 1;
+}
+
+int ggml_metal_op_residual_store(ggml_metal_op_t ctx, int idx) {
+    // Simple 1D copy: [d, n_tokens, 1, 1] → [d, n_tokens, 1, 1]
+    ggml_tensor * op = ctx->node(idx);
+    ggml_metal_library_t lib = ctx->lib;
+    ggml_metal_encoder_t enc = ctx->enc;
+
+    const int64_t d        = op->ne[0];
+    const int64_t n_tokens = op->ne[1];
+    const int64_t total    = d * n_tokens;
+
+    auto pipeline = ggml_metal_library_get_pipeline_residual_store(lib, op);
+
+    int n_threads = std::min((int)total, 256);
+    int tg_count  = (int)((total + n_threads - 1) / n_threads);
+
+    ggml_metal_encoder_set_pipeline(enc, pipeline);
+    ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op->src[0]), 0);
+    ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op), 1);
+    ggml_metal_encoder_set_threadgroup_memory_size(enc, 0, 0);
+    ggml_metal_encoder_dispatch_threadgroups(enc, tg_count, 1, 1, n_threads, 1, 1);
+
+    return 1;
+}
+
+int ggml_metal_op_residual_restore(ggml_metal_op_t ctx, int idx) {
+    return ggml_metal_op_residual_store(ctx, idx);
 }

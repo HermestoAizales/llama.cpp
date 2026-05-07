@@ -10869,3 +10869,22 @@ kernel void kernel_hisa_gather_mask_f16(
         *((const half *)((const char *)kq_mask + s * args.mask_nb3 + t * args.mask_nb1 + abs_pos * args.mask_nb0));
 }
 
+// Residual checkpoint copy kernels
+kernel void kernel_residual_copy_f32(
+        device const float * src,
+        device       float * dst,
+        const   int64_t   total,
+        uint gid[[thread_position_in_grid]]) {
+    if ((int64_t)gid >= total) return;
+    dst[gid] = src[gid];
+}
+
+kernel void kernel_residual_copy_f16(
+        device const half * src,
+        device       half * dst,
+        const   int64_t   total,
+        uint gid[[thread_position_in_grid]]) {
+    if ((int64_t)gid >= total) return;
+    dst[gid] = src[gid];
+}
+

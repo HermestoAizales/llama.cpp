@@ -97,6 +97,8 @@ int ggml_metal_op_hisa_block_pool   (ggml_metal_op_t ctx, int idx);
 int ggml_metal_op_hisa_gather       (ggml_metal_op_t ctx, int idx);
 int ggml_metal_op_hisa_block_gather (ggml_metal_op_t ctx, int idx);
 int ggml_metal_op_hisa_gather_mask  (ggml_metal_op_t ctx, int idx);
+int ggml_metal_op_residual_store    (ggml_metal_op_t ctx, int idx);
+int ggml_metal_op_residual_restore  (ggml_metal_op_t ctx, int idx);
 
 #ifdef __cplusplus
 }
