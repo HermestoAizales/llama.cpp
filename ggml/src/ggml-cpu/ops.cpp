@@ -10939,6 +10939,36 @@ void ggml_compute_forward_hisa_gather_mask(
     }
 }
 
+// ggml_compute_forward_residual_store
+// Store residual state to checkpoint buffer (simple copy)
+void ggml_compute_forward_residual_store(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    GGML_UNUSED(params);
+    const ggml_tensor * src0 = dst->src[0];
+
+    const int64_t d        = src0->ne[0];
+    const int64_t n_tokens = src0->ne[1];
+    const size_t nbytes    = d * n_tokens * ggml_type_size(src0->type);
+
+    memcpy(dst->data, src0->data, nbytes);
+}
+
+// ggml_compute_forward_residual_restore
+// Restore residual state from checkpoint buffer (simple copy)
+void ggml_compute_forward_residual_restore(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    GGML_UNUSED(params);
+    const ggml_tensor * src0 = dst->src[0];
+
+    const int64_t d        = src0->ne[0];
+    const int64_t n_tokens = src0->ne[1];
+    const size_t nbytes    = d * n_tokens * ggml_type_size(src0->type);
+
+    memcpy(dst->data, src0->data, nbytes);
+}
+
 // ggml_compute_forward_rwkv_wkv7
 
 static void ggml_compute_forward_rwkv_wkv7_f32(

@@ -1083,9 +1083,12 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "HISA_GATHER",
     "HISA_BLOCK_GATHER",
     "HISA_GATHER_MASK",
+
+    "RESIDUAL_STORE",
+    "RESIDUAL_RESTORE",
 };
 
-static_assert(GGML_OP_COUNT == 100, "GGML_OP_COUNT != 100");
+static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 100");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1200,7 +1203,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "glu(x)",
 };
 
-static_assert(GGML_OP_COUNT == 100, "GGML_OP_COUNT != 100");
+static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 100");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -5533,6 +5536,46 @@ struct ggml_tensor * ggml_hisa_gather_mask(
     result->src[0] = src;
     result->src[1] = idx;
     result->src[2] = idx2;
+
+    return result;
+}
+
+// ggml_residual_store
+// Store residual state to checkpoint buffer (simple copy).
+// src: [d, n_tokens, 1, 1] -> dst: [d, n_tokens, 1, 1]
+struct ggml_tensor * ggml_residual_store(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * src) {
+    GGML_ASSERT(src->type == GGML_TYPE_F32 || src->type == GGML_TYPE_F16);
+
+    const int64_t d         = src->ne[0];
+    const int64_t n_tokens  = src->ne[1];
+
+    int64_t ne[4] = { d, n_tokens, 1, 1 };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, src->type, 4, ne);
+
+    result->op     = GGML_OP_RESIDUAL_STORE;
+    result->src[0] = src;
+
+    return result;
+}
+
+// ggml_residual_restore
+// Restore residual state from checkpoint buffer (simple copy).
+// src: [d, n_tokens, 1, 1] -> dst: [d, n_tokens, 1, 1]
+struct ggml_tensor * ggml_residual_restore(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * src) {
+    GGML_ASSERT(src->type == GGML_TYPE_F32 || src->type == GGML_TYPE_F16);
+
+    const int64_t d         = src->ne[0];
+    const int64_t n_tokens  = src->ne[1];
+
+    int64_t ne[4] = { d, n_tokens, 1, 1 };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, src->type, 4, ne);
+
+    result->op     = GGML_OP_RESIDUAL_RESTORE;
+    result->src[0] = src;
 
     return result;
 }

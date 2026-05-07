@@ -588,6 +588,9 @@ extern "C" {
         GGML_OP_HISA_BLOCK_GATHER,  // HISA: gather full blocks by block index list
         GGML_OP_HISA_GATHER_MASK,  // HISA: gather mask rows via two-level index mapping
 
+        GGML_OP_RESIDUAL_STORE,     // Bounded KV: store residual state to checkpoint buffer
+        GGML_OP_RESIDUAL_RESTORE,   // Bounded KV: load residual state from checkpoint buffer
+
         GGML_OP_COUNT,
     };
 
@@ -2587,6 +2590,17 @@ extern "C" {
             struct ggml_tensor  * idx,
             struct ggml_tensor  * idx2,
             int64_t               n_indices);
+
+    // Residual checkpoint operators for bounded KV cache
+    // Store residual state: src: [d, n_tokens, 1, 1] -> dst: [d, n_tokens, 1, 1] (copy to checkpoint buffer)
+    GGML_API struct ggml_tensor * ggml_residual_store(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * src);
+
+    // Restore residual state: src: [d, n_tokens, 1, 1] -> dst: [d, n_tokens, 1, 1] (copy from checkpoint buffer)
+    GGML_API struct ggml_tensor * ggml_residual_restore(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * src);
 
     // custom operators
 
