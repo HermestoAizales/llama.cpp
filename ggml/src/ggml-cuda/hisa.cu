@@ -182,3 +182,22 @@ void ggml_cuda_op_hisa_gather_mask(ggml_backend_cuda_context & ctx, ggml_tensor 
         hisa_gather_mask_f16<<<grid_dims, block_dims, 0, stream>>>(kq_mask_d, topm_indices_d, top_budget_indices_d, dst_d, block_size, n_kv, T, budget, S, kq_mask->nb[0], kq_mask->nb[1], kq_mask->nb[2], kq_mask->nb[3], dst->nb[0], dst->nb[1], dst->nb[2], dst->nb[3], topm_indices->nb[0], topm_indices->nb[1], topm_indices->nb[2], topm_indices->nb[3], top_budget_indices->nb[0], top_budget_indices->nb[1], top_budget_indices->nb[2], top_budget_indices->nb[3]);
     }
 }
+
+// Residual checkpoint operations
+// Simple memcpy — use cudaMemcpyAsync for both F32 and F16
+
+void ggml_cuda_op_residual_store(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    const ggml_tensor * src = dst->src[0];
+    const int64_t d        = src->ne[0];
+    const int64_t n_tokens = src->ne[1];
+    const size_t nbytes    = d * n_tokens * ggml_type_size(src->type);
+    CUDA_CHECK(cudaMemcpyAsync(dst->data, src->data, nbytes, cudaMemcpyDeviceToDevice, ctx.stream()));
+}
+
+void ggml_cuda_op_residual_restore(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    const ggml_tensor * src = dst->src[0];
+    const int64_t d        = src->ne[0];
+    const int64_t n_tokens = src->ne[1];
+    const size_t nbytes    = d * n_tokens * ggml_type_size(src->type);
+    CUDA_CHECK(cudaMemcpyAsync(dst->data, src->data, nbytes, cudaMemcpyDeviceToDevice, ctx.stream()));
+}

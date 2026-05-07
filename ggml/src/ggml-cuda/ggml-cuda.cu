@@ -2640,6 +2640,12 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
         case GGML_OP_HISA_GATHER_MASK:
             ggml_cuda_op_hisa_gather_mask(ctx, dst);
             break;
+        case GGML_OP_RESIDUAL_STORE:
+            ggml_cuda_op_residual_store(ctx, dst);
+            break;
+        case GGML_OP_RESIDUAL_RESTORE:
+            ggml_cuda_op_residual_restore(ctx, dst);
+            break;
         case GGML_OP_COUNT_EQUAL:
             ggml_cuda_count_equal(ctx, dst);
             break;
@@ -5083,6 +5089,10 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_HISA_BLOCK_GATHER:
             return true;
         case GGML_OP_HISA_GATHER_MASK:
+            return true;
+        case GGML_OP_RESIDUAL_STORE:
+            return true;
+        case GGML_OP_RESIDUAL_RESTORE:
             return true;
         case GGML_OP_REPEAT:
             {
