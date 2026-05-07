@@ -442,6 +442,8 @@ struct common_params {
     bool    hisa                   = false; // use Hierarchical Indexed Sparse Attention
     int32_t hisa_min_tokens        = 1;      // minimum tokens for HISA to be active
     int32_t hisa_block_size        = 0;      // HISA block size (0 = auto from hisa_min_tokens * 4)
+    float   hisa_sparsity          = 0.5f;  // fraction of blocks to select (0.0=all, 0.5=half, 0.9=top 10%)
+    bool    hisa_sink_protect      = true;   // protect attention sink tokens (block 0) from eviction
 
 
     // offload params

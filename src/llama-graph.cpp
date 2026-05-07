@@ -935,6 +935,8 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     hisa             (cparams.hisa),
     hisa_block_size  (cparams.hisa_block_size),
     hisa_min_tokens  (cparams.hisa_min_tokens),
+    hisa_sparsity    (cparams.hisa_sparsity),
+    hisa_sink_protect(cparams.hisa_sink_protect),
     freq_base        (cparams.rope_freq_base),
     freq_scale       (cparams.rope_freq_scale),
     ext_factor       (cparams.yarn_ext_factor),
@@ -1951,12 +1953,30 @@ static ggml_tensor * build_attn_mha_impl(
                 int   il,
         bool   is_hisa);
 
-// HISA attention path — currently a pass-through to standard attention.
-// The HISA pipeline (block-pool → coarse attention → top-K gather → fine attention)
-// will be implemented incrementally. For now this validates the parameter flow
-// and graph construction without quality loss.
-// TODO: Implement coarse attention over pooled K for block selection
-// TODO: Implement top-K block gathering based on coarse attention scores
+// HISA attention path — Hierarchical Indexed Sparse Attention.
+//
+// Pipeline:
+//   1. Cast K to F32 for pooling (V stays quantized, used only in fine attn)
+//   2. Block-pool K into coarse blocks → [d, n_blocks, n_head_kv, n_batch]
+//   3. Coarse attention: Q @ pooled-K → block importance scores
+//   4. Top-K block selection via ggml_argsort
+//   5. Gather selected blocks from original (quantized) K and V
+//   6. Fine attention on gathered KV via flash_attn
+//
+// HISA attention path — Hierarchical Indexed Sparse Attention.
+//
+// Pipeline:
+//   1. F32-cast K for pooling (V stays quantized)
+//   2. Block-pool K → [d, n_blocks, n_head_kv, n_batch]
+//   3. Coarse attention: mul_mat(pooled_K, Q) → [n_blocks, n_head_kv, n_tokens, n_batch]
+//   4. Extract last token scores → [n_blocks, n_head_kv, 1, n_batch]
+//   5. Permute + sum_rows over heads → [1, n_blocks, 1, n_batch] = per-block scores
+//   6. Flatten to 1D → ggml_argsort to get top-K block indices
+//   7. Gather selected blocks from original K,V via ggml_hisa_block_gather
+//   8. Fine attention on gathered KV via flash_attn_ext
+//
+// GQA-safe: K/V always in n_head_kv heads. Coarse scores use KV heads directly.
+// Fine attention uses standard GQA (Q: n_head, KV: n_head_kv).
 static ggml_tensor * build_attn_hisa(
         const llm_graph_context & ctx,
         ggml_tensor * q,
@@ -1968,10 +1988,249 @@ static ggml_tensor * build_attn_hisa(
         ggml_tensor * v_mla,
               float   kq_scale,
                 int   il) {
-    // Delegate to standard MHA — HISA sparse selection not yet active
-    // This ensures identical output quality while the pipeline is built out
-    return build_attn_mha_impl(ctx, q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il, true);
+    const auto & hparams = ctx.hparams;
+    const auto & cparams = ctx.cparams;
+    ggml_context * ctx0 = ctx.ctx0;
+    const auto n_head_kv = ctx.n_head_kv;
+    const int32_t block_size = ctx.hisa_block_size;
+    const int32_t min_tokens = ctx.hisa_min_tokens;
+    const float   sparsity   = ctx.hisa_sparsity;
+    const bool    sink_protect = ctx.hisa_sink_protect;
+
+    GGML_UNUSED(kq_b);
+    GGML_UNUSED(sinks);
+    GGML_UNUSED(v_mla);
+
+    // KV cache dimensions: k/v are [d, n_kv, n_head_kv, n_batch]
+    const int64_t d       = k->ne[0];
+    const int64_t n_kv    = k->ne[1];
+    const int64_t n_batch = k->ne[3];
+    // q is [d, n_tokens, n_head, n_batch]
+    const int64_t n_tokens = q->ne[1];
+
+    // Fallback to standard MHA if KV is too short for HISA
+    if (n_kv < min_tokens || n_kv < block_size * 2) {
+        return build_attn_mha_impl(ctx, q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il, true);
+    }
+
+    const int64_t n_blocks = n_kv / block_size;
+    GGML_ASSERT(n_kv % block_size == 0 && "n_kv must be divisible by block_size");
+
+    // Q: [d, n_tokens, n_head, n_batch] → view as [d, n_head, n_tokens, n_batch]
+    q = ggml_view_4d(ctx0, q, q->ne[0], q->ne[1], q->ne[2]/n_batch, n_batch,
+                     q->nb[1], q->nb[2], q->nb[3]/n_batch, 0);
+    q = ggml_permute(ctx0, q, 0, 2, 1, 3);
+    // q is now [d, n_head, n_tokens, n_batch]
+
+    // Step 1: Block-pool K directly in its native type (F16 for quantized models).
+    // No F32-cast needed — hisa_block_pool supports F16 on CPU backend.
+    // This saves memory (~2MB for 0.8B model) and avoids the cast overhead.
+    ggml_tensor * k_pooled = ggml_hisa_block_pool(ctx0, k, n_kv, block_size);
+    ctx.cb(k_pooled, "hisa_k_pooled", il);
+
+    // Step 3: Coarse attention scores
+    // mul_mat(k_pooled, q): [d, n_blocks, n_head_kv, n_batch] x [d, n_head, n_tokens, n_batch]
+    // GGML mul_mat: (K, Q) → [n_blocks, n_head_kv, n_tokens, n_batch]
+    // (head_kv of K matches head of Q via GQA grouping)
+    ggml_tensor * coarse_scores = ggml_mul_mat(ctx0, k_pooled, q);
+    ctx.cb(coarse_scores, "hisa_coarse_scores", il);
+    ggml_mul_mat_set_prec(coarse_scores, GGML_PREC_F32);
+    // coarse_scores: [n_blocks, n_head_kv, n_tokens, n_batch]
+
+    // Step 4: Reduce to per-block scores
+    // Extract last token (most relevant for causal attention)
+    ggml_tensor * coarse_last = ggml_view_4d(ctx0, coarse_scores,
+        n_blocks, n_head_kv, 1, n_batch,
+        coarse_scores->nb[1], coarse_scores->nb[2], coarse_scores->nb[3],
+        (n_tokens - 1) * coarse_scores->nb[2]);
+    ctx.cb(coarse_last, "hisa_coarse_last", il);
+    // coarse_last: [n_blocks, n_head_kv, 1, n_batch]
+
+    // Sum over heads: permute to [n_head_kv, n_blocks, 1, n_batch], then sum_rows
+    ggml_tensor * coarse_perm = ggml_permute(ctx0, coarse_last, 1, 0, 2, 3);
+    // coarse_perm: [n_head_kv, n_blocks, 1, n_batch]
+    ggml_tensor * block_scores = ggml_sum_rows(ctx0, coarse_perm);
+    ctx.cb(block_scores, "hisa_block_scores", il);
+    // block_scores: [1, n_blocks, 1, n_batch]
+
+    // Step 5: Top-K block selection
+    // Flatten to 1D for argsort: [n_blocks]
+    ggml_tensor * block_scores_1d = ggml_reshape_1d(ctx0, block_scores, n_blocks);
+    ctx.cb(block_scores_1d, "hisa_block_scores_1d", il);
+
+    // Compute number of blocks to select based on sparsity parameter
+    // sparsity=0.0 → select all blocks, sparsity=0.5 → select half, sparsity=0.9 → select top 10%
+    int n_select = (int)roundf((1.0f - sparsity) * (float)n_blocks);
+    if (n_select < 1) n_select = 1;
+    if (n_select > (int)n_blocks) n_select = (int)n_blocks;
+
+    // Step 5b: Attention Sink Protection (StreamingLLM, Xiao et al. 2023)
+    //
+    // The first block (block 0) contains initial tokens that act as
+    // "attention sinks" — they receive disproportionately high attention
+    // scores and are critical for model stability. Evicting them causes
+    // severe quality degradation.
+    //
+    // We ensure block 0 is always selected by adding a large constant
+    // to its score before sorting. This is a no-op when block 0 already
+    // has a high score (common case due to the sink phenomenon).
+    if (sink_protect && n_select < (int)n_blocks && n_blocks > 1) {
+        // Create a boost tensor: [sink_boost, 0, 0, ..., 0]
+        // where sink_boost = 1e10 (well above any normal attention score)
+        const float sink_boost = 1e10f;
+        std::vector<float> boost_data(n_blocks, 0.0f);
+        boost_data[0] = sink_boost;
+        ggml_tensor * boost = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_blocks);
+        memcpy(boost->data, boost_data.data(), n_blocks * sizeof(float));
+        block_scores_1d = ggml_add(ctx0, block_scores_1d, boost);
+        ctx.cb(block_scores_1d, "hisa_block_scores_1d_sink", il);
+    }
+
+    // Get sorted indices (descending by score → top-K = first K indices)
+    ggml_tensor * sorted_indices = ggml_argsort(ctx0, block_scores_1d, GGML_SORT_ORDER_DESC);
+    ctx.cb(sorted_indices, "hisa_sorted_indices", il);
+    // sorted_indices: [n_blocks] (I32)
+
+    // Take first n_select indices (top-K by score)
+    ggml_tensor * topk_indices = ggml_view_1d(ctx0, sorted_indices, n_select, 0);
+    ctx.cb(topk_indices, "hisa_topk_indices", il);
+    // topk_indices: [n_select] (I32)
+
+    const int64_t n_gathered = (int64_t)n_select * block_size;
+
+    // Step 6: Expand block indices to token indices for mask gathering.
+    // Each block b contains tokens [b*block_size .. (b+1)*block_size-1].
+    // We need to gather the corresponding mask rows.
+    //
+    // topk_indices: [n_select] (I32) -> convert to F32 for arithmetic
+    ggml_tensor * block_idx_f = ggml_cast(ctx0, topk_indices, GGML_TYPE_F32);
+    // base = block_idx_f * block_size: [n_select] (F32)
+    ggml_tensor * base = ggml_scale(ctx0, block_idx_f, (float)block_size);
+    // offsets = arange(0, block_size): [block_size] (F32)
+    ggml_tensor * offsets = ggml_arange(ctx0, 0.0f, (float)block_size, 1.0f);
+    //
+    // Broadcast: base [n_select, 1] + offsets [1, block_size] -> [n_select, block_size]
+    // Using ggml_repeat_4d to repeat along dimensions:
+    //   base_2d: reshape base to [n_select, 1, 1, 1], repeat to [n_select, block_size, 1, 1]
+    //   offs_2d: reshape offsets to [1, block_size, 1, 1], repeat to [n_select, block_size, 1, 1]
+    //   sum -> [n_select, block_size, 1, 1] -> reshape to [n_select * block_size]
+    ggml_tensor * base_4d = ggml_reshape_4d(ctx0, base, n_select, 1, 1, 1);
+    ggml_tensor * offs_4d = ggml_reshape_4d(ctx0, offsets, 1, block_size, 1, 1);
+    ggml_tensor * base_rep = ggml_repeat_4d(ctx0, base_4d, n_select, block_size, 1, 1);
+    ggml_tensor * offs_rep = ggml_repeat_4d(ctx0, offs_4d, n_select, block_size, 1, 1);
+    ggml_tensor * token_idx_f = ggml_add(ctx0, base_rep, offs_rep);
+    // token_idx_f: [n_select, block_size, 1, 1] -> [n_gathered] (F32)
+    ggml_tensor * token_idx_1d = ggml_reshape_1d(ctx0, token_idx_f, n_gathered);
+    // Cast to I32 for ggml_hisa_gather
+    ggml_tensor * token_indices = ggml_cast(ctx0, token_idx_1d, GGML_TYPE_I32);
+    ctx.cb(token_indices, "hisa_token_indices", il);
+    // token_indices: [n_gathered] (I32)
+
+    // Gather mask rows: kq_mask is [n_kv, n_tokens, 1, n_stream]
+    // View as [n_kv, n_tokens * n_stream] (2D), gather rows
+    int64_t mask_cols = kq_mask->ne[1] * kq_mask->ne[2] * kq_mask->ne[3];
+    ggml_tensor * mask_2d = ggml_view_2d(ctx0, kq_mask, kq_mask->ne[0], mask_cols,
+                                       kq_mask->nb[1], 0);
+    ggml_tensor * mask_gathered_2d = ggml_hisa_gather(ctx0, mask_2d, token_indices);
+    ctx.cb(mask_gathered_2d, "hisa_mask_gathered_2d", il);
+    // mask_gathered_2d: [n_gathered, n_tokens * n_stream] (F32)
+    // Reshape back to 4D: [n_gathered, n_tokens, 1, n_stream]
+    ggml_tensor * kq_mask_gathered = ggml_reshape_4d(ctx0, mask_gathered_2d,
+                                                    n_gathered, kq_mask->ne[1],
+                                                    kq_mask->ne[2], kq_mask->ne[3]);
+    ctx.cb(kq_mask_gathered, "hisa_kq_mask_gathered", il);
+
+    // Step 7: Gather selected blocks from original K and V
+    // ggml_hisa_block_gather(src, idx, block_size)
+    // src K: [d, n_kv, n_head_kv, n_batch] — but we need it as [d, n_blocks, n_head_kv, n_batch]
+    //   where each "row" is a block of block_size original rows
+    // Actually, hisa_block_gather expects src with n_blocks rows (already pooled view)
+    // and expands each row to block_size rows.
+    //
+    // But our K is the original [d, n_kv, n_head_kv, n_batch] with n_kv rows.
+    // We need to view it as [d, n_blocks, n_head_kv, n_batch] where each row
+    // represents block_size original rows. hisa_block_gather will then expand
+    // each selected block row back to block_size rows.
+    //
+    // hisa_block_gather(src, idx, block_size):
+    //   src: [d, n_blocks, n_head_kv, n_batch]
+    //   idx: [n_select] (block indices)
+    //   block_size: int
+    //   dst: [d, n_select * block_size, n_head_kv, n_batch]
+    //
+    // But our K is [d, n_kv, n_head_kv, n_batch] with n_kv = n_blocks * block_size.
+    // We can view it as [d, n_blocks, n_head_kv, n_batch] with appropriate strides.
+
+    // View K as block-structured: [d, n_blocks, n_head_kv, n_batch]
+    // where stride between blocks = block_size * original_stride
+    ggml_tensor * k_block_view = ggml_view_4d(ctx0, k,
+        d, n_blocks, n_head_kv, n_batch,
+        k->nb[0], k->nb[1] * block_size, k->nb[2], k->nb[3]);
+    ctx.cb(k_block_view, "hisa_k_block_view", il);
+
+    ggml_tensor * v_block_view = ggml_view_4d(ctx0, v,
+        d, n_blocks, n_head_kv, n_batch,
+        v->nb[0], v->nb[1] * block_size, v->nb[2], v->nb[3]);
+    ctx.cb(v_block_view, "hisa_v_block_view", il);
+
+    // Gather selected blocks
+    ggml_tensor * k_gathered = ggml_hisa_block_gather(ctx0, k_block_view, topk_indices, block_size);
+    ctx.cb(k_gathered, "hisa_k_gathered", il);
+    // k_gathered: [d, n_select * block_size, n_head_kv, n_batch]
+
+    ggml_tensor * v_gathered = ggml_hisa_block_gather(ctx0, v_block_view, topk_indices, block_size);
+    ctx.cb(v_gathered, "hisa_v_gathered", il);
+    // v_gathered: [d, n_select * block_size, n_head_kv, n_batch]
+
+    // Step 7: Fine attention on gathered KV
+    // Permute to [d, n_head_kv, n_gathered, n_batch] for attention
+    ggml_tensor * k_fine = ggml_permute(ctx0, k_gathered, 0, 2, 1, 3);
+    ggml_tensor * v_fine = ggml_permute(ctx0, v_gathered, 0, 2, 1, 3);
+    // k_fine: [d, n_head_kv, n_gathered, n_batch]
+    // v_fine: [d, n_head_kv, n_gathered, n_batch]
+
+    ggml_tensor * cur;
+    if (cparams.flash_attn) {
+        // Cast KV to F16 if needed (flash_attn prefers F16)
+        if (k_fine->type == GGML_TYPE_F32) {
+            k_fine = ggml_cast(ctx0, k_fine, GGML_TYPE_F16);
+        }
+        if (v_fine->type == GGML_TYPE_F32) {
+            v_fine = ggml_cast(ctx0, v_fine, GGML_TYPE_F16);
+        }
+
+        // kq_mask_gathered was already computed in Step 6 via hisa_gather.
+        // It contains the correct mask rows for the selected token positions.
+
+        cur = ggml_flash_attn_ext(ctx0, q, k_fine, v_fine, kq_mask_gathered, kq_scale,
+                                  hparams.f_max_alibi_bias,
+                                  hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f);
+        ctx.cb(cur, "hisa_fattn", il);
+        ggml_flash_attn_ext_set_prec(cur, GGML_PREC_F32);
+
+        cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
+    } else {
+        // Non-flash path: manual Q @ K^T @ V
+        ggml_tensor * kq = ggml_mul_mat(ctx0, k_fine, q);
+        ctx.cb(kq, "hisa_kq", il);
+        ggml_mul_mat_set_prec(kq, GGML_PREC_F32);
+
+        // kq_mask_gathered was already computed in Step 6 via hisa_gather
+        kq = ggml_soft_max_ext(ctx0, kq, kq_mask_gathered, kq_scale, hparams.f_max_alibi_bias);
+        ctx.cb(kq, "hisa_kq_soft_max", il);
+
+        ggml_tensor * kqv = ggml_mul_mat(ctx0, v_fine, kq);
+        ctx.cb(kqv, "hisa_kqv", il);
+
+        cur = ggml_permute(ctx0, kqv, 0, 2, 1, 3);
+        cur = ggml_cont_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
+    }
+
+    ggml_build_forward_expand(ctx.gf, cur);
+    return cur;
 }
+
+
 
 // Static helper: standard MHA implementation shared between normal and HISA paths
 static ggml_tensor * build_attn_mha_impl(

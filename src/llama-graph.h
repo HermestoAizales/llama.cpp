@@ -725,6 +725,8 @@ struct llm_graph_context {
     bool    hisa;
     int32_t hisa_block_size;
     int32_t hisa_min_tokens;
+    float   hisa_sparsity;
+    bool    hisa_sink_protect;
 
     const int64_t n_embd;
     const int64_t n_layer;

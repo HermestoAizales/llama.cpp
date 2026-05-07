@@ -1517,6 +1517,8 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.hisa              = params.hisa;
     cparams.hisa_block_size   = params.hisa ? (params.hisa_block_size > 0 ? params.hisa_block_size : (params.hisa_min_tokens > 0 ? params.hisa_min_tokens * 4 : 64)) : 0;
     cparams.hisa_min_tokens   = params.hisa_min_tokens;
+    cparams.hisa_sparsity     = params.hisa_sparsity;
+    cparams.hisa_sink_protect = params.hisa_sink_protect;
 
     cparams.type_k = params.cache_type_k;
     cparams.type_v = params.cache_type_v;

@@ -1518,6 +1518,20 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.hisa_block_size = value;
         }
     ).set_env("LLAMA_ARG_HISA_BLOCK_SIZE"));
+    add_opt(common_arg(
+        {"--hisa-sparsity"}, "F",
+        string_format("HISA sparsity: fraction of blocks to select, 0.0=all, 0.5=half, 0.9=top 10%% (default: %.1f)", (double)params.hisa_sparsity),
+        [](common_params & params, const std::string & value) {
+            params.hisa_sparsity = std::stof(value);
+        }
+    ).set_env("LLAMA_ARG_HISA_SPARSITY"));
+    add_opt(common_arg(
+        {"--hisa-sink-protect"}, "0|1",
+        string_format("protect attention sink tokens from eviction (default: %d)", params.hisa_sink_protect),
+        [](common_params & params, const std::string & value) {
+            params.hisa_sink_protect = (value == "1" || value == "true");
+        }
+    ).set_env("LLAMA_ARG_HISA_SINK_PROTECT"));
 
     add_opt(common_arg(
         {"-cnv", "--conversation"},

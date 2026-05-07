@@ -10744,9 +10744,7 @@ void ggml_compute_forward_hisa_gather(
     const ggml_tensor * src0 = dst->src[0];
     const ggml_tensor * idx  = dst->src[1];
 
-    const float * src0_data = (const float *) src0->data;
     const int32_t * idx_data = (const int32_t *) idx->data;
-    float * dst_data = (float *) dst->data;
 
     const int64_t d      = src0->ne[0];
     const int64_t n_heads = src0->ne[2];
@@ -10758,28 +10756,52 @@ void ggml_compute_forward_hisa_gather(
     const size_t nb2 = src0->nb[2];
     const size_t nb3 = src0->nb[3];
 
-    const size_t d_nb0 = dst->nb[0];
     const size_t d_nb1 = dst->nb[1];
     const size_t d_nb2 = dst->nb[2];
     const size_t d_nb3 = dst->nb[3];
 
-    for (int64_t ii = 0; ii < n_indices; ii++) {
-        const int32_t row_idx = idx_data[ii];
-        const int64_t i0 = ii % n_indices;
-        const int64_t i1 = (ii / n_indices) % n_heads; // always 0
-        const int64_t i2 = (ii / (n_indices * n_heads)) % n_batch;
+    if (src0->type == GGML_TYPE_F32) {
+        const float * src0_data = (const float *) src0->data;
+        float * dst_data = (float *) dst->data;
 
-        float * dst_ptr = (float *)((char *)dst_data + i0 * d_nb1 + i1 * d_nb2 + i2 * d_nb3);
-        const float * src_ptr = (const float *)((const char *)src0_data + row_idx * nb1 + i1 * nb2 + i2 * nb3);
+        for (int64_t ii = 0; ii < n_indices; ii++) {
+            const int32_t row_idx = idx_data[ii];
+            const int64_t i0 = ii % n_indices;
+            const int64_t i1 = (ii / n_indices) % n_heads;
+            const int64_t i2 = (ii / (n_indices * n_heads)) % n_batch;
 
-        for (int64_t di = 0; di < d; di++) {
-            dst_ptr[di] = *(const float *)((const char *)src_ptr + di * nb0);
+            float * dst_ptr = (float *)((char *)dst_data + i0 * d_nb1 + i1 * d_nb2 + i2 * d_nb3);
+            const float * src_ptr = (const float *)((const char *)src0_data + row_idx * nb1 + i1 * nb2 + i2 * nb3);
+
+            for (int64_t di = 0; di < d; di++) {
+                dst_ptr[di] = *(const float *)((const char *)src_ptr + di * nb0);
+            }
         }
+    } else if (src0->type == GGML_TYPE_F16) {
+        const ggml_fp16_t * src0_data = (const ggml_fp16_t *) src0->data;
+        ggml_fp16_t * dst_data = (ggml_fp16_t *) dst->data;
+
+        for (int64_t ii = 0; ii < n_indices; ii++) {
+            const int32_t row_idx = idx_data[ii];
+            const int64_t i0 = ii % n_indices;
+            const int64_t i1 = (ii / n_indices) % n_heads;
+            const int64_t i2 = (ii / (n_indices * n_heads)) % n_batch;
+
+            ggml_fp16_t * dst_ptr = (ggml_fp16_t *)((char *)dst_data + i0 * d_nb1 + i1 * d_nb2 + i2 * d_nb3);
+            const ggml_fp16_t * src_ptr = (const ggml_fp16_t *)((const char *)src0_data + row_idx * nb1 + i1 * nb2 + i2 * nb3);
+
+            for (int64_t di = 0; di < d; di++) {
+                dst_ptr[di] = *(const ggml_fp16_t *)((const char *)src_ptr + di * nb0);
+            }
+        }
+    } else {
+        GGML_ABORT("hisa_gather: unsupported type %s", ggml_type_name(src0->type));
     }
 }
 
 // ggml_compute_forward_hisa_block_gather
 // Gather full blocks by block index list
+// Supports F32 and F16 source/destination types
 void ggml_compute_forward_hisa_block_gather(
         const ggml_compute_params * params,
         ggml_tensor * dst) {
@@ -10788,9 +10810,7 @@ void ggml_compute_forward_hisa_block_gather(
     const ggml_tensor * idx  = dst->src[1];
     const int32_t block_size = ggml_get_op_params_i32(dst, 0);
 
-    const float * src0_data = (const float *) src0->data;
     const int32_t * idx_data = (const int32_t *) idx->data;
-    float * dst_data = (float *) dst->data;
 
     const int64_t d      = src0->ne[0];
     const int64_t n_heads = src0->ne[2];
@@ -10802,29 +10822,56 @@ void ggml_compute_forward_hisa_block_gather(
     const size_t nb2 = src0->nb[2];
     const size_t nb3 = src0->nb[3];
 
-    const size_t d_nb0 = dst->nb[0];
     const size_t d_nb1 = dst->nb[1];
     const size_t d_nb2 = dst->nb[2];
     const size_t d_nb3 = dst->nb[3];
 
     const size_t row_bytes = nb1; // bytes per row within a block
 
-    for (int64_t ii = 0; ii < n_indices; ii++) {
-        const int32_t block_idx = idx_data[ii];
-        const int64_t i0 = ii % n_indices;
-        const int64_t i1 = (ii / n_indices) % n_heads;
-        const int64_t i2 = (ii / (n_indices * n_heads)) % n_batch;
+    if (src0->type == GGML_TYPE_F32) {
+        const float * src0_data = (const float *) src0->data;
+        float * dst_data = (float *) dst->data;
 
-        float * dst_ptr = (float *)((char *)dst_data + i0 * d_nb1 + i1 * d_nb2 + i2 * d_nb3);
-        const float * src_block = (const float *)((const char *)src0_data + block_idx * nb1 + i1 * nb2 + i2 * nb3);
+        for (int64_t ii = 0; ii < n_indices; ii++) {
+            const int32_t block_idx = idx_data[ii];
+            const int64_t i0 = ii % n_indices;
+            const int64_t i1 = (ii / n_indices) % n_heads;
+            const int64_t i2 = (ii / (n_indices * n_heads)) % n_batch;
 
-        // Copy entire block (block_size rows)
-        const int64_t block_rows = block_size;
-        for (int64_t br = 0; br < block_rows; br++) {
-            for (int64_t di = 0; di < d; di++) {
-                dst_ptr[di] = *(const float *)((const char *)src_block + br * row_bytes + di * nb0);
+            float * dst_ptr = (float *)((char *)dst_data + i0 * d_nb1 + i1 * d_nb2 + i2 * d_nb3);
+            const float * src_block = (const float *)((const char *)src0_data + block_idx * nb1 + i1 * nb2 + i2 * nb3);
+
+            const int64_t block_rows = block_size;
+            for (int64_t br = 0; br < block_rows; br++) {
+                for (int64_t di = 0; di < d; di++) {
+                    dst_ptr[di] = *(const float *)((const char *)src_block + br * row_bytes + di * nb0);
+                }
+                dst_ptr = (float *)((char *)dst_ptr + d_nb1);
             }
         }
+    } else if (src0->type == GGML_TYPE_F16) {
+        const ggml_fp16_t * src0_data = (const ggml_fp16_t *) src0->data;
+        ggml_fp16_t * dst_data = (ggml_fp16_t *) dst->data;
+
+        for (int64_t ii = 0; ii < n_indices; ii++) {
+            const int32_t block_idx = idx_data[ii];
+            const int64_t i0 = ii % n_indices;
+            const int64_t i1 = (ii / n_indices) % n_heads;
+            const int64_t i2 = (ii / (n_indices * n_heads)) % n_batch;
+
+            ggml_fp16_t * dst_ptr = (ggml_fp16_t *)((char *)dst_data + i0 * d_nb1 + i1 * d_nb2 + i2 * d_nb3);
+            const ggml_fp16_t * src_block = (const ggml_fp16_t *)((const char *)src0_data + block_idx * nb1 + i1 * nb2 + i2 * nb3);
+
+            const int64_t block_rows = block_size;
+            for (int64_t br = 0; br < block_rows; br++) {
+                for (int64_t di = 0; di < d; di++) {
+                    dst_ptr[di] = *(const ggml_fp16_t *)((const char *)src_block + br * row_bytes + di * nb0);
+                }
+                dst_ptr = (ggml_fp16_t *)((char *)dst_ptr + d_nb1);
+            }
+        }
+    } else {
+        GGML_ABORT("hisa_block_gather: unsupported type %s", ggml_type_name(src0->type));
     }
 }
 
@@ -10838,10 +10885,8 @@ void ggml_compute_forward_hisa_gather_mask(
     const ggml_tensor * idx  = dst->src[1]; // token indices: [n_tokens, n_heads, n_batch]
     const ggml_tensor * idx2 = dst->src[2]; // mask indices: [n_indices]
 
-    const float * src0_data = (const float *) src0->data;
     const int32_t * idx_data = (const int32_t *) idx->data;
     const int32_t * idx2_data = (const int32_t *) idx2->data;
-    float * dst_data = (float *) dst->data;
 
     const int64_t d      = src0->ne[0];
     const int64_t n_heads = idx->ne[1];
@@ -10853,31 +10898,44 @@ void ggml_compute_forward_hisa_gather_mask(
     const size_t nb2 = src0->nb[2];
     const size_t nb3 = src0->nb[3];
 
-    const size_t d_nb0 = dst->nb[0];
     const size_t d_nb1 = dst->nb[1];
     const size_t d_nb2 = dst->nb[2];
     const size_t d_nb3 = dst->nb[3];
 
-    for (int64_t mi = 0; mi < n_indices; mi++) {
-        const int32_t idx_entry = idx2_data[mi];
+    if (src0->type == GGML_TYPE_F32) {
+        const float * src0_data = (const float *) src0->data;
+        float * dst_data = (float *) dst->data;
 
-        // Decode token, head, batch from flat idx entry
-        const int64_t mt = idx_entry % idx->ne[0];
-        const int64_t mh = (idx_entry / idx->ne[0]) % n_heads;
-        const int64_t mb = idx_entry / (idx->ne[0] * n_heads);
-
-        // Get KV row index from idx table
-        const int32_t kv_row = idx_data[mt * n_heads * n_batch + mh * n_batch + mb];
-
-        // Get source row
-        const float * src_ptr = (const float *)((const char *)src0_data + kv_row * nb1 + mh * nb2 + mb * nb3);
-
-        // Get dst pointer
-        float * dst_ptr = (float *)((char *)dst_data + mi * d_nb1 + mh * d_nb2 + mb * d_nb3);
-
-        for (int64_t di = 0; di < d; di++) {
-            dst_ptr[di] = *(const float *)((const char *)src_ptr + di * nb0);
+        for (int64_t mi = 0; mi < n_indices; mi++) {
+            const int32_t idx_entry = idx2_data[mi];
+            const int64_t mt = idx_entry % idx->ne[0];
+            const int64_t mh = (idx_entry / idx->ne[0]) % n_heads;
+            const int64_t mb = idx_entry / (idx->ne[0] * n_heads);
+            const int32_t kv_row = idx_data[mt * n_heads * n_batch + mh * n_batch + mb];
+            const float * src_ptr = (const float *)((const char *)src0_data + kv_row * nb1 + mh * nb2 + mb * nb3);
+            float * dst_ptr = (float *)((char *)dst_data + mi * d_nb1 + mh * d_nb2 + mb * d_nb3);
+            for (int64_t di = 0; di < d; di++) {
+                dst_ptr[di] = *(const float *)((const char *)src_ptr + di * nb0);
+            }
         }
+    } else if (src0->type == GGML_TYPE_F16) {
+        const ggml_fp16_t * src0_data = (const ggml_fp16_t *) src0->data;
+        ggml_fp16_t * dst_data = (ggml_fp16_t *) dst->data;
+
+        for (int64_t mi = 0; mi < n_indices; mi++) {
+            const int32_t idx_entry = idx2_data[mi];
+            const int64_t mt = idx_entry % idx->ne[0];
+            const int64_t mh = (idx_entry / idx->ne[0]) % n_heads;
+            const int64_t mb = idx_entry / (idx->ne[0] * n_heads);
+            const int32_t kv_row = idx_data[mt * n_heads * n_batch + mh * n_batch + mb];
+            const ggml_fp16_t * src_ptr = (const ggml_fp16_t *)((const char *)src0_data + kv_row * nb1 + mh * nb2 + mb * nb3);
+            ggml_fp16_t * dst_ptr = (ggml_fp16_t *)((char *)dst_data + mi * d_nb1 + mh * d_nb2 + mb * d_nb3);
+            for (int64_t di = 0; di < d; di++) {
+                dst_ptr[di] = *(const ggml_fp16_t *)((const char *)src_ptr + di * nb0);
+            }
+        }
+    } else {
+        GGML_ABORT("hisa_gather_mask: unsupported type %s", ggml_type_name(src0->type));
     }
 }
 

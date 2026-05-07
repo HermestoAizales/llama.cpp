@@ -377,6 +377,8 @@ extern "C" {
         bool hisa;        // use Hierarchical Indexed Sparse Attention
         int32_t hisa_block_size; // block size for HISA sparse attention (0 = auto)
         int32_t hisa_min_tokens; // min KV tokens before HISA activates (0 = always on)
+        float hisa_sparsity; // fraction of blocks to select (0.0=all, 0.5=half, 0.9=top 10%)
+        bool hisa_sink_protect; // protect attention sink tokens (block 0) from eviction (default: true)
 
         // [EXPERIMENTAL]
         // backend sampler chain configuration (make sure the caller keeps the sampler chains alive)
