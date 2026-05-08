@@ -1,4 +1,83 @@
-# llama.cpp
+# llama.cpp — Hermes Fork
+
+> **This is a fork of [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) with experimental features and tools.**
+> Upstream README continues below the divider.
+
+## 🔧 Fork Features
+
+### `llama-optimizer` — Benchmark-Driven Runtime Parameter Tuning
+
+A standalone tool that automatically finds the fastest runtime configuration for a given model + hardware combination.
+
+```bash
+# Interactive mode — asks about your hardware, use case, and priorities
+llama-optimizer --model model.gguf
+
+# Non-interactive — quick benchmark with defaults
+llama-optimizer --model model.gguf --non-interactive --priority speed
+
+# Save optimal config as an INI preset
+llama-optimizer --model model.gguf --non-interactive --save-preset model-opt.ini
+
+# Use the preset
+llama-server --model model.gguf --model-preset model-opt.ini
+```
+
+**What it benchmarks:**
+GPU layer offload (`ngl`), KV cache types (`f16`/`q8_0`), batch sizes, pipeline parallelism, mmap vs. direct IO, MoE CPU offload, speculative decoding, Flash Attention, and more.
+
+### HISA — Hierarchical Indexed Sparse Attention
+
+*(on `feature/hisa` branch)* Sparse attention for long-context inference. Selects the most relevant KV-blocks via coarse attention scoring, then runs fine attention only on the top-K blocks.
+
+| Flag | Description |
+|------|-------------|
+| `--hisa` | Enable HISA |
+| `--hisa-sparsity 0.5` | Select 50% of KV blocks |
+| `--hisa-sink-protect` | Protect Block 0 (attention sinks) |
+| `--hisa-sparsity-scale 1.0` | Layer-adaptive (pyramid) sparsity |
+| `--hisa-per-head` | Per-head sparse attention |
+
+### Bounded KV Cache with Residual Checkpoints
+
+*(on `feature/hisa` branch)* Caps KV-cache memory usage. Evicted tokens retain residual-stream checkpoints for exact reconstruction.
+
+```bash
+llama-server -m model.gguf --kv-cache-bounded 2048
+```
+
+### Pipeline-Parallel Partial Offload
+
+*(on `feature/pipeline-partial` branch)* Enables pipeline parallelism (`n_copies > 1`) even with partial GPU offload.
+
+```bash
+llama-server -m model.gguf --n-gpu-layers 16 --pipeline-partial 1
+```
+
+### Manual Cross-Platform Builds (Fork CI)
+
+Pre-built binaries for platforms not covered by upstream CI:
+
+```bash
+# Windows (CPU + CUDA) — manual dispatch
+gh api --method POST repos/HermestoAizales/llama.cpp/actions/workflows/fork-ci-windows.yml/dispatches \
+  -f ref=feature/optimizer-ci2
+
+# macOS ARM64 (Metal) — manual dispatch
+gh api --method POST repos/HermestoAizales/llama.cpp/actions/workflows/fork-ci-macos.yml/dispatches \
+  -f ref=feature/optimizer-ci2
+
+# Linux ARM64 — manual dispatch
+gh api --method POST repos/HermestoAizales/llama.cpp/actions/workflows/fork-ci-linux.yml/dispatches \
+  -f ref=feature/optimizer-ci2
+```
+
+Artifacts are attached to the workflow run. Download with:
+```bash
+gh run download <run_id> --repo HermestoAizales/llama.cpp
+```
+
+---
 
 ![llama](https://user-images.githubusercontent.com/1991296/230134379-7181e485-c521-4d23-a0d6-f7b3b61ba524.png)
 
