@@ -1185,6 +1185,22 @@ common_init_result::common_init_result(common_params & params) :
     auto mparams = common_model_params_to_llama(params);
     auto cparams = common_context_params_to_llama(params);
 
+    // Load model preset if specified (applied before fit so preset values are respected)
+    if (!params.model_preset.empty()) {
+        LOG_INF("%s: loading model preset from '%s'\n", __func__, params.model_preset.c_str());
+        preset_params pp;
+        if (preset_load(params.model_preset, pp)) {
+            preset_apply(pp, params);
+            LOG_INF("%s: model preset loaded successfully\n", __func__);
+        } else {
+            LOG_WRN("%s: failed to load model preset from '%s', continuing without preset\n",
+                __func__, params.model_preset.c_str());
+        }
+        // Re-derive llama params from the (potentially modified) common_params
+        mparams = common_model_params_to_llama(params);
+        cparams = common_context_params_to_llama(params);
+    }
+
     if (params.fit_params) {
         LOG_INF("%s: fitting params to device memory ...\n", __func__);
         LOG_INF("%s: (for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)\n", __func__);
