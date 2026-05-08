@@ -650,6 +650,7 @@ llama_memory_context_ptr llama_kv_cache::init_batch(
         }
 
         // Evict oldest KV entries if bounded cache is full
+        LLAMA_LOG_DEBUG("%s: bounded_kv=%d\n", __func__, bounded_kv);
         if (bounded_kv) {
             uint32_t n_new_tokens = 0;
             for (const auto & ub : ubatches) {
@@ -2393,8 +2394,12 @@ void llama_kv_cache::evict_bounded(uint32_t n_new_tokens) {
         n_used += v_cells[s].get_used();
     }
 
+    LLAMA_LOG_DEBUG("%s: n_used=%d, n_new=%d, max_bounded=%d\n",
+            __func__, n_used, n_new_tokens, max_bounded);
+
     // Check if we need to evict
     if ((int32_t)(n_used + n_new_tokens) <= max_bounded) {
+        LLAMA_LOG_DEBUG("%s: no eviction needed\n", __func__);
         return; // enough space
     }
 

@@ -1246,6 +1246,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     }
 
     // Store residual checkpoints for bounded KV cache
+    LLAMA_LOG_DEBUG("%s: kv_cache_bounded=%d\n", __func__, cparams.kv_cache_bounded);
     if (cparams.kv_cache_bounded > 0) {
         auto * kv = dynamic_cast<llama_kv_cache *>(memory.get());
         if (kv) {
