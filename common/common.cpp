@@ -3,6 +3,7 @@
 
 #include "build-info.h"
 #include "common.h"
+#include "preset.h"
 #include "fit.h"
 #include "log.h"
 #include "llama.h"
@@ -1149,9 +1150,9 @@ common_init_result::common_init_result(common_params & params) :
     // Load model preset if specified (applied before fit so preset values are respected)
     if (!params.model_preset.empty()) {
         LOG_INF("%s: loading model preset from '%s'\n", __func__, params.model_preset.c_str());
-        preset_params pp;
-        if (preset_load(params.model_preset, pp)) {
-            preset_apply(pp, params);
+        common_optimizer_preset_params pp;
+        if (common_optimizer_preset_load(params.model_preset, pp)) {
+            common_optimizer_preset_apply(pp, params);
             LOG_INF("%s: model preset loaded successfully\n", __func__);
         } else {
             LOG_WRN("%s: failed to load model preset from '%s', continuing without preset\n",

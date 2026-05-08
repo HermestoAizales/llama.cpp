@@ -6,7 +6,6 @@ add_executable(${TARGET}
     main.cpp
     optimizer.cpp
     optimizer.h
-    preset.cpp
     preset.h
 )
 

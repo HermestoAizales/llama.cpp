@@ -481,3 +481,158 @@ common_presets common_preset_context::cascade(const common_preset & base, const 
     }
     return out;
 }
+
+//
+// Optimizer preset implementation
+//
+
+bool common_optimizer_preset_load(const std::string & path, common_optimizer_preset_params & out) {
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        LOG_WRN("%s: failed to open preset file '%s'\n", __func__, path.c_str());
+        return false;
+    }
+    std::string line;
+    std::string section;
+    while (std::getline(file, line)) {
+        // trim
+        size_t start = line.find_first_not_of(" \t\r\n");
+        if (start == std::string::npos) continue;
+        size_t end = line.find_last_not_of(" \t\r\n");
+        line = line.substr(start, end - start + 1);
+        if (line.empty() || line[0] == ';' || line[0] == '#') continue;
+        if (line.front() == '[' && line.back() == ']') {
+            section = line.substr(1, line.size() - 2);
+            continue;
+        }
+        auto eq_pos = line.find('=');
+        if (eq_pos == std::string::npos) continue;
+        std::string key = line.substr(0, eq_pos);
+        std::string val = line.substr(eq_pos + 1);
+        // trim key
+        end = key.find_last_not_of(" \t");
+        if (end != std::string::npos) key = key.substr(0, end + 1);
+        // trim val
+        start = val.find_first_not_of(" \t");
+        if (start != std::string::npos) val = val.substr(start);
+
+        if (section == "preset") {
+            if (key == "name") out.name = val;
+        } else if (section == "context") {
+            if (key == "n_ctx") out.n_ctx = std::stoi(val);
+            else if (key == "cache_type_k") out.cache_type_k = val;
+            else if (key == "cache_type_v") out.cache_type_v = val;
+        } else if (section == "gpu") {
+            if (key == "n_gpu_layers") out.n_gpu_layers = std::stoi(val);
+            else if (key == "split_mode") out.split_mode = std::stoi(val);
+            else if (key == "pipeline_partial") out.pipeline_partial = (val == "1" || val == "true");
+            else if (key == "no_kv_offload") out.no_kv_offload = (val == "1" || val == "true");
+            else if (key == "no_op_offload") out.no_op_offload = (val == "1" || val == "true");
+            else if (key == "no_extra_bufts") out.no_extra_bufts = (val == "1" || val == "true");
+            else if (key == "flash_attn") { out.flash_attn_set = true; out.flash_attn = (val == "1" || val == "true"); }
+            else if (key == "swa_full") out.swa_full = (val == "1" || val == "true");
+            else if (key == "n_cpu_moe") out.n_cpu_moe = std::stoi(val);
+        } else if (section == "batch") {
+            if (key == "n_batch") out.n_batch = std::stoi(val);
+            else if (key == "n_ubatch") out.n_ubatch = std::stoi(val);
+        } else if (section == "threads") {
+            if (key == "n_threads") out.n_threads = std::stoi(val);
+            else if (key == "n_threads_batch") out.n_threads_batch = std::stoi(val);
+        } else if (section == "server") {
+            if (key == "n_parallel") out.n_parallel = std::stoi(val);
+        } else if (section == "memory") {
+            if (key == "use_mmap") { out.use_mmap_set = true; out.use_mmap = (val == "1" || val == "true"); }
+            else if (key == "use_direct_io") out.use_direct_io = (val == "1" || val == "true");
+            else if (key == "use_mlock") out.use_mlock = (val == "1" || val == "true");
+            else if (key == "kv_cache_bounded") out.kv_cache_bounded = std::stoi(val);
+            else if (key == "fit_target_mib") out.fit_target_mib = std::stoi(val);
+        } else if (section == "speculative") {
+            if (key == "spec_type") out.spec_type = val;
+            else if (key == "spec_ngram_size") out.spec_ngram_size = std::stoi(val);
+        } else if (section == "advanced") {
+            if (key == "use_numa") out.use_numa = (val == "1" || val == "true");
+            else if (key == "ctx_shift") out.ctx_shift = (val == "1" || val == "true");
+            else if (key == "cont_batching") out.cont_batching = (val == "1" || val == "true");
+        }
+    }
+    LOG_INF("%s: loaded optimizer preset '%s' from '%s'\n", __func__, out.name.c_str(), path.c_str());
+    return true;
+}
+
+bool common_optimizer_preset_save(const std::string & path, const common_optimizer_preset_params & in) {
+    std::ofstream file(path);
+    if (!file.is_open()) {
+        LOG_WRN("%s: failed to open preset file '%s' for writing\n", __func__, path.c_str());
+        return false;
+    }
+    file << "# llama-optimizer generated preset: " << in.name << "\n";
+    file << "[preset]\n";
+    file << "name=" << in.name << "\n";
+    file << "\n[context]\n";
+    if (in.n_ctx > 0) file << "n_ctx=" << in.n_ctx << "\n";
+    if (!in.cache_type_k.empty()) file << "cache_type_k=" << in.cache_type_k << "\n";
+    if (!in.cache_type_v.empty()) file << "cache_type_v=" << in.cache_type_v << "\n";
+    file << "\n[gpu]\n";
+    if (in.n_gpu_layers != -999) file << "n_gpu_layers=" << in.n_gpu_layers << "\n";
+    if (in.split_mode >= 0) file << "split_mode=" << in.split_mode << "\n";
+    file << "pipeline_partial=" << (in.pipeline_partial ? "1" : "0") << "\n";
+    file << "no_kv_offload=" << (in.no_kv_offload ? "1" : "0") << "\n";
+    file << "no_op_offload=" << (in.no_op_offload ? "1" : "0") << "\n";
+    file << "no_extra_bufts=" << (in.no_extra_bufts ? "1" : "0") << "\n";
+    if (in.flash_attn_set) file << "flash_attn=" << (in.flash_attn ? "1" : "0") << "\n";
+    file << "swa_full=" << (in.swa_full ? "1" : "0") << "\n";
+    if (in.n_cpu_moe >= -1) file << "n_cpu_moe=" << in.n_cpu_moe << "\n";
+    file << "\n[batch]\n";
+    if (in.n_batch > 0) file << "n_batch=" << in.n_batch << "\n";
+    if (in.n_ubatch > 0) file << "n_ubatch=" << in.n_ubatch << "\n";
+    file << "\n[threads]\n";
+    if (in.n_threads > 0) file << "n_threads=" << in.n_threads << "\n";
+    if (in.n_threads_batch > 0) file << "n_threads_batch=" << in.n_threads_batch << "\n";
+    file << "\n[server]\n";
+    if (in.n_parallel > 0) file << "n_parallel=" << in.n_parallel << "\n";
+    file << "\n[memory]\n";
+    if (in.use_mmap_set) file << "use_mmap=" << (in.use_mmap ? "1" : "0") << "\n";
+    file << "use_direct_io=" << (in.use_direct_io ? "1" : "0") << "\n";
+    file << "use_mlock=" << (in.use_mlock ? "1" : "0") << "\n";
+    if (in.kv_cache_bounded > 0) file << "kv_cache_bounded=" << in.kv_cache_bounded << "\n";
+    if (in.fit_target_mib > 0) file << "fit_target_mib=" << in.fit_target_mib << "\n";
+    file << "\n[speculative]\n";
+    if (!in.spec_type.empty()) file << "spec_type=" << in.spec_type << "\n";
+    if (in.spec_ngram_size > 0) file << "spec_ngram_size=" << in.spec_ngram_size << "\n";
+    file << "\n[advanced]\n";
+    file << "use_numa=" << (in.use_numa ? "1" : "0") << "\n";
+    file << "ctx_shift=" << (in.ctx_shift ? "1" : "0") << "\n";
+    file << "cont_batching=" << (in.cont_batching ? "1" : "0") << "\n";
+    LOG_INF("%s: saved optimizer preset '%s' to '%s'\n", __func__, in.name.c_str(), path.c_str());
+    return true;
+}
+
+void common_optimizer_preset_apply(const common_optimizer_preset_params & preset, common_params & params) {
+    if (preset.n_ctx > 0) params.n_ctx = preset.n_ctx;
+    if (preset.n_gpu_layers != -999) params.n_gpu_layers = preset.n_gpu_layers;
+    if (preset.split_mode >= 0) params.split_mode = preset.split_mode;
+    if (!preset.cache_type_k.empty()) params.cache_type_k = preset.cache_type_k;
+    if (!preset.cache_type_v.empty()) params.cache_type_v = preset.cache_type_v;
+    if (preset.n_batch > 0) params.n_batch = preset.n_batch;
+    if (preset.n_ubatch > 0) params.n_ubatch = preset.n_ubatch;
+    if (preset.n_threads > 0) params.n_threads = preset.n_threads;
+    if (preset.n_threads_batch > 0) params.n_threads_batch = preset.n_threads_batch;
+    if (preset.n_parallel > 0) params.n_parallel = preset.n_parallel;
+    if (preset.pipeline_partial) params.pipeline_partial = true;
+    if (preset.use_mmap_set) params.use_mmap = preset.use_mmap;
+    if (preset.use_direct_io) params.use_direct_io = true;
+    if (preset.use_mlock) params.use_mlock = true;
+    if (preset.no_kv_offload) params.no_kv_offload = true;
+    if (preset.no_op_offload) params.no_op_offload = true;
+    if (preset.no_extra_bufts) params.no_extra_bufts = true;
+    if (preset.kv_cache_bounded > 0) params.kv_cache_bounded = preset.kv_cache_bounded;
+    if (preset.fit_target_mib > 0) params.fit_target_mib = preset.fit_target_mib;
+    if (preset.n_cpu_moe >= -1) params.n_cpu_moe = preset.n_cpu_moe;
+    if (!preset.spec_type.empty()) params.spec_type = preset.spec_type;
+    if (preset.spec_ngram_size > 0) params.spec_ngram_size = preset.spec_ngram_size;
+    if (preset.flash_attn_set) params.flash_attn = preset.flash_attn;
+    if (preset.swa_full) params.swa_full = true;
+    if (preset.use_numa) params.use_numa = true;
+    if (preset.ctx_shift) params.ctx_shift = true;
+    params.cont_batching = preset.cont_batching;
+}
