@@ -438,6 +438,9 @@ struct common_params {
     float   yarn_beta_slow        = -1.0f; // YaRN high correction dim
     int32_t yarn_orig_ctx         =     0; // YaRN original context length
 
+    // pipeline partial offload
+    bool pipeline_partial = false; // enable pipeline parallelism for partial offload (default: off, saves VRAM)
+
     // offload params
     std::vector<ggml_backend_dev_t> devices; // devices to use for offloading
 

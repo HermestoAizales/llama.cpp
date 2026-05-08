@@ -39,6 +39,7 @@ struct llama_cparams {
     bool op_offload;
     bool kv_unified;
     bool pipeline_parallel;
+    bool pipeline_partial;  // enable pipeline parallelism for partial offload
 
     enum llama_pooling_type pooling_type;
 

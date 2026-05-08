@@ -2026,6 +2026,22 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_NO_HOST"));
     add_opt(common_arg(
+        {"-pp", "--pipeline-partial"}, "[0|1]",
+        string_format("enable pipeline parallelism for partial offload (0=off, 1=on, default: %d), "
+                      "allows overlapping GPU compute with CPU compute at the cost of additional VRAM",
+                      params.pipeline_partial),
+        [](common_params & params, const std::string & value) {
+            if (is_truthy(value)) {
+                params.pipeline_partial = true;
+            } else if (is_falsey(value)) {
+                params.pipeline_partial = false;
+            } else {
+                throw std::invalid_argument(
+                    string_format("error: unknown value for --pipeline-partial: '%s' (allowed: 0, 1, on, off, true, false)\n", value.c_str()));
+            }
+        }
+    ).set_env("LLAMA_ARG_PIPELINE_PARTIAL"));
+    add_opt(common_arg(
         {"-ctk", "--cache-type-k"}, "TYPE",
         string_format(
             "KV cache data type for K\n"
