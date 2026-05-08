@@ -400,11 +400,12 @@ std::vector<optimizer_config> optimizer::generate_configs(const optimizer_user_p
     // Phase 4: IO variants
     // ================================================================
     struct io_var { bool mmap; bool direct; const char * label; };
-    std::vector<io_var> io_values;
+    io_var io_values[2];
+    int n_io = 0;
     if (up.prefer_mmap) {
-        io_values = {{true, false, "mmap"}};
+        io_values[n_io++] = {true, false, "mmap"};
     } else {
-        io_values = {{false, true, "direct"}};
+        io_values[n_io++] = {false, true, "direct"};
     }
 
     // ================================================================
@@ -434,11 +435,13 @@ std::vector<optimizer_config> optimizer::generate_configs(const optimizer_user_p
     // ================================================================
     // Phase 7: Speculative decoding
     // ================================================================
-    std::vector<std::string> spec_values;
+    std::string spec_values[2];
+    int n_spec = 0;
     if (up.allow_speculative) {
-        spec_values = {"", "ngram"};  // "" = no spec, "ngram" = n-gram speculation
+        spec_values[n_spec++] = "";
+        spec_values[n_spec++] = "ngram";
     } else {
-        spec_values = {""};
+        spec_values[n_spec++] = "";
     }
 
     // ================================================================
@@ -451,33 +454,33 @@ std::vector<optimizer_config> optimizer::generate_configs(const optimizer_user_p
     for (int ngl : ngl_values) {
         for (auto [ctk, ctv] : cache_pairs) {
             for (bool pp : pp_values) {
-                for (auto & io : io_values) {
+                for (int ii = 0; ii < n_io; ii++) {
                     for (auto [nb, nub] : batch_pairs) {
                         for (int moe : moe_values) {
-                            for (auto & spec : spec_values) {
+                            for (int si = 0; si < n_spec; si++) {
                                 optimizer_config cfg = base;
                                 cfg.n_gpu_layers     = ngl;
                                 cfg.cache_type_k     = ctk;
                                 cfg.cache_type_v     = ctv;
                                 cfg.pipeline_partial = pp;
-                                cfg.use_mmap         = io.mmap;
-                                cfg.use_direct_io    = io.direct;
+                                cfg.use_mmap         = io_values[ii].mmap;
+                                cfg.use_direct_io    = io_values[ii].direct;
                                 cfg.n_batch          = nb;
                                 cfg.n_ubatch         = nub;
                                 cfg.offload_kqv      = (ngl > 0);
                                 cfg.n_cpu_moe        = moe;
-                                cfg.spec_type        = spec;
-                                cfg.spec_ngram_size  = (spec == "ngram") ? up.spec_ngram_size : 0;
+                                cfg.spec_type        = spec_values[si];
+                                cfg.spec_ngram_size  = (spec_values[si] == "ngram") ? up.spec_ngram_size : 0;
 
                                 // Build compact label
                                 cfg.label = "ngl=" + std::to_string(ngl)
                                           + " k=" + cache_type_name(ctk)
                                           + " v=" + cache_type_name(ctv);
                                 if (pp)                          cfg.label += " pp=yes";
-                                cfg.label += " io=" + std::string(io.label);
+                                cfg.label += " io=" + std::string(io_values[ii].label);
                                 if (nb != 2048)                  cfg.label += " b=" + std::to_string(nb);
                                 if (moe >= 0)                    cfg.label += " moe_cpu=" + std::to_string(moe);
-                                if (spec == "ngram")             cfg.label += " spec=ngram" + std::to_string(up.spec_ngram_size);
+                                if (spec_values[si] == "ngram")  cfg.label += " spec=ngram" + std::to_string(up.spec_ngram_size);
 
                                 configs.push_back(cfg);
                             }
