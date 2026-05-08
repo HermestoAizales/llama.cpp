@@ -4,8 +4,7 @@
 #include <vector>
 #include <cstdint>
 
-// ggml type forward — we include ggml.h in the .cpp
-struct ggml_type;
+// ggml types are used for cache_type_k/v int mapping in optimizer_config
 
 // ---------------------------------------------------------------------------
 // A single benchmark configuration to test.
@@ -158,7 +157,7 @@ private:
     bool        m_is_moe          = false;
 
     // --- Tunables ---
-    int         m_benchmark_tokens = 30;
+    mutable int m_benchmark_tokens = 30;  // mutable: modified in const methods
     int         m_warmup_tokens   = 5;
     int         m_prompt_bench_tokens = 128; // tokens for prompt-bench
 };

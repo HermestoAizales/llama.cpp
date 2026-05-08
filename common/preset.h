@@ -91,33 +91,44 @@ struct common_preset_context {
 struct common_optimizer_preset_params {
     std::string name;
 
+    // Context
     int32_t n_ctx             = 0;
-    int32_t n_gpu_layers      = -999;
-    int32_t split_mode        = -1;
-    std::string cache_type_k;
-    std::string cache_type_v;
-    int32_t n_batch           = 0;
-    int32_t n_ubatch          = 0;
-    int32_t n_threads         = 0;
-    int32_t n_threads_batch   = 0;
-    int32_t n_parallel        = 0;
-    bool    pipeline_partial  = false;
-    bool    use_mmap_set      = false;
-    bool    use_mmap          = true;
-    bool    use_direct_io     = false;
-    bool    use_mlock         = false;
+
+    // GPU offload
+    int32_t n_gpu_layers      = -999;   // -999 = don't override, -1 = auto, <= -2 = all
+    int32_t split_mode        = -1;     // -1 = don't override
     bool    no_kv_offload     = false;
     bool    no_op_offload     = false;
     bool    no_extra_bufts    = false;
-    int32_t kv_cache_bounded  = 0;
-    int32_t fit_target_mib    = 0;
-    int32_t n_cpu_moe         = -1;
-    std::string spec_type;
-    int32_t spec_ngram_size   = 0;
-    bool    flash_attn_set    = false;
-    bool    flash_attn        = true;
+
+    // KV cache types (stored as string in preset, converted on apply)
+    std::string cache_type_k;
+    std::string cache_type_v;
+
+    // Batching
+    int32_t n_batch           = 0;
+    int32_t n_ubatch          = 0;
+
+    // Parallel / server
+    int32_t n_parallel        = 0;
+
+    // Memory
+    bool    use_mmap_set      = false;  // false = don't override
+    bool    use_mmap          = true;
+    bool    use_direct_io     = false;
+    bool    use_mlock         = false;
+
+    // Attention
+    int32_t flash_attn_set    = 0;      // 0 = don't override, 1 = on, -1 = off
     bool    swa_full          = false;
-    bool    use_numa          = false;
+
+    // Speculative decoding type (stored as string)
+    std::string spec_type;
+
+    // NUMA strategy (stored as string)
+    std::string numa_str;
+
+    // Context & batching features
     bool    ctx_shift         = false;
     bool    cont_batching     = true;
 };

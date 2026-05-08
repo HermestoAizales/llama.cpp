@@ -1,6 +1,7 @@
 #include "optimizer.h"
 
 #include "ggml.h"
+#include "llama.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -116,21 +117,8 @@ bool optimizer::interactive_setup(optimizer_user_params & up) {
         m_n_ctx_train   = llama_model_n_ctx_train(model);
         m_n_gpu_devices = 0;
         m_has_gpu       = false;
+        m_is_moe        = false;
 
-        int n_devices = llama_model_n_devices(model);
-        for (int i = 0; i < n_devices; i++) {
-            ggml_backend_dev_t dev = llama_model_get_device(model, i);
-            if (dev) {
-                auto type = ggml_backend_dev_type(dev);
-                if (type == GGML_BACKEND_DEVICE_TYPE_GPU ||
-                    type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
-                    m_has_gpu = true;
-                    m_n_gpu_devices++;
-                }
-            }
-        }
-
-        m_is_moe        = (llama_model_n_expert(model) > 0);
         m_n_cpu_threads = std::thread::hardware_concurrency();
         m_model_size_bytes = llama_model_n_params(model) * sizeof(float);
 
@@ -542,7 +530,7 @@ optimizer_result optimizer::benchmark_single(const optimizer_config & cfg,
     result.gen_tps  = 0.0f;
     result.prompt_tps = 0.0f;
 
-    auto prev_logger = ggml_log_set(bench_logger, nullptr);
+    ggml_log_set(bench_logger, nullptr);
 
     // --- Build model params ---
     struct llama_model_params mparams = llama_model_default_params();
@@ -573,7 +561,6 @@ optimizer_result optimizer::benchmark_single(const optimizer_config & cfg,
     llama_model * model = llama_model_load_from_file(up.model_path.c_str(), mparams);
     if (!model) {
         result.error = "model load failed (OOM?)";
-        ggml_log_set(prev_logger, nullptr);
         return result;
     }
 
@@ -585,25 +572,29 @@ optimizer_result optimizer::benchmark_single(const optimizer_config & cfg,
     cparams.n_seq_max         = cfg.n_parallel;
     cparams.type_k            = static_cast<ggml_type>(cfg.cache_type_k < 0 ? GGML_TYPE_F16 : cfg.cache_type_k);
     cparams.type_v            = static_cast<ggml_type>(cfg.cache_type_v < 0 ? GGML_TYPE_F16 : cfg.cache_type_v);
-    cparams.pipeline_partial  = cfg.pipeline_partial;
+    // pipeline_partial: not available in upstream (HISA feature only)
     cparams.offload_kqv       = cfg.offload_kqv;
     cparams.op_offload        = cfg.op_offload;
-    cparams.flash_attn        = up.flash_attn;
+    // flash_attn: controlled via cparams.flash_attn_type in upstream
+    if (up.flash_attn) {
+        cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
+    } else {
+        cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    }
     cparams.swa_full          = up.swa_full;
-    cparams.pipeline_parallel = false;
 
     llama_context * ctx = llama_init_from_model(model, cparams);
     if (!ctx) {
         result.error = "context creation failed (OOM)";
         llama_model_free(model);
-        ggml_log_set(prev_logger, nullptr);
         return result;
     }
 
     // --- Warmup ---
     {
-        llama_token bos = llama_model_bos_token(model);
-        if (bos < 0) bos = 1;
+        const struct llama_vocab * vocab = llama_model_get_vocab(model);
+        llama_token bos = llama_vocab_bos(vocab);
+        if (bos == LLAMA_TOKEN_NULL) bos = 1;
         llama_token tokens[6] = {bos, 1, 2, 3, 4, 5};
         int n_w = std::min(6, m_warmup_tokens);
         for (int i = 0; i < n_w; i++) {
@@ -653,7 +644,7 @@ optimizer_result optimizer::benchmark_single(const optimizer_config & cfg,
 
     llama_free(ctx);
     llama_model_free(model);
-    ggml_log_set(prev_logger, nullptr);
+    ggml_log_set(nullptr, nullptr);
     return result;
 }
 
