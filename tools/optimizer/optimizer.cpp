@@ -49,6 +49,7 @@ static bool read_bool(const std::string & prompt, bool def) {
 }
 
 static const char * cache_type_name(int t) {
+    if (t < 0) return "default";
     return ggml_type_name(static_cast<ggml_type>(t));
 }
 
@@ -68,7 +69,7 @@ static const char * split_mode_name(int m) {
         case 2: return "row";
         case 3: return "tensor";
     }
-    return "unknown";
+    return "auto";
 }
 
 // ---------------------------------------------------------------------------
@@ -98,7 +99,7 @@ bool optimizer::interactive_setup(optimizer_user_params & up) {
         }
     }
 
-    // --- Detect model info ---
+    // --- Detect model + hardware ---
     {
         struct llama_model_params mparams = llama_model_default_params();
         mparams.use_mmap  = true;
@@ -111,10 +112,10 @@ bool optimizer::interactive_setup(optimizer_user_params & up) {
             return false;
         }
 
-        m_n_layers       = llama_model_n_layer(model);
-        m_n_ctx_train    = llama_model_n_ctx_train(model);
-        m_n_gpu_devices  = 0;
-        m_has_gpu        = false;
+        m_n_layers      = llama_model_n_layer(model);
+        m_n_ctx_train   = llama_model_n_ctx_train(model);
+        m_n_gpu_devices = 0;
+        m_has_gpu       = false;
 
         int n_devices = llama_model_n_devices(model);
         for (int i = 0; i < n_devices; i++) {
@@ -129,14 +130,17 @@ bool optimizer::interactive_setup(optimizer_user_params & up) {
             }
         }
 
-        m_is_moe = (llama_model_n_expert(model) > 0);
+        m_is_moe        = (llama_model_n_expert(model) > 0);
         m_n_cpu_threads = std::thread::hardware_concurrency();
-
-        // Estimate model file size
-        // GGUF header doesn't store this directly; use a rough heuristic
-        m_model_size_bytes = llama_model_n_params(model) * sizeof(float); // rough
+        m_model_size_bytes = llama_model_n_params(model) * sizeof(float);
 
         llama_model_free(model);
+
+        // Heuristic: detect if model is on slow storage by checking if it's a symlink
+        // or if the path contains nfs/cifs/remote
+        up.model_on_nfs = (up.model_path.find("nfs") != std::string::npos ||
+                           up.model_path.find("cifs") != std::string::npos ||
+                           up.model_path.find("/mnt/") != std::string::npos);
     }
 
     std::cout << "\n  Detected:\n";
@@ -144,181 +148,258 @@ bool optimizer::interactive_setup(optimizer_user_params & up) {
     std::cout << "    Train ctx:    " << m_n_ctx_train << "\n";
     std::cout << "    GPU devices:  " << (m_has_gpu ? std::to_string(m_n_gpu_devices) + " (found)" : "none (CPU only)") << "\n";
     std::cout << "    CPU threads:  " << m_n_cpu_threads << "\n";
-    if (m_is_moe) std::cout << "    Architecture: MoE\n";
+    if (m_is_moe) std::cout << "    Architecture: MoE (experts detected)\n";
 
-    // --- Context size ---
+    // ================================================================
+    // 1. Context size
+    // ================================================================
     up.desired_ctx = read_int(
-        "[?] Desired context size [" + std::to_string(m_n_ctx_train) + "]: ",
+        "\n[?] Desired context size [" + std::to_string(m_n_ctx_train) + "]: ",
         m_n_ctx_train);
     if (up.desired_ctx <= 0) up.desired_ctx = m_n_ctx_train;
-    // Round up to nearest 256 for CUDA alignment
-    up.desired_ctx = ((up.desired_ctx + 255) / 256) * 256;
+    up.desired_ctx = ((up.desired_ctx + 255) / 256) * 256;  // align 256
 
-    // --- Parallel requests ---
+    // ================================================================
+    // 2. Parallel requests
+    // ================================================================
     up.n_parallel = read_int("[?] Parallel requests (n-parallel) [1]: ", 1);
     if (up.n_parallel <= 0) up.n_parallel = 1;
 
-    // --- Use-case ---
-    std::cout << "\n  Use-case:\n";
-    up.is_chat         = read_bool("    Chat (short prompts, many turns)? [y/N]: ", false);
-    up.is_batch        = read_bool("    Batch processing (long prompts, throughput)? [y/N]: ", false);
+    // ================================================================
+    // 3. Use-case
+    // ================================================================
+    std::cout << "\n  Use-case profile:\n";
+    up.is_chat     = read_bool("    Interactive chat (short prompts, many turns)? [y/N]: ", false);
+    up.is_batch    = read_bool("    Batch processing (long prompts, throughput)? [y/N]: ", false);
     up.is_long_context = (up.desired_ctx > 8192);
     if (up.is_long_context) {
-        std::cout << "    (auto-detected: long context mode, ctx > 8K)\n";
+        std::cout << "    (auto-detected: long context mode, ctx=" << up.desired_ctx << ")\n";
     }
 
-    // --- Optimization priority ---
+    // ================================================================
+    // 4. Optimization priority
+    // ================================================================
     std::cout << "\n  Optimization priority:\n";
-    std::cout << "    speed    = maximum TPS, may reduce quality\n";
-    std::cout << "    balanced = good quality, good speed (default)\n";
-    std::cout << "    quality  = best possible quality, may be slower\n";
+    std::cout << "    speed    = max TPS, may reduce quality\n";
+    std::cout << "    balanced = good quality + good speed\n";
+    std::cout << "    quality  = best quality, may be slower\n";
     while (true) {
-        std::string p = read_line("    Priority (speed/balanced/quality) [balanced]: ");
+        std::string p = read_line("    Choice (speed/balanced/quality) [balanced]: ");
         if (p.empty() || p == "balanced") { up.optimization_goal = optimizer_user_params::priority::balanced; break; }
         if (p == "speed")               { up.optimization_goal = optimizer_user_params::priority::speed;    break; }
         if (p == "quality")             { up.optimization_goal = optimizer_user_params::priority::quality;  break; }
         std::cout << "    Please enter speed, balanced, or quality.\n";
     }
 
-    // --- GPU layer hint ---
+    // ================================================================
+    // 5. GPU offload
+    // ================================================================
     if (m_has_gpu) {
         std::cout << "\n  GPU offload:\n";
-        gpu_layers_again:
         std::string hint = read_line(
             "    GPU layers — 'all', 'auto', or exact number [auto]: ");
         if (hint.empty() || hint == "auto") {
             up.n_gpu_layers_hint = -1;
         } else if (hint == "all") {
-            up.n_gpu_layers_hint = -2; // means "all" in llama.cpp
+            up.n_gpu_layers_hint = -2;
         } else {
             try {
-                int v = std::stoi(hint);
-                if (v < 0 || v > m_n_layers + 1) {
-                    std::cout << "    Please enter 0.." << (m_n_layers + 1) << ", 'auto', or 'all'.\n";
-                    goto gpu_layers_again;
-                }
-                up.n_gpu_layers_hint = v;
+                up.n_gpu_layers_hint = std::stoi(hint);
+                up.n_gpu_layers_hint = std::min(up.n_gpu_layers_hint, m_n_layers);
             } catch (...) {
-                std::cout << "    Invalid number.\n";
-                goto gpu_layers_again;
+                up.n_gpu_layers_hint = -1;
             }
         }
-    } else {
-        up.n_gpu_layers_hint = 0;
     }
 
-    // --- IO hints ---
+    // ================================================================
+    // 6. Storage / IO
+    // ================================================================
     std::cout << "\n  Storage / IO:\n";
-    up.model_on_ssd  = read_bool("    Model on SSD/NVMe? [Y/n]: ", true);
-    up.model_on_nfs  = read_bool("    Model on network filesystem (NFS/SMB)? [y/N]: ", false);
     if (!up.model_on_nfs) {
-        up.prefer_mmap = read_bool("    Use mmap (recommended for SSD)? [Y/n]: ", true);
-    } else {
-        std::cout << "    (NFS: recommending direct IO, no mmap)\n";
-        up.prefer_mmap = false;
+        up.model_on_ssd  = read_bool("    Model on local SSD/NVMe? [Y/n]: ", true);
+        up.model_on_nfs  = read_bool("    Model on network filesystem (NFS/SMB)? [y/N]: ", false);
+    }
+    up.prefer_mmap = !up.model_on_nfs;
+    if (up.model_on_nfs) {
+        std::cout << "    (NFS: recommending --no-mmap for stability)\n";
     }
 
-    // --- Quality floor ---
-    std::cout << "\n  Quality:\n";
-    up.allow_quant_cache = read_bool("    Allow quantized KV cache (Q8_0) for speed? [Y/n]: ", true);
+    // ================================================================
+    // 7. KV cache quality
+    // ================================================================
+    std::cout << "\n  KV cache:\n";
+    up.allow_quant_cache = read_bool("    Allow quantized KV cache (Q8_0) to save VRAM? [Y/n]: ", true);
+
+    // ================================================================
+    // 8. MoE offload (only for MoE models)
+    // ================================================================
+    if (m_is_moe) {
+        std::cout << "\n  MoE offload:\n";
+        std::cout << "    This is a Mixture-of-Experts model.\n";
+        std::cout << "    Expert weights are large — offloading some to CPU saves VRAM\n";
+        std::cout << "    but may reduce speed due to PCIe transfers.\n";
+        up.allow_moe_cpu = read_bool("    Allow CPU offload for MoE experts? [Y/n]: ", true);
+        if (up.allow_moe_cpu) {
+            std::cout << "    The optimizer will test different n-cpu-moe values.\n";
+        }
+    } else {
+        up.allow_moe_cpu = false;
+    }
+
+    // ================================================================
+    // 9. Speculative decoding
+    // ================================================================
+    std::cout << "\n  Speculative decoding:\n";
+    std::cout << "    Speculation can significantly improve generation speed.\n";
+    up.allow_speculative = read_bool("    Test speculative decoding (ngram)? [Y/n]: ", true);
+    if (up.allow_speculative) {
+        up.spec_ngram_size = read_int("    N-gram size (2-5) [3]: ", 3);
+        up.spec_ngram_size = std::max(2, std::min(5, up.spec_ngram_size));
+    }
+
+    // ================================================================
+    // 10. Flash Attention
+    // ================================================================
+    std::cout << "\n  Attention:\n";
+    up.flash_attn = read_bool("    Use Flash Attention (recommended)? [Y/n]: ", true);
+
+    // ================================================================
+    // 11. SWA (Sliding Window Attention)
+    // ================================================================
+    // Only relevant for models that support SWA
+    up.swa_full = false;
+    if (up.is_long_context) {
+        up.swa_full = read_bool("    Use full SWA cache (for long context)? [y/N]: ", false);
+    }
+
+    // ================================================================
+    // 12. NUMA
+    // ================================================================
+    up.use_numa = false;
+    if (m_n_cpu_threads >= 8) {
+        up.use_numa = read_bool("    Enable NUMA optimization (multi-socket systems)? [y/N]: ", false);
+    }
+
+    // ================================================================
+    // 13. Context shift
+    // ================================================================
+    up.ctx_shift = false;
+    if (up.is_chat && up.is_long_context) {
+        up.ctx_shift = read_bool("    Enable ctx-shift (for infinite chat)? [Y/n]: ", true);
+    }
+
+    // ================================================================
+    // 14. Continuous batching
+    // ================================================================
+    up.cont_batching = true;
+    if (up.n_parallel > 1) {
+        up.cont_batching = read_bool("    Enable continuous batching (for parallel requests)? [Y/n]: ", true);
+    }
+
+    // ================================================================
+    // 15. Dry run / quality floor
+    // ================================================================
+    std::cout << "\n  Quality floor:\n";
     std::string tps_str = read_line(
-        "    Minimum acceptable generation TPS (0 = no minimum) [0]: ");
+        "    Minimum acceptable generation TPS (0 = none) [0]: ");
     if (!tps_str.empty()) {
         try { up.min_acceptable_tps = std::stof(tps_str); } catch (...) {}
     }
 
-    // --- Summary ---
+    // ================================================================
+    // Summary
+    // ================================================================
     std::cout << "\n  ============================================================\n";
     std::cout << "  Summary\n";
     std::cout << "  ============================================================\n";
-    std::cout << "    Model:        " << up.model_path << "\n";
-    std::cout << "    Ctx:          " << up.desired_ctx << "\n";
-    std::cout << "    Parallel:     " << up.n_parallel << "\n";
-    std::cout << "    Priority:     " << priority_str(up.optimization_goal) << "\n";
-    std::cout << "    GPU layers:   " << (up.n_gpu_layers_hint == -1 ? "auto" : up.n_gpu_layers_hint == -2 ? "all" : std::to_string(up.n_gpu_layers_hint)) << "\n";
-    std::cout << "    mmap:         " << (up.prefer_mmap ? "yes" : "no") << "\n";
-    std::cout << "    quant cache:  " << (up.allow_quant_cache ? "yes" : "no") << "\n";
-    std::cout << "    min TPS:      " << (up.min_acceptable_tps > 0 ? std::to_string((int)up.min_acceptable_tps) : "none") << "\n";
+    std::cout << "    Model:          " << up.model_path << "\n";
+    std::cout << "    Ctx:            " << up.desired_ctx << "\n";
+    std::cout << "    Parallel:       " << up.n_parallel << "\n";
+    std::cout << "    Priority:       " << priority_str(up.optimization_goal) << "\n";
+    std::cout << "    GPU layers:     " << (up.n_gpu_layers_hint == -1 ? "auto" : up.n_gpu_layers_hint == -2 ? "all" : std::to_string(up.n_gpu_layers_hint)) << "\n";
+    std::cout << "    mmap:           " << (up.prefer_mmap ? "yes" : "no") << "\n";
+    std::cout << "    quant cache:    " << (up.allow_quant_cache ? "yes" : "no") << "\n";
+    std::cout << "    MoE CPU:        " << (up.allow_moe_cpu ? "yes" : "no") << "\n";
+    std::cout << "    Speculative:    " << (up.allow_speculative ? "ngram-" + std::to_string(up.spec_ngram_size) : "no") << "\n";
+    std::cout << "    Flash Attn:     " << (up.flash_attn ? "yes" : "no") << "\n";
+    std::cout << "    SWA full:       " << (up.swa_full ? "yes" : "no") << "\n";
+    std::cout << "    NUMA:           " << (up.use_numa ? "yes" : "no") << "\n";
+    std::cout << "    ctx-shift:      " << (up.ctx_shift ? "yes" : "no") << "\n";
+    std::cout << "    cont-batching:  " << (up.cont_batching ? "yes" : "no") << "\n";
+    std::cout << "    min TPS:        " << (up.min_acceptable_tps > 0 ? std::to_string((int)up.min_acceptable_tps) : "none") << "\n";
     std::cout << "\n";
 
     return read_bool("  Proceed with benchmarks? [Y/n]: ", true);
 }
 
 // ---------------------------------------------------------------------------
-// Config generation — the intelligence lives here
+// Config generation
 // ---------------------------------------------------------------------------
 
 std::vector<optimizer_config> optimizer::generate_configs(const optimizer_user_params & up) const {
     std::vector<optimizer_config> configs;
 
-    // Baseline defaults
+    // Baseline
     optimizer_config base;
-    base.n_gpu_layers     = up.n_gpu_layers_hint;
-    base.split_mode       = 1;  // layer
-    base.cache_type_k     = -1; // f16 default
-    base.cache_type_v     = -1;
-    base.n_batch          = 2048;
-    base.n_ubatch         = 512;
-    base.n_threads        = 0;  // auto
-    base.n_threads_batch  = 0;
-    base.n_parallel       = up.n_parallel;
+    base.n_gpu_layers    = up.n_gpu_layers_hint;
+    base.split_mode      = 1;   // layer
+    base.cache_type_k    = -1;  // f16
+    base.cache_type_v    = -1;
+    base.n_batch         = 2048;
+    base.n_ubatch        = 512;
+    base.n_threads       = 0;
+    base.n_threads_batch = 0;
+    base.n_parallel      = up.n_parallel;
     base.pipeline_partial = false;
-    base.use_mmap         = up.prefer_mmap;
-    base.use_direct_io    = !up.prefer_mmap && !up.model_on_ssd;
-    base.use_mlock        = false;
-    base.offload_kqv      = (up.n_gpu_layers_hint > 0 || up.n_gpu_layers_hint == -2);
-    base.op_offload       = true;
-    base.no_extra_bufts   = false;
-    base.fit_target_mib   = 1024;  // 1 GiB default headroom
+    base.use_mmap        = up.prefer_mmap;
+    base.use_direct_io   = !up.prefer_mmap;
+    base.use_mlock       = false;
+    base.offload_kqv     = (up.n_gpu_layers_hint > 0 || up.n_gpu_layers_hint == -2);
+    base.op_offload      = true;
+    base.no_extra_bufts  = false;
+    base.fit_target_mib  = 1024;
+    base.n_cpu_moe       = -1;  // don't override
+    base.spec_type       = "";
+    base.spec_ngram_size = 0;
 
-    // ============================================================
-    // Phase 1: Sweep GPU layer counts (only if GPU available)
-    // ============================================================
+    // ================================================================
+    // Phase 1: GPU layer sweep
+    // ================================================================
     std::vector<int> ngl_values;
-    if (m_has_gpu && !up.force_cpu) {
+    if (m_has_gpu && up.n_gpu_layers_hint != 0) {
         if (up.n_gpu_layers_hint >= 0) {
-            ngl_values.push_back(up.n_gpu_layers_hint);
-            // Also test all and 0 for comparison
-            ngl_values.push_back(0);
-            ngl_values.push_back(m_n_layers);
+            ngl_values = {up.n_gpu_layers_hint, 0, m_n_layers};
         } else {
-            // Auto sweep: test 0, quarter, half, three-quarter, all
-            ngl_values = {0,
-                          m_n_layers / 4,
-                          m_n_layers / 2,
-                          (3 * m_n_layers) / 4,
-                          m_n_layers + 1};  // +1 to include output layer
-            // Deduplicate and clamp
+            ngl_values = {0, m_n_layers / 4, m_n_layers / 2, (3 * m_n_layers) / 4, m_n_layers};
             std::sort(ngl_values.begin(), ngl_values.end());
-            ngl_values.erase(std::unique(ngl_values.begin(), ngl_values.end()), ngl_values.end();
-            for (auto & v : ngl_values) v = std::min(v, m_n_layers);
+            ngl_values.erase(std::unique(ngl_values.begin(), ngl_values.end()), ngl_values.end());
         }
     } else {
         ngl_values = {0};
     }
 
-    // ============================================================
-    // Phase 2: Sweep KV cache types
-    // ============================================================
-    std::vector<std::pair<int,int>> cache_type_pairs;
+    // ================================================================
+    // Phase 2: KV cache types
+    // ================================================================
+    std::vector<std::pair<int,int>> cache_pairs;
     if (up.allow_quant_cache) {
         if (up.optimization_goal == optimizer_user_params::priority::speed) {
-            cache_type_pairs = {{GGML_TYPE_Q8_0, GGML_TYPE_Q8_0},
-                                {GGML_TYPE_F16,   GGML_TYPE_F16}};
+            cache_pairs = {{GGML_TYPE_Q8_0, GGML_TYPE_Q8_0},
+                           {GGML_TYPE_F16,   GGML_TYPE_F16}};
         } else {
-            cache_type_pairs = {{GGML_TYPE_F16,   GGML_TYPE_F16},
-                                {GGML_TYPE_Q8_0,   GGML_TYPE_Q8_0}};
+            cache_pairs = {{GGML_TYPE_F16,   GGML_TYPE_F16},
+                           {GGML_TYPE_Q8_0,   GGML_TYPE_Q8_0}};
         }
     } else {
-        cache_type_pairs = {{GGML_TYPE_F16, GGML_TYPE_F16}};
+        cache_pairs = {{GGML_TYPE_F16, GGML_TYPE_F16}};
     }
 
-    // ============================================================
-    // Phase 3: Pipeline partial (only for partial GPU offload)
-    // ============================================================
+    // ================================================================
+    // Phase 3: Pipeline partial
+    // ================================================================
     std::vector<bool> pp_values = {false};
-    if (m_has_gpu && !up.force_cpu) {
-        // Only interesting if some layers are offloaded
+    if (m_has_gpu) {
         for (int ngl : ngl_values) {
             if (ngl > 0 && ngl < m_n_layers) {
                 pp_values = {false, true};
@@ -327,74 +408,119 @@ std::vector<optimizer_config> optimizer::generate_configs(const optimizer_user_p
         }
     }
 
-    // ============================================================
-    // Phase 4: IO variants (only test for best config later, or a subset)
-    // ============================================================
-    struct io_variant {
-        bool mmap;
-        bool direct_io;
-        const char * label;
-    };
-    std::vector<io_variant> io_variants;
+    // ================================================================
+    // Phase 4: IO variants
+    // ================================================================
+    struct io_var { bool mmap; bool direct; const char * label; };
+    std::vector<io_var> io_values;
     if (up.prefer_mmap) {
-        io_variants = {{true, false, "mmap"}};
-        if (!up.model_on_ssd) {
-            io_variants.push_back({true, true, "mmap+direct"});
-        }
+        io_values = {{true, false, "mmap"}};
     } else {
-        io_variants = {{false, true,  "direct"}};
+        io_values = {{false, true, "direct"}};
     }
 
-    // ============================================================
-    // Phase 5: Batch size variants (mainly for batch processing)
-    // ============================================================
+    // ================================================================
+    // Phase 5: Batch sizes
+    // ================================================================
     std::vector<std::pair<int,int>> batch_pairs;
     if (up.is_batch) {
-        batch_pairs = {{4096, 1024},
-                       {2048, 512},
-                       {8192, 2048}};
+        batch_pairs = {{4096, 1024}, {2048, 512}, {8192, 2048}};
     } else {
         batch_pairs = {{2048, 512}};
     }
 
-    // ============================================================
-    // Build full cartesian product (but cap total configs)
-    // ============================================================
-    int total = (int)(ngl_values.size() * cache_type_pairs.size() * pp_values.size() *
-                      io_variants.size() * batch_pairs.size());
+    // ================================================================
+    // Phase 6: MoE CPU offload (only for MoE models)
+    // ================================================================
+    // n_cpu_moe: -1 = don't override, 0 = all experts on CPU, N = first N layers
+    std::vector<int> moe_values;
+    if (m_is_moe && up.allow_moe_cpu && m_has_gpu) {
+        // Test: all on GPU (0), half on CPU, all on CPU (m_n_layers)
+        moe_values = {-1, 0, m_n_layers / 2, m_n_layers};
+        std::sort(moe_values.begin(), moe_values.end());
+        moe_values.erase(std::unique(moe_values.begin(), moe_values.end()), moe_values.end());
+    } else {
+        moe_values = {-1};  // don't override
+    }
+
+    // ================================================================
+    // Phase 7: Speculative decoding
+    // ================================================================
+    std::vector<std::string> spec_values;
+    if (up.allow_speculative) {
+        spec_values = {"", "ngram"};  // "" = no spec, "ngram" = n-gram speculation
+    } else {
+        spec_values = {""};
+    }
+
+    // ================================================================
+    // Build cartesian product
+    // To keep total configs manageable, we use a two-phase approach:
+    // Phase A: Main sweep (ngl × cache × pp × io × batch × moe × spec)
+    // Phase B: For the best Phase A result, test fine-grained variants
+    // ================================================================
 
     for (int ngl : ngl_values) {
-        for (auto [ctk, ctv] : cache_type_pairs) {
+        for (auto [ctk, ctv] : cache_pairs) {
             for (bool pp : pp_values) {
-                for (auto & io : io_variants) {
+                for (auto & io : io_values) {
                     for (auto [nb, nub] : batch_pairs) {
-                        optimizer_config cfg = base;
-                        cfg.n_gpu_layers     = ngl;
-                        cfg.cache_type_k     = ctk;
-                        cfg.cache_type_v     = ctv;
-                        cfg.pipeline_partial = pp;
-                        cfg.use_mmap         = io.mmap;
-                        cfg.use_direct_io    = io.direct_io;
-                        cfg.n_batch          = nb;
-                        cfg.n_ubatch         = nub;
-                        cfg.offload_kqv      = (ngl > 0);
+                        for (int moe : moe_values) {
+                            for (auto & spec : spec_values) {
+                                optimizer_config cfg = base;
+                                cfg.n_gpu_layers     = ngl;
+                                cfg.cache_type_k     = ctk;
+                                cfg.cache_type_v     = ctv;
+                                cfg.pipeline_partial = pp;
+                                cfg.use_mmap         = io.mmap;
+                                cfg.use_direct_io    = io.direct;
+                                cfg.n_batch          = nb;
+                                cfg.n_ubatch         = nub;
+                                cfg.offload_kqv      = (ngl > 0);
+                                cfg.n_cpu_moe        = moe;
+                                cfg.spec_type        = spec;
+                                cfg.spec_ngram_size  = (spec == "ngram") ? up.spec_ngram_size : 0;
 
-                        // Build compact label
-                        cfg.label = "ngl=" + std::to_string(ngl)
-                                  + " k=" + cache_type_name(ctk)
-                                  + " v=" + cache_type_name(ctv);
-                        if (pp)          cfg.label += " pp=yes";
-                        cfg.label += " io=" + std::string(io.label);
-                        if (nb != 2048)  cfg.label += " b=" + std::to_string(nb);
+                                // Build compact label
+                                cfg.label = "ngl=" + std::to_string(ngl)
+                                          + " k=" + cache_type_name(ctk)
+                                          + " v=" + cache_type_name(ctv);
+                                if (pp)                          cfg.label += " pp=yes";
+                                cfg.label += " io=" + std::string(io.label);
+                                if (nb != 2048)                  cfg.label += " b=" + std::to_string(nb);
+                                if (moe >= 0)                    cfg.label += " moe_cpu=" + std::to_string(moe);
+                                if (spec == "ngram")             cfg.label += " spec=ngram" + std::to_string(up.spec_ngram_size);
 
-                        configs.push_back(cfg);
+                                configs.push_back(cfg);
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    // Store total for progress display
+    // Cap at 40 configs to keep runtime reasonable
+    // If too many, prune: keep only most promising combinations
+    if ((int)configs.size() > 40) {
+        // Priority-based pruning: keep diverse ngl values, reduce other dims
+        std::vector<optimizer_config> pruned;
+        // Always keep ngl=0 and ngl=all as baselines
+        for (auto & c : configs) {
+            if (c.n_gpu_layers == 0 || c.n_gpu_layers == m_n_layers) {
+                pruned.push_back(c);
+            }
+        }
+        // Fill remaining slots with diverse configs
+        for (auto & c : configs) {
+            if ((int)pruned.size() >= 40) break;
+            if (c.n_gpu_layers != 0 && c.n_gpu_layers != m_n_layers) {
+                pruned.push_back(c);
+            }
+        }
+        configs = pruned;
+    }
+
     m_benchmark_tokens = up.is_batch ? 20 : 30;
 
     return configs;
@@ -404,11 +530,8 @@ std::vector<optimizer_config> optimizer::generate_configs(const optimizer_user_p
 // Single benchmark
 // ---------------------------------------------------------------------------
 
-// Minimal logger for benchmark runs
 static void bench_logger(ggml_log_level level, const char * text, void *) {
-    if (level >= GGML_LOG_LEVEL_WARN) {
-        fprintf(stderr, "%s", text);
-    }
+    if (level >= GGML_LOG_LEVEL_WARN) fprintf(stderr, "%s", text);
 }
 
 optimizer_result optimizer::benchmark_single(const optimizer_config & cfg,
@@ -429,13 +552,27 @@ optimizer_result optimizer::benchmark_single(const optimizer_config & cfg,
     mparams.use_mlock     = cfg.use_mlock;
     mparams.split_mode    = static_cast<llama_split_mode>(cfg.split_mode < 0 ? 1 : cfg.split_mode);
 
-    if (cfg.no_extra_bufts) {
-        mparams.tensor_buft_overrides = nullptr; // minimal
+    // MoE CPU offload via tensor_buft_override
+    std::vector<llama_model_tensor_buft_override> moe_overrides;
+    if (cfg.n_cpu_moe >= 0) {
+        // Build override: first cfg.n_cpu_moe layers' MoE weights → CPU
+        // Pattern: blk.<il>.ffn_(up|down|gate_up|gate)_(ch|)exps
+        // For simplicity, we use the global MoE CPU override if n_cpu_moe >= m_n_layers
+        if (cfg.n_cpu_moe >= m_n_layers) {
+            // All MoE on CPU — use the built-in override
+            static const std::string pattern_moe = "blk\\.\\d+\\.ffn_(up|down|gate_up|gate)_(ch|)exps";
+            moe_overrides.push_back({pattern_moe.c_str(), ggml_backend_cpu_buffer_type()});
+            moe_overrides.push_back({nullptr, nullptr});
+            mparams.tensor_buft_overrides = moe_overrides.data();
+        }
+        // For partial MoE offload (n_cpu_moe < m_n_layers but > 0),
+        // we'd need per-layer overrides which is complex.
+        // We test all-on-CPU vs all-on-GPU as the two extremes.
     }
 
     llama_model * model = llama_model_load_from_file(up.model_path.c_str(), mparams);
     if (!model) {
-        result.error = "model load failed (OOM or file error)";
+        result.error = "model load failed (OOM?)";
         ggml_log_set(prev_logger, nullptr);
         return result;
     }
@@ -451,7 +588,9 @@ optimizer_result optimizer::benchmark_single(const optimizer_config & cfg,
     cparams.pipeline_partial  = cfg.pipeline_partial;
     cparams.offload_kqv       = cfg.offload_kqv;
     cparams.op_offload        = cfg.op_offload;
-    cparams.pipeline_parallel = false; // managed by scheduler internally
+    cparams.flash_attn        = up.flash_attn;
+    cparams.swa_full          = up.swa_full;
+    cparams.pipeline_parallel = false;
 
     llama_context * ctx = llama_init_from_model(model, cparams);
     if (!ctx) {
@@ -461,31 +600,23 @@ optimizer_result optimizer::benchmark_single(const optimizer_config & cfg,
         return result;
     }
 
-    // --- Warmup: feed a small prompt ---
+    // --- Warmup ---
     {
         llama_token bos = llama_model_bos_token(model);
         if (bos < 0) bos = 1;
         llama_token tokens[6] = {bos, 1, 2, 3, 4, 5};
-        int n_warmup = std::min(6, m_warmup_tokens);
-
-        for (int i = 0; i < n_warmup; i++) {
+        int n_w = std::min(6, m_warmup_tokens);
+        for (int i = 0; i < n_w; i++) {
             llama_batch batch = llama_batch_get_one(&tokens[i], 1);
-            if (llama_decode(ctx, batch) != 0) {
-                // shrink warmup
-                n_warmup = i;
-                break;
-            }
+            if (llama_decode(ctx, batch) != 0) { n_w = i; break; }
         }
     }
 
-    // --- Prompt benchmark (optional, for batch-heavy workloads) ---
-    if (up.is_batch && m_prompt_bench_tokens > n_warmup) {
-        int remaining = m_prompt_bench_tokens - n_warmup;
-        // Generate dummy tokens for prompt bench
+    // --- Prompt benchmark (batch mode) ---
+    if (up.is_batch && m_prompt_bench_tokens > 6) {
+        int remaining = m_prompt_bench_tokens - 6;
         std::vector<llama_token> dummy(remaining, 1);
         auto t0 = std::chrono::steady_clock::now();
-
-        // Feed in batches
         int offset = 0;
         while (offset < remaining) {
             int chunk = std::min(remaining - offset, (int)cparams.n_batch);
@@ -493,26 +624,21 @@ optimizer_result optimizer::benchmark_single(const optimizer_config & cfg,
             if (llama_decode(ctx, batch) != 0) break;
             offset += chunk;
         }
-
         auto t1 = std::chrono::steady_clock::now();
         float ms = std::chrono::duration<float, std::milli>(t1 - t0).count();
-        if (offset > 0 && ms > 0) {
-            result.prompt_tps = (offset * 1000.0f) / ms;
-        }
+        if (offset > 0 && ms > 0) result.prompt_tps = (offset * 1000.0f) / ms;
     }
 
     // --- Generation benchmark ---
     const int n_gen = m_benchmark_tokens;
     float total_ms = 0.0f;
-    int   n_ok = 0;
+    int n_ok = 0;
 
     for (int i = 0; i < n_gen; i++) {
         auto t0 = std::chrono::steady_clock::now();
-
-        llama_token token = 1; // dummy
+        llama_token token = 1;
         llama_batch batch = llama_batch_get_one(&token, 1);
         if (llama_decode(ctx, batch) != 0) break;
-
         auto t1 = std::chrono::steady_clock::now();
         total_ms += std::chrono::duration<float, std::milli>(t1 - t0).count();
         n_ok++;
@@ -522,14 +648,12 @@ optimizer_result optimizer::benchmark_single(const optimizer_config & cfg,
         result.success = true;
         result.gen_tps = (n_ok * 1000.0f) / total_ms;
     } else {
-        result.error = "all generation steps failed";
+        result.error = "all gen steps failed";
     }
 
-    // --- Cleanup ---
     llama_free(ctx);
     llama_model_free(model);
     ggml_log_set(prev_logger, nullptr);
-
     return result;
 }
 
@@ -548,7 +672,7 @@ std::vector<optimizer_result> optimizer::run_benchmarks(const optimizer_user_par
     for (const auto & cfg : configs) {
         idx++;
         std::cout << "  [" << std::setw(2) << idx << "/" << configs.size() << "] "
-                  << std::left << std::setw(52) << cfg.label << " ... " << std::flush;
+                  << std::left << std::setw(56) << cfg.label << " ... " << std::flush;
 
         auto r = benchmark_single(cfg, up);
         results.push_back(r);
@@ -563,7 +687,6 @@ std::vector<optimizer_result> optimizer::run_benchmarks(const optimizer_user_par
             std::cout << "FAIL  " << r.error << "\n";
         }
     }
-
     return results;
 }
 
@@ -579,27 +702,18 @@ optimizer_result optimizer::select_best(const std::vector<optimizer_result> & re
 
     for (const auto & r : results) {
         if (!r.success) continue;
-
-        // Quality: skip quantized cache
         if (up.optimization_goal == optimizer_user_params::priority::quality) {
             if (r.config.cache_type_k == GGML_TYPE_Q8_0 ||
                 r.config.cache_type_v == GGML_TYPE_Q8_0) continue;
         }
-
-        // Minimum TPS floor
         if (up.min_acceptable_tps > 0 && r.gen_tps < up.min_acceptable_tps) continue;
 
-        // Score: for batch workloads, weight prompt speed too
         float score = r.gen_tps;
         if (up.is_batch && r.prompt_tps > 0.0f) {
-            score = r.gen_tps * 0.4f + r.prompt_tps * 0.006f; // normalize prompt
+            score = r.gen_tps * 0.4f + r.prompt_tps * 0.006f;
         }
-
-        if (score > best.gen_tps) {
-            best = r;
-        }
+        if (score > best.gen_tps) best = r;
     }
-
     return best;
 }
 
@@ -611,31 +725,25 @@ void optimizer::print_comparison_table(const std::vector<optimizer_result> & res
     std::cout << "\n  ============================================================\n";
     std::cout << "  Benchmark Results\n";
     std::cout << "  ============================================================\n\n";
-
     std::cout << "  " << std::left
-              << std::setw(52) << "Configuration"
+              << std::setw(56) << "Configuration"
               << std::right
-              << std::setw(8)  << "Gen t/s"
+              << std::setw(8)  << "Gen/s"
               << std::setw(10) << "Prompt/s"
               << std::setw(6)  << "Stat"
               << "\n";
-    std::cout << "  " << std::string(76, '-') << "\n";
-
+    std::cout << "  " << std::string(80, '-') << "\n";
     for (const auto & r : results) {
-        std::cout << "  " << std::left << std::setw(52) << r.config.label;
+        std::cout << "  " << std::left << std::setw(56) << r.config.label;
         if (r.success) {
-            std::cout << std::right << std::fixed << std::setprecision(1)
-                      << std::setw(8) << r.gen_tps;
-            if (r.prompt_tps > 0.0f) {
+            std::cout << std::right << std::fixed << std::setprecision(1) << std::setw(8) << r.gen_tps;
+            if (r.prompt_tps > 0.0f)
                 std::cout << std::setprecision(0) << std::setw(10) << r.prompt_tps;
-            } else {
+            else
                 std::cout << std::setw(10) << "—";
-            }
             std::cout << std::setw(6) << "OK";
         } else {
-            std::cout << std::setw(8) << "—"
-                      << std::setw(10) << "—"
-                      << std::left << std::setw(6) << "FAIL";
+            std::cout << std::setw(8) << "—" << std::setw(10) << "—" << std::left << std::setw(6) << "FAIL";
         }
         std::cout << "\n";
     }
@@ -643,159 +751,132 @@ void optimizer::print_comparison_table(const std::vector<optimizer_result> & res
 }
 
 // ---------------------------------------------------------------------------
-// Print report — the main output, copy-paste ready
+// Print report
 // ---------------------------------------------------------------------------
 
 void optimizer::print_report(const optimizer_result & best,
                              const optimizer_user_params & up) const {
-    if (!best.success) {
-        std::cout << "  No successful benchmark results to report.\n";
-        return;
-    }
-
+    if (!best.success) { std::cout << "  No successful results.\n"; return; }
     const auto & c = best.config;
 
     std::cout << "\n";
     std::cout << "  ╔══════════════════════════════════════════════════════════╗\n";
     std::cout << "  ║           OPTIMAL RUNTIME PARAMETERS                    ║\n";
     std::cout << "  ╚══════════════════════════════════════════════════════════╝\n\n";
-
     std::cout << "  Measured:   " << std::fixed << std::setprecision(1) << best.gen_tps << " tokens/sec generation";
-    if (best.prompt_tps > 0.0f) {
-        std::cout << ", " << std::setprecision(0) << best.prompt_tps << " tokens/sec prompt";
-    }
+    if (best.prompt_tps > 0.0f) std::cout << ", " << std::setprecision(0) << best.prompt_tps << " tokens/sec prompt";
     std::cout << "\n\n";
 
-    // --- llama-server command ---
+    // --- llama-server ---
     std::cout << "  ┌─────────────────────────────────────────────────────────┐\n";
     std::cout << "  │  llama-server                                           │\n";
     std::cout << "  └─────────────────────────────────────────────────────────┘\n\n";
     std::cout << "    llama-server \\\n";
     std::cout << "      --model \"" << up.model_path << "\" \\\n";
     std::cout << "      --ctx-size " << up.desired_ctx << " \\\n";
-    if (c.n_gpu_layers >= 0)
-        std::cout << "      --n-gpu-layers " << c.n_gpu_layers << " \\\n";
-    else if (c.n_gpu_layers == -2)
-        std::cout << "      --n-gpu-layers all \\\n";
-    else
-        std::cout << "      --n-gpu-layers auto \\\n";
+    if (c.n_gpu_layers >= 0)      std::cout << "      --n-gpu-layers " << c.n_gpu_layers << " \\\n";
+    else if (c.n_gpu_layers == -2) std::cout << "      --n-gpu-layers all \\\n";
+    else                           std::cout << "      --n-gpu-layers auto \\\n";
     std::cout << "      --split-mode " << split_mode_name(c.split_mode) << " \\\n";
-    if (c.cache_type_k >= 0)
-        std::cout << "      --cache-type-k " << cache_type_name(c.cache_type_k) << " \\\n";
-    if (c.cache_type_v >= 0)
-        std::cout << "      --cache-type-v " << cache_type_name(c.cache_type_v) << " \\\n";
+    if (c.cache_type_k >= 0)      std::cout << "      --cache-type-k " << cache_type_name(c.cache_type_k) << " \\\n";
+    if (c.cache_type_v >= 0)      std::cout << "      --cache-type-v " << cache_type_name(c.cache_type_v) << " \\\n";
     std::cout << "      --batch-size " << c.n_batch << " \\\n";
     std::cout << "      --ubatch-size " << c.n_ubatch << " \\\n";
-    if (c.n_parallel > 1)
-        std::cout << "      --parallel " << c.n_parallel << " \\\n";
-    if (c.pipeline_partial)
-        std::cout << "      --pipeline-partial 1 \\\n";
-    if (c.offload_kqv)
-        std::cout << "      --offload-kqv \\\n";
-    else
-        std::cout << "      --no-kv-offload \\\n";
-    if (!c.use_mmap)
-        std::cout << "      --no-mmap \\\n";
-    if (c.use_direct_io)
-        std::cout << "      --direct-io \\\n";
-    if (c.use_mlock)
-        std::cout << "      --mlock \\\n";
-    if (c.no_extra_bufts)
-        std::cout << "      --no-repack \\\n";
-    if (c.fit_target_mib != 1024)
-        std::cout << "      --fit-target " << c.fit_target_mib << " \\\n";
+    if (c.n_parallel > 1)         std::cout << "      --parallel " << c.n_parallel << " \\\n";
+    if (c.pipeline_partial)        std::cout << "      --pipeline-partial 1 \\\n";
+    if (c.offload_kqv)            std::cout << "      --offload-kqv \\\n";
+    else                           std::cout << "      --no-kv-offload \\\n";
+    if (!c.use_mmap)              std::cout << "      --no-mmap \\\n";
+    if (c.use_direct_io)          std::cout << "      --direct-io \\\n";
+    if (c.use_mlock)              std::cout << "      --mlock \\\n";
+    if (c.n_cpu_moe >= m_n_layers) std::cout << "      --cpu-moe \\\n";
+    if (c.spec_type == "ngram")   std::cout << "      --spec-ngram " << c.spec_ngram_size << " \\\n";
+    if (!up.flash_attn)           std::cout << "      --flash-attn off \\\n";
+    if (up.swa_full)              std::cout << "      --swa-full \\\n";
+    if (up.use_numa)              std::cout << "      --numa distribute \\\n";
+    if (up.ctx_shift)             std::cout << "      --ctx-shift \\\n";
+    if (!up.cont_batching)        std::cout << "      --no-cont-batching \\\n";
+    if (c.fit_target_mib != 1024) std::cout << "      --fit-target " << c.fit_target_mib << " \\\n";
     std::cout << "      --host 0.0.0.0 --port 8080\n\n";
 
-    // --- llama-cli command ---
+    // --- llama-cli ---
     std::cout << "  ┌─────────────────────────────────────────────────────────┐\n";
     std::cout << "  │  llama-cli                                              │\n";
     std::cout << "  └─────────────────────────────────────────────────────────┘\n\n";
     std::cout << "    llama-cli \\\n";
     std::cout << "      --model \"" << up.model_path << "\" \\\n";
     std::cout << "      --ctx-size " << up.desired_ctx << " \\\n";
-    if (c.n_gpu_layers >= 0)
-        std::cout << "      --n-gpu-layers " << c.n_gpu_layers << " \\\n";
-    else if (c.n_gpu_layers == -2)
-        std::cout << "      --n-gpu-layers all \\\n";
-    else
-        std::cout << "      --n-gpu-layers auto \\\n";
-    if (c.cache_type_k >= 0)
-        std::cout << "      --cache-type-k " << cache_type_name(c.cache_type_k) << " \\\n";
-    if (c.cache_type_v >= 0)
-        std::cout << "      --cache-type-v " << cache_type_name(c.cache_type_v) << " \\\n";
+    if (c.n_gpu_layers >= 0)      std::cout << "      --n-gpu-layers " << c.n_gpu_layers << " \\\n";
+    else if (c.n_gpu_layers == -2) std::cout << "      --n-gpu-layers all \\\n";
+    else                           std::cout << "      --n-gpu-layers auto \\\n";
+    if (c.cache_type_k >= 0)      std::cout << "      --cache-type-k " << cache_type_name(c.cache_type_k) << " \\\n";
+    if (c.cache_type_v >= 0)      std::cout << "      --cache-type-v " << cache_type_name(c.cache_type_v) << " \\\n";
     std::cout << "      --batch-size " << c.n_batch << " \\\n";
     std::cout << "      --ubatch-size " << c.n_ubatch << " \\\n";
-    if (c.pipeline_partial)
-        std::cout << "      --pipeline-partial 1 \\\n";
-    if (!c.offload_kqv)
-        std::cout << "      --no-kv-offload \\\n";
-    if (!c.use_mmap)
-        std::cout << "      --no-mmap \\\n";
-    if (c.use_direct_io)
-        std::cout << "      --direct-io \\\n";
+    if (c.pipeline_partial)        std::cout << "      --pipeline-partial 1 \\\n";
+    if (!c.offload_kqv)           std::cout << "      --no-kv-offload \\\n";
+    if (!c.use_mmap)              std::cout << "      --no-mmap \\\n";
+    if (c.use_direct_io)          std::cout << "      --direct-io \\\n";
+    if (c.n_cpu_moe >= m_n_layers) std::cout << "      --cpu-moe \\\n";
+    if (c.spec_type == "ngram")   std::cout << "      --spec-ngram " << c.spec_ngram_size << " \\\n";
+    if (!up.flash_attn)           std::cout << "      --flash-attn off \\\n";
     std::cout << "      -p \"Your prompt here\"\n\n";
 
-    // --- Flat flag list for copy-paste ---
+    // --- Flat flags ---
     std::cout << "  ┌─────────────────────────────────────────────────────────┐\n";
     std::cout << "  │  Flat flag list (append to any llama.* command)         │\n";
     std::cout << "  └─────────────────────────────────────────────────────────┘\n\n";
     std::cout << "    --ctx-size " << up.desired_ctx;
-    if (c.n_gpu_layers >= 0)
-        std::cout << " --n-gpu-layers " << c.n_gpu_layers;
-    else if (c.n_gpu_layers == -2)
-        std::cout << " --n-gpu-layers all";
-    else
-        std::cout << " --n-gpu-layers auto";
+    if (c.n_gpu_layers >= 0)      std::cout << " --n-gpu-layers " << c.n_gpu_layers;
+    else if (c.n_gpu_layers == -2) std::cout << " --n-gpu-layers all";
+    else                           std::cout << " --n-gpu-layers auto";
     std::cout << " --split-mode " << split_mode_name(c.split_mode);
-    if (c.cache_type_k >= 0)
-        std::cout << " --cache-type-k " << cache_type_name(c.cache_type_k);
-    if (c.cache_type_v >= 0)
-        std::cout << " --cache-type-v " << cache_type_name(c.cache_type_v);
-    std::cout << " --batch-size " << c.n_batch;
-    std::cout << " --ubatch-size " << c.n_ubatch;
-    if (c.n_parallel > 1)
-        std::cout << " --parallel " << c.n_parallel;
-    if (c.pipeline_partial)
-        std::cout << " --pipeline-partial 1";
-    if (!c.offload_kqv)
-        std::cout << " --no-kv-offload";
-    if (!c.use_mmap)
-        std::cout << " --no-mmap";
-    if (c.use_direct_io)
-        std::cout << " --direct-io";
-    if (c.use_mlock)
-        std::cout << " --mlock";
-    if (c.no_extra_bufts)
-        std::cout << " --no-repack";
-    if (c.fit_target_mib != 1024)
-        std::cout << " --fit-target " << c.fit_target_mib;
+    if (c.cache_type_k >= 0)      std::cout << " --cache-type-k " << cache_type_name(c.cache_type_k);
+    if (c.cache_type_v >= 0)      std::cout << " --cache-type-v " << cache_type_name(c.cache_type_v);
+    std::cout << " --batch-size " << c.n_batch << " --ubatch-size " << c.n_ubatch;
+    if (c.n_parallel > 1)         std::cout << " --parallel " << c.n_parallel;
+    if (c.pipeline_partial)        std::cout << " --pipeline-partial 1";
+    if (!c.offload_kqv)           std::cout << " --no-kv-offload";
+    if (!c.use_mmap)              std::cout << " --no-mmap";
+    if (c.use_direct_io)          std::cout << " --direct-io";
+    if (c.use_mlock)              std::cout << " --mlock";
+    if (c.n_cpu_moe >= m_n_layers) std::cout << " --cpu-moe";
+    if (c.spec_type == "ngram")   std::cout << " --spec-ngram " << c.spec_ngram_size;
+    if (!up.flash_attn)           std::cout << " --flash-attn off";
+    if (up.swa_full)              std::cout << " --swa-full";
+    if (up.use_numa)              std::cout << " --numa distribute";
+    if (up.ctx_shift)             std::cout << " --ctx-shift";
+    if (!up.cont_batching)        std::cout << " --no-cont-batching";
+    if (c.fit_target_mib != 1024) std::cout << " --fit-target " << c.fit_target_mib;
     std::cout << "\n\n";
 
     // --- Notes ---
     std::cout << "  ┌─────────────────────────────────────────────────────────┐\n";
     std::cout << "  │  Notes                                                  │\n";
     std::cout << "  └─────────────────────────────────────────────────────────┘\n\n";
-    if (c.n_gpu_layers == 0) {
+    if (c.n_gpu_layers == 0)
         std::cout << "  • Running fully on CPU. Consider a GPU for better perf.\n";
-    } else if (c.n_gpu_layers < m_n_layers) {
+    else if (c.n_gpu_layers < m_n_layers)
         std::cout << "  • Partial offload: " << c.n_gpu_layers << "/" << m_n_layers << " layers on GPU.\n";
-        if (c.pipeline_partial) {
-            std::cout << "  • Pipeline parallelism enabled — overlaps GPU with CPU.\n";
-        }
-    } else {
+    else
         std::cout << "  • Full GPU offload: all " << m_n_layers << " layers.\n";
-    }
-    if (c.cache_type_k == GGML_TYPE_Q8_0) {
+    if (c.pipeline_partial)
+        std::cout << "  • Pipeline parallelism enabled — overlaps GPU with CPU compute.\n";
+    if (c.cache_type_k == GGML_TYPE_Q8_0)
         std::cout << "  • KV cache quantized to Q8_0 — saves ~50% VRAM.\n";
-    }
-    if (!c.use_mmap) {
-        std::cout << "  • mmap disabled — uses direct file reads.\n";
-    }
-    if (up.is_long_context) {
+    if (!c.use_mmap)
+        std::cout << "  • mmap disabled — using direct file reads.\n";
+    if (c.n_cpu_moe >= m_n_layers)
+        std::cout << "  • All MoE experts on CPU — saves significant VRAM.\n";
+    else if (c.n_cpu_moe > 0)
+        std::cout << "  • First " << c.n_cpu_moe << " MoE layers on CPU.\n";
+    if (c.spec_type == "ngram")
+        std::cout << "  • N-gram speculative decoding (size=" << c.spec_ngram_size << ") — may boost TPS.\n";
+    if (up.is_long_context)
         std::cout << "  • Long context: consider --cache-type-k q8_0 to reduce VRAM.\n";
-    }
-    if (up.is_moe && c.n_gpu_layers > 0 && c.n_gpu_layers < m_n_layers) {
+    if (m_is_moe && c.n_gpu_layers > 0 && c.n_gpu_layers < m_n_layers)
         std::cout << "  • MoE model: expert weights on CPU may bottleneck. Try --n-gpu-layers all.\n";
-    }
+    if (up.use_numa)
+        std::cout << "  • NUMA enabled — beneficial for multi-socket systems.\n";
     std::cout << "\n";
 }

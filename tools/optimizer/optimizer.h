@@ -44,6 +44,16 @@ struct optimizer_config {
 
     // --- Fit ---
     int         fit_target_mib;  // per-device headroom in MiB (0 = default 1 GiB)
+
+    // --- MoE offload --
+    // -1 = don't override, 0 = all MoE on CPU (--cpu-moe), > 0 = first N layers MoE on CPU
+    int         n_cpu_moe;
+
+    // -- Speculative decoding --
+    // If enabled, the optimizer will test with a small draft model (if available)
+    // or n-gram speculation.  Empty = don't use speculation.
+    std::string spec_type;       // "" = none, "ngram" = n-gram spec, "draft" = external draft
+    int         spec_ngram_size; // ngram size if spec_type == "ngram"
 };
 
 // ---------------------------------------------------------------------------
@@ -86,6 +96,24 @@ struct optimizer_user_params {
     // Quality floor
     float       min_acceptable_tps  = 0.0f;  // 0 = no floor
     bool        allow_quant_cache   = true;   // allow Q8_0/Q4_0 KV cache
+
+    // --- MoE ---
+    bool        allow_moe_cpu       = false;  // allow CPU offload for MoE experts
+
+    // --- Speculative decoding ---
+    bool        allow_speculative   = false;  // test n-gram speculation
+    int         spec_ngram_size     = 3;      // ngram size to test
+
+    // --- Attention ---
+    bool        flash_attn          = true;   // use Flash Attention
+    bool        swa_full            = false;  // full SWA cache
+
+    // --- NUMA ---
+    bool        use_numa            = false;  // NUMA optimization
+
+    // --- Context / batching ---
+    bool        ctx_shift           = false;  // infinite chat ctx shift
+    bool        cont_batching       = true;   // continuous batching
 };
 
 // ---------------------------------------------------------------------------
