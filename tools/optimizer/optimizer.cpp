@@ -103,7 +103,7 @@ bool optimizer::interactive_setup(optimizer_user_params & up) {
     // --- Detect model + hardware ---
     {
         struct llama_model_params mparams = llama_model_default_params();
-        mparams.use_mmap  = true;
+        mparams.use_mmap  = false;  // no_alloc + mmap triggers assert on backends with buffer_from_host_ptr
         mparams.use_mlock = false;
         mparams.no_alloc  = true;
 
