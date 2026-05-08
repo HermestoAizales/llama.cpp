@@ -79,6 +79,7 @@ int main(int argc, char ** argv) {
 
     if (non_interactive) {
         // Auto-detect model info
+        ggml_backend_load_all();
         struct llama_model_params mparams = llama_model_default_params();
         mparams.use_mmap  = false;  // no_alloc + mmap triggers assert on backends with buffer_from_host_ptr
         mparams.no_alloc = true;

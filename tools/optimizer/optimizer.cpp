@@ -93,15 +93,24 @@ bool optimizer::interactive_setup(optimizer_user_params & up) {
     std::cout << "\n";
 
     // --- Model path ---
-    while (up.model_path.empty()) {
-        up.model_path = read_line("[?] Model path (.gguf): ");
-        if (up.model_path.empty()) {
-            std::cout << "  Please enter a valid model path.\n";
+    if (up.model_path.empty()) {
+        while (up.model_path.empty()) {
+            up.model_path = read_line("[?] Model path (.gguf): ");
+            if (up.model_path.empty()) {
+                std::cout << "  Please enter a valid model path.\n";
+            }
         }
+    } else {
+        std::cout << "[?] Model path (.gguf): " << up.model_path << "\n";
     }
 
     // --- Detect model + hardware ---
     {
+        // Load backends before first llama_model_load_from_file call.
+        // (common/arg.cpp does this for llama-cli/server, but the optimizer
+        //  calls the llama.h API directly.)
+        ggml_backend_load_all();
+
         struct llama_model_params mparams = llama_model_default_params();
         mparams.use_mmap  = false;  // no_alloc + mmap triggers assert on backends with buffer_from_host_ptr
         mparams.use_mlock = false;
