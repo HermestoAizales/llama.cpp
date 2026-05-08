@@ -29,6 +29,15 @@ struct preset_params {
     bool    no_extra_bufts    = false;
     int32_t kv_cache_bounded  = 0;
     int32_t fit_target_mib    = 0;
+    int32_t n_cpu_moe         = -1;
+    std::string spec_type;
+    int32_t spec_ngram_size    = 0;
+    bool    flash_attn_set     = false;
+    bool    flash_attn         = true;
+    bool    swa_full           = false;
+    bool    use_numa           = false;
+    bool    ctx_shift          = false;
+    bool    cont_batching      = true;
 };
 
 bool preset_load(const std::string & path, preset_params & out);

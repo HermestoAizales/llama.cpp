@@ -87,6 +87,14 @@ bool preset_load(const std::string & path, preset_params & out) {
         else if (key == "no_repack")         out.no_extra_bufts   = to_bool(value);
         else if (key == "kv_cache_bounded")  out.kv_cache_bounded = to_int(value, 0);
         else if (key == "fit_target_mib")    out.fit_target_mib   = to_int(value, 0);
+        else if (key == "n_cpu_moe")         out.n_cpu_moe        = to_int(value, -1);
+        else if (key == "spec_type")         out.spec_type        = value;
+        else if (key == "spec_ngram_size")   out.spec_ngram_size  = to_int(value, 0);
+        else if (key == "flash_attn") {      out.flash_attn_set = true; out.flash_attn = to_bool(value); }
+        else if (key == "swa_full")           out.swa_full         = to_bool(value);
+        else if (key == "numa")              out.use_numa         = to_bool(value);
+        else if (key == "ctx_shift")         out.ctx_shift        = to_bool(value);
+        else if (key == "cont_batching")     out.cont_batching    = to_bool(value);
     }
     return true;
 }
@@ -172,4 +180,7 @@ void preset_apply(const preset_params & p, common_params & params) {
         std::fill(params.fit_params_target.begin(),
                   params.fit_params_target.end(), bytes);
     }
+    // Note: n_cpu_moe, spec_type, flash_attn, swa_full, numa, ctx_shift,
+    // cont_batching are optimizer-internal and applied via model/context
+    // params in benchmark_single, not via common_params.
 }

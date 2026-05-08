@@ -98,6 +98,14 @@ int main(int argc, char ** argv) {
         up.allow_quant_cache = true;
         up.prefer_mmap     = true;
         up.model_on_ssd    = true;
+        up.allow_moe_cpu   = true;
+        up.allow_speculative = true;
+        up.spec_ngram_size = 3;
+        up.flash_attn      = true;
+        up.swa_full        = false;
+        up.use_numa        = false;
+        up.ctx_shift       = false;
+        up.cont_batching   = true;
     } else {
         if (!opt.interactive_setup(up)) {
             std::cout << "  Aborted.\n";
