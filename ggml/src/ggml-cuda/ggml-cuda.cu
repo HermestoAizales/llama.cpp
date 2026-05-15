@@ -95,33 +95,23 @@ static_assert(sizeof(half) == sizeof(ggml_fp16_t), "wrong fp16 size");
 // Fused MoE global state (per device)
 // =============================================================================
 
-static std::mutex g_fused_moe_mutex;
-static bool g_fused_moe_enabled[GGML_CUDA_MAX_DEVICES] = {false};
-static moe_expert_cache g_fused_moe_cache[GGML_CUDA_MAX_DEVICES];
+// Fused MoE state and API (delegated to fused-moe.cu)
+// The actual cache and state live in fused-moe.cu to avoid circular dependencies.
 
 void ggml_backend_cuda_set_fused_moe(int device, bool enable) {
-    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) return;
-    std::lock_guard<std::mutex> lock(g_fused_moe_mutex);
-    g_fused_moe_enabled[device] = enable;
+    ggml_cuda_fused_moe_set_enabled(device, enable);
 }
 
 bool ggml_backend_cuda_get_fused_moe(int device) {
-    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) return false;
-    return g_fused_moe_enabled[device];
+    return ggml_cuda_fused_moe_get_enabled(device);
 }
 
 void ggml_backend_cuda_fused_moe_init_cache(int device, int64_t n_expert, size_t max_vram_mb, int32_t n_streams) {
-    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) return;
-    std::lock_guard<std::mutex> lock(g_fused_moe_mutex);
-    ggml_cuda_set_device(device);
-    moe_expert_cache_init(&g_fused_moe_cache[device], n_expert, max_vram_mb * 1024 * 1024, n_streams);
+    ggml_cuda_fused_moe_init(device, n_expert, max_vram_mb, n_streams);
 }
 
 void ggml_backend_cuda_fused_moe_free_cache(int device) {
-    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) return;
-    std::lock_guard<std::mutex> lock(g_fused_moe_mutex);
-    ggml_cuda_set_device(device);
-    moe_expert_cache_free(&g_fused_moe_cache[device]);
+    ggml_cuda_fused_moe_free(device);
 }
 
 [[noreturn]]
