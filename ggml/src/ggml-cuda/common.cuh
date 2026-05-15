@@ -1424,6 +1424,9 @@ struct ggml_backend_cuda_context {
     }
 #endif // USE_CUDA_GRAPH
 
+    // Fused MoE state
+    bool fused_moe = false;  ///< enable fused MoE kernel with async weight prefetch
+
     explicit ggml_backend_cuda_context(int device) :
         device(device),
         name(GGML_CUDA_NAME + std::to_string(device)) {

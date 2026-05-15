@@ -2332,6 +2332,30 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_CPU_MOE"));
     add_opt(common_arg(
+        {"--fused-moe"}, "[on|off]",
+        "use fused MoE kernel with async weight prefetch (default: off)",
+        [](common_params & params, const std::string & value) {
+            if (value == "on")  params.fused_moe = true;
+            if (value == "off") params.fused_moe = false;
+        }
+    ).set_env("LLAMA_ARG_FUSED_MOE"));
+    add_opt(common_arg(
+        {"--moe-prefetch-streams"}, "N",
+        string_format("number of parallel prefetch streams for expert weights (default: %d)", params.moe_prefetch_streams),
+        [](common_params & params, int value) {
+            if (value < 1) throw std::invalid_argument("moe-prefetch-streams must be >= 1");
+            params.moe_prefetch_streams = value;
+        }
+    ).set_env("LLAMA_ARG_MOE_PREFETCH_STREAMS"));
+    add_opt(common_arg(
+        {"--moe-max-vram"}, "N",
+        string_format("max VRAM in MB for expert weight ring buffer (default: %d)", params.moe_max_vram_mb),
+        [](common_params & params, int value) {
+            if (value < 0) throw std::invalid_argument("moe-max-vram must be >= 0");
+            params.moe_max_vram_mb = value;
+        }
+    ).set_env("LLAMA_ARG_MOE_MAX_VRAM"));
+    add_opt(common_arg(
         {"-ncmoe", "--n-cpu-moe"}, "N",
         "keep the Mixture of Experts (MoE) weights of the first N layers in the CPU",
         [](common_params & params, int value) {

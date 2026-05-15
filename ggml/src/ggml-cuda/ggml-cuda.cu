@@ -63,6 +63,7 @@
 #include "ggml-cuda/tri.cuh"
 #include "ggml-cuda/cumsum.cuh"
 #include "ggml-cuda/fill.cuh"
+#include "ggml-cuda/fused-moe.cuh"
 #include "ggml.h"
 
 #include <algorithm>
@@ -89,6 +90,39 @@ static_assert(sizeof(half) == sizeof(ggml_fp16_t), "wrong fp16 size");
 
 #define GGML_LOG_WARN_ONCE(str) \
     { static std::once_flag warn_flag; std::call_once(warn_flag, []() { GGML_LOG_WARN(str); }); }
+
+// =============================================================================
+// Fused MoE global state (per device)
+// =============================================================================
+
+static std::mutex g_fused_moe_mutex;
+static bool g_fused_moe_enabled[GGML_CUDA_MAX_DEVICES] = {false};
+static moe_expert_cache g_fused_moe_cache[GGML_CUDA_MAX_DEVICES];
+
+void ggml_backend_cuda_set_fused_moe(int device, bool enable) {
+    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) return;
+    std::lock_guard<std::mutex> lock(g_fused_moe_mutex);
+    g_fused_moe_enabled[device] = enable;
+}
+
+bool ggml_backend_cuda_get_fused_moe(int device) {
+    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) return false;
+    return g_fused_moe_enabled[device];
+}
+
+void ggml_backend_cuda_fused_moe_init_cache(int device, int64_t n_expert, size_t max_vram_mb, int32_t n_streams) {
+    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) return;
+    std::lock_guard<std::mutex> lock(g_fused_moe_mutex);
+    ggml_cuda_set_device(device);
+    moe_expert_cache_init(&g_fused_moe_cache[device], n_expert, max_vram_mb * 1024 * 1024, n_streams);
+}
+
+void ggml_backend_cuda_fused_moe_free_cache(int device) {
+    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) return;
+    std::lock_guard<std::mutex> lock(g_fused_moe_mutex);
+    ggml_cuda_set_device(device);
+    moe_expert_cache_free(&g_fused_moe_cache[device]);
+}
 
 [[noreturn]]
 void ggml_cuda_error(const char * stmt, const char * func, const char * file, int line, const char * msg) {
@@ -2626,6 +2660,16 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
 
     GGML_ASSERT(src1->type == GGML_TYPE_F32);
     GGML_ASSERT(dst->type  == GGML_TYPE_F32);
+
+    // Fused MoE path: check if we should use the fused kernel
+    // This is enabled per-device via ggml_backend_cuda_set_fused_moe() and uses the
+    // expert weight cache for async prefetch from RAM to VRAM.
+    // Works for both target model and MTP draft context since the flag is per-device.
+    ctx.fused_moe = g_fused_moe_enabled[ctx.device];
+    if (ctx.fused_moe && ggml_cuda_should_use_fused_moe(dst, ctx.device)) {
+        ggml_cuda_fused_moe_forward(ctx, dst, /*is_gate_up=*/ false);
+        return;
+    }
     GGML_ASSERT(!ggml_backend_buft_is_cuda_split(src0->buffer->buft) && "mul_mat_id does not support split buffers");
 
     GGML_TENSOR_BINARY_OP_LOCALS
