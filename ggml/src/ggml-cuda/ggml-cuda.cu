@@ -5642,6 +5642,19 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     if (strcmp(name, "ggml_backend_get_features") == 0) {
         return (void *)ggml_backend_cuda_get_features;
     }
+    // Fused MoE functions
+    if (strcmp(name, "ggml_backend_cuda_set_fused_moe") == 0) {
+        return (void *)ggml_backend_cuda_set_fused_moe;
+    }
+    if (strcmp(name, "ggml_backend_cuda_get_fused_moe") == 0) {
+        return (void *)ggml_backend_cuda_get_fused_moe;
+    }
+    if (strcmp(name, "ggml_backend_cuda_fused_moe_init_cache") == 0) {
+        return (void *)ggml_backend_cuda_fused_moe_init_cache;
+    }
+    if (strcmp(name, "ggml_backend_cuda_fused_moe_free_cache") == 0) {
+        return (void *)ggml_backend_cuda_fused_moe_free_cache;
+    }
     return nullptr;
 }
 
