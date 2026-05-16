@@ -29,6 +29,7 @@
 #include "ggml-cuda/mmf.cuh"
 #include "ggml-cuda/mmq.cuh"
 #include "ggml-cuda/mmvf.cuh"
+#include "ggml-cuda/fused-moe.cuh"
 #include "ggml-cuda/mmvq.cuh"
 #include "ggml-cuda/norm.cuh"
 #include "ggml-cuda/opt-step-adamw.cuh"
@@ -2643,7 +2644,7 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
     }
 }
 
-static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * src0 = dst->src[0];
     const ggml_tensor * src1 = dst->src[1];
     const ggml_tensor * ids  = dst->src[2];
@@ -2657,7 +2658,7 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
     // Works for both target model and MTP draft context since the flag is per-device.
     ctx.fused_moe = g_fused_moe_enabled[ctx.device];
     if (ctx.fused_moe && ggml_cuda_should_use_fused_moe(dst, ctx.device)) {
-        ggml_cuda_fused_moe_forward(ctx, dst, /*is_gate_up=*/ false);
+        ggml_cuda_fused_moe_forward(ctx, dst, /*is_gate_up=*/ true);
         return;
     }
     GGML_ASSERT(!ggml_backend_buft_is_cuda_split(src0->buffer->buft) && "mul_mat_id does not support split buffers");
