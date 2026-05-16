@@ -107,19 +107,19 @@ static_assert(sizeof(half) == sizeof(ggml_fp16_t), "wrong fp16 size");
 // Fused MoE state and API (delegated to fused-moe.cu)
 // The actual cache and state live in fused-moe.cu to avoid circular dependencies.
 
-void ggml_backend_cuda_set_fused_moe(int device, bool enable) {
+GGML_BACKEND_API void ggml_backend_cuda_set_fused_moe(int device, bool enable) {
     ggml_cuda_fused_moe_set_enabled(device, enable);
 }
 
-bool ggml_backend_cuda_get_fused_moe(int device) {
+GGML_BACKEND_API bool ggml_backend_cuda_get_fused_moe(int device) {
     return ggml_cuda_fused_moe_get_enabled(device);
 }
 
-void ggml_backend_cuda_fused_moe_init_cache(int device, int64_t n_expert, size_t max_vram_mb, int32_t n_streams) {
+GGML_BACKEND_API void ggml_backend_cuda_fused_moe_init_cache(int device, int64_t n_expert, size_t max_vram_mb, int32_t n_streams) {
     ggml_cuda_fused_moe_init(device, n_expert, max_vram_mb, n_streams);
 }
 
-void ggml_backend_cuda_fused_moe_free_cache(int device) {
+GGML_BACKEND_API void ggml_backend_cuda_fused_moe_free_cache(int device) {
     ggml_cuda_fused_moe_free(device);
 }
 

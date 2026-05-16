@@ -14,7 +14,7 @@ static void load_fused_moe_cuda_funcs() {
     g_fused_moe_cuda_funcs_loaded = true;
     // Try to get function pointers from the CUDA backend registration
     // This works with both static linking and dynamic backend loading (GGML_BACKEND_DL)
-    ggml_backend_reg_t reg = ggml_backend_reg_by_name("cuda");
+    ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
     if (reg) {
         ggml_backend_cuda_set_fused_moe_fn = (void(*)(int, bool))ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_set_fused_moe");
         ggml_backend_cuda_fused_moe_init_cache_fn = (void(*)(int, int64_t, size_t, int32_t))ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_fused_moe_init_cache");
