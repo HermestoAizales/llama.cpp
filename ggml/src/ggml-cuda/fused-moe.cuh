@@ -4,9 +4,14 @@
 #include <cuda_fp16.h>
 #include <cstdint>
 
+#include "ggml.h"
+
 // Fused MoE with async weight prefetch
 // Supports: Q4_K, Q5_K, Q6_K, Q8_0, Q2_K, F16, BF16
 // Architectures: Qwen35/36 MoE, DeepSeek V3, Llama4, GroveMoE, Step35
+
+// Forward declarations
+struct ggml_tensor;
 
 // Expert cache entry - tracks an expert's weights in VRAM
 struct moe_expert_cache_entry {
@@ -103,3 +108,14 @@ void * moe_expert_cache_get_weight(
 
 // Print cache statistics
 void moe_expert_cache_print_stats(const moe_expert_cache * cache);
+
+// Check if fused MoE can be used for a given tensor
+bool ggml_cuda_should_use_fused_moe(
+    const ggml_tensor * dst,
+    int                 device);
+
+// Fused MoE forward dispatch (Phase 3)
+void ggml_cuda_fused_moe_forward(
+    ggml_backend_cuda_context & ctx,
+    ggml_tensor * dst,
+    bool           is_gate_up);
