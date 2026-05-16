@@ -1301,9 +1301,8 @@ common_init_result::common_init_result(common_params & params) :
                 if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU) {
                     const char * name = ggml_backend_dev_name(dev);
                     if (strncmp(name, "cuda", 4) == 0 || strncmp(name, "CUDA", 4) == 0) {
-                        int device = ggml_backend_dev_index(dev);
                         size_t free_mem = 0, total_mem = 0;
-                        ggml_backend_cuda_get_device_memory(device, &free_mem, &total_mem);
+                        ggml_backend_dev_memory(dev, &free_mem, &total_mem);
 
                         // Use configured VRAM budget or auto (25% of free VRAM)
                         size_t max_vram_mb = params.moe_max_vram_mb;
@@ -1311,11 +1310,13 @@ common_init_result::common_init_result(common_params & params) :
                             max_vram_mb = (free_mem / (1024 * 1024)) / 4;
                         }
 
+                        // Use the loop index as device index (works for single-GPU setups)
+                        int device = (int)i;
                         ggml_backend_cuda_set_fused_moe(device, true);
                         ggml_backend_cuda_fused_moe_init_cache(device, n_expert, max_vram_mb, params.moe_prefetch_streams);
 
-                        LOG_INF("%s: fused MoE enabled on CUDA device %d (experts=%d, vram_budget=%zuMB, streams=%d)\n",
-                            __func__, device, (int)n_expert, max_vram_mb, params.moe_prefetch_streams);
+                        LOG_INF("%s: fused MoE enabled on CUDA device %zu (experts=%d, vram_budget=%zuMB, streams=%d)\n",
+                            __func__, i, (int)n_expert, max_vram_mb, params.moe_prefetch_streams);
                     }
                 }
             }

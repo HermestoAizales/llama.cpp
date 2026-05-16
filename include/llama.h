@@ -382,6 +382,11 @@ extern "C" {
                           // try to disable when n_seq_max > 1 for improved performance when the sequences do not share a large prefix
                           // ref: https://github.com/ggml-org/llama.cpp/pull/14363
 
+        // Fused MoE [EXPERIMENTAL]
+        bool     fused_moe;            // use fused MoE kernel (gate_up + SiLU + down in single launch)
+        int32_t  moe_prefetch_streams; // number of async prefetch streams for expert weights (default: 2)
+        int32_t  moe_max_vram_mb;      // VRAM budget for expert weight cache in MB (0 = auto)
+
         // [EXPERIMENTAL]
         // backend sampler chain configuration (make sure the caller keeps the sampler chains alive)
         // note: the samplers must be sampler chains (i.e. use llama_sampler_chain_init)
