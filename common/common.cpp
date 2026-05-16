@@ -1295,6 +1295,7 @@ common_init_result::common_init_result(common_params & params) :
     if (params.fused_moe) {
         const int n_expert = llama_model_n_expert(model);
         if (n_expert > 0) {
+#ifdef GGML_CUDA
             // Find CUDA backends and enable fused MoE
             for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
                 ggml_backend_dev_t dev = ggml_backend_dev_get(i);
@@ -1320,6 +1321,9 @@ common_init_result::common_init_result(common_params & params) :
                     }
                 }
             }
+#else
+            LOG_WRN("%s: --fused-moe enabled but CUDA backend not compiled in, ignoring\n", __func__);
+#endif // GGML_CUDA
         } else {
             LOG_WRN("%s: --fused-moe enabled but model has no experts, ignoring\n", __func__);
         }
