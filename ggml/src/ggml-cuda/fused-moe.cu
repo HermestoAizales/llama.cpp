@@ -11,6 +11,13 @@
  * 1. Host-side cache management (moe_expert_cache_*)
  * 2. Fused MoE forward kernel (fused_moe_forward_*)
  * 3. Integration with ggml_cuda_mul_mat_id dispatch
+ *
+ * Kernel design (Phase 3):
+ * - Each block processes one (token, expert) pair
+ * - Tiled matrix multiplication: gate_up (n_ff*2 × n_embd) and down (n_embd × n_ff)
+ * - Intermediate results (gate_act, up_val) stay in shared memory / registers
+ * - Single kernel launch replaces 3 separate mul_mat_id calls
+ * - Supports F16 and F32 weights (quantized types fall back to standard path)
  */
 
 #include "fused-moe.cuh"
