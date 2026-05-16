@@ -32,7 +32,6 @@
 #include "ggml-cuda/mmvq.cuh"
 
 // Fused MoE function declarations (defined in fused-moe.cu, declared in fused-moe.cuh)
-extern bool g_fused_moe_enabled[GGML_CUDA_MAX_DEVICES];
 extern void ggml_cuda_fused_moe_set_enabled(int device, bool enable);
 extern bool ggml_cuda_fused_moe_get_enabled(int device);
 extern void ggml_cuda_fused_moe_init(int device, int64_t n_expert, size_t max_vram_mb, int32_t n_streams);

@@ -347,7 +347,7 @@ __global__ void fused_moe_gate_up_silu_down_kernel(
 
 // Global fused MoE state (one per CUDA device)
 static std::mutex g_fused_moe_mutex;
-static bool g_fused_moe_enabled[GGML_CUDA_MAX_DEVICES] = {false};
+bool g_fused_moe_enabled[GGML_CUDA_MAX_DEVICES] = {false};
 static moe_expert_cache g_moe_cache[GGML_CUDA_MAX_DEVICES];
 
 // Fused MoE state: stores gate_up data between the two mul_mat_id calls
