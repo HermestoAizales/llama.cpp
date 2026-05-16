@@ -22,6 +22,10 @@
 
 #include "common.cuh"
 #include "fused-moe.cuh"
+
+// Forward declaration for fallback (defined in ggml-cuda.cu, declared in common.cuh)
+// Redeclared here because nvcc may not see the declaration from common.cuh in some build configs
+void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 #include "ggml-cuda.h"
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
