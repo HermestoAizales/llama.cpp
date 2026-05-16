@@ -1115,6 +1115,7 @@ void ggml_cuda_set_device(int device);
 int ggml_cuda_get_device();
 
 // Fused MoE: non-static wrapper for mul_mat_id (called from fused-moe.cu for fallback)
+struct ggml_backend_cuda_context;
 void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 
 struct ggml_cuda_pool {
