@@ -29,8 +29,15 @@
 #include "ggml-cuda/mmf.cuh"
 #include "ggml-cuda/mmq.cuh"
 #include "ggml-cuda/mmvf.cuh"
-#include "ggml-cuda/fused-moe.cuh"
 #include "ggml-cuda/mmvq.cuh"
+
+// Fused MoE function declarations (defined in fused-moe.cu, declared in fused-moe.cuh)
+extern void ggml_cuda_fused_moe_set_enabled(int device, bool enable);
+extern bool ggml_cuda_fused_moe_get_enabled(int device);
+extern void ggml_cuda_fused_moe_init(int device, int64_t n_expert, size_t max_vram_mb, int32_t n_streams);
+extern void ggml_cuda_fused_moe_free(int device);
+extern bool ggml_cuda_should_use_fused_moe(const ggml_tensor * dst, int device);
+extern void ggml_cuda_fused_moe_forward(ggml_backend_cuda_context & ctx, ggml_tensor * dst, bool is_gate_up);
 #include "ggml-cuda/norm.cuh"
 #include "ggml-cuda/opt-step-adamw.cuh"
 #include "ggml-cuda/opt-step-sgd.cuh"
