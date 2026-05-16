@@ -20,6 +20,7 @@
  * - Supports F16 and F32 weights (quantized types fall back to standard path)
  */
 
+#include "common.cuh"
 #include "fused-moe.cuh"
 #include "ggml-cuda.h"
 #include "ggml-impl.h"
@@ -31,7 +32,10 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdio>
 #include <cstring>
+#include <mutex>
+#include <vector>
 
 // =============================================================================
 // Host-side Expert Cache Implementation
@@ -212,118 +216,124 @@ __device__ __forceinline__ float silu_f32(float x) {
     return x / (1.0f + expf(-x));
 }
 
-// Fused gate_up + SiLU + down for a single expert
-// Each block processes one token through one expert
-// gridDim.x = n_tokens * n_expert_used
-// blockDim.x = n_ff (or subset for tiling)
-template<int TILE_SIZE = 256>
-__global__ void fused_moe_silu_down_kernel(
-    const float * __restrict__ gate_up,  // [n_ff*2, n_embd] expert weights (F16 dequantized)
-    const float * __restrict__ down,     // [n_embd, n_ff] expert weights
-    const float * __restrict__ input,    // [n_embd] token input
-    float * __restrict__ output,         // [n_embd] token output
-    const float * __restrict__ gate_act, // [n_ff] gate activation (SiLU(gate))
-    int64_t n_embd,
-    int64_t n_ff) {
-    // Each block handles one (token, expert) pair
-    // Threads collaborate to compute the down projection
+#define FUSED_MOE_TILE_DIM 128
 
-    const int64_t tid = threadIdx.x;
-    const int64_t row = blockIdx.y; // output row (n_embd)
-    const int64_t col = blockIdx.x; // expert index
+// =============================================================================
+// Fused MoE Kernel: gate_up + SiLU + down in a single launch
+// =============================================================================
+//
+// Each block processes one (token, expert) pair.
+// gridDim.x = n_expert_used
+// gridDim.y = n_tokens
+// blockDim.x = FUSED_MOE_TILE_DIM (128 threads = 4 warps)
+//
+// Phase 1: gate_up projection (tiled over n_embd)
+//   input [n_embd] x W_gate_up [n_ff*2, n_embd] -> gate_up [n_ff*2]
+// Phase 2: SiLU + multiply
+//   activated = SiLU(gate) * up -> [n_ff]
+// Phase 3: down projection (tiled over n_ff)
+//   activated [n_ff] x W_down [n_embd, n_ff] -> output [n_embd]
+//
+// Shared memory: TILE_DIM*4 + n_ff*8 bytes (~4.5 KB for n_ff=1024)
 
-    if (row >= n_embd) return;
-
-    // Compute: output[row] = sum_j(down[row, j] * gate_act[j])
-    float sum = 0.0f;
-    for (int64_t j = tid; j < n_ff; j += blockDim.x) {
-        sum += down[row * n_ff + j] * gate_act[col * n_ff + j];
-    }
-
-    // Warp reduction
-    for (int offset = warpSize / 2; offset > 0; offset /= 2) {
-        sum += __shfl_down_sync(0xffffffff, sum, offset);
-    }
-
-    // Block reduction via shared memory
-    __shared__ float sdata[TILE_SIZE / 32];
-    int lane = tid % warpSize;
-    int wid = tid / warpSize;
-    if (lane == 0) {
-        sdata[wid] = sum;
-    }
-    __syncthreads();
-
-    if (wid == 0) {
-        sum = (lane < (TILE_SIZE / 32)) ? sdata[lane] : 0.0f;
-        for (int offset = warpSize / 2; offset > 0; offset /= 2) {
-            sum += __shfl_down_sync(0xffffffff, sum, offset);
-        }
-        if (lane == 0) {
-            output[row] = sum;
-        }
-    }
-}
-
-// Fused gate_up projection: input [n_embd] × weight [n_ff*2, n_embd] → output [n_ff*2]
-template<int TILE_SIZE = 256>
-__global__ void fused_moe_gate_up_kernel(
-    const void * __restrict__ weight,    // [n_ff*2, n_embd] expert weights (quantized)
-    const float * __restrict__ input,    // [n_embd] token input (F32)
-    float * __restrict__ gate_out,       // [n_ff] gate output
-    float * __restrict__ up_out,         // [n_ff] up output
+__global__ void fused_moe_gate_up_silu_down_kernel(
+    const void * __restrict__ gate_up_weight,  // [n_ff*2, n_embd, n_expert] weights
+    const void * __restrict__ down_weight,     // [n_embd, n_ff, n_expert] weights
+    const float * __restrict__ input,          // [n_embd, n_tokens] token input
+    float * __restrict__ output,               // [n_embd, n_expert_used, n_tokens] output
+    const int32_t * __restrict__ ids,          // [n_expert_used, n_tokens] expert indices
     int64_t n_embd,
     int64_t n_ff,
+    int64_t n_expert_used,
+    int64_t n_tokens,
+    int64_t n_expert,
     ggml_type weight_type) {
-    const int64_t tid = threadIdx.x;
-    const int64_t row = blockIdx.x; // gate_up row (n_ff*2)
 
-    if (row >= n_ff * 2) return;
+    const int64_t expert_idx = blockIdx.x;
+    const int64_t token_idx  = blockIdx.y;
 
-    bool is_gate = row < n_ff;
-    int64_t local_row = is_gate ? row : row - n_ff;
+    if (expert_idx >= n_expert_used || token_idx >= n_tokens) return;
 
-    // Compute dot product: output[row] = sum_j(weight[row, j] * input[j])
-    float sum = 0.0f;
+    const int32_t expert_id = ids[expert_idx * n_tokens + token_idx];
+    if (expert_id < 0 || expert_id >= n_expert) return;
 
-    // Dequantize and multiply based on weight type
-    // For now, support F16 and F32 weights
-    if (weight_type == GGML_TYPE_F16) {
-        const half * w = (const half *)weight;
-        for (int64_t j = tid; j < n_embd; j += blockDim.x) {
-            sum += __half2float(w[row * n_embd + j]) * input[j];
+    const int tid = threadIdx.x;
+
+    extern __shared__ char smem_raw[];
+    float * smem_input    = (float *)smem_raw;                                           // [TILE_DIM]
+    float * smem_gate_act = (float *)(smem_raw + FUSED_MOE_TILE_DIM * sizeof(float));    // [n_ff]
+    float * smem_up_val   = (float *)(smem_raw + (FUSED_MOE_TILE_DIM + n_ff) * sizeof(float)); // [n_ff]
+
+    const int64_t gu_offset = expert_id * n_ff * 2 * n_embd;
+    const int64_t dn_offset = expert_id * n_embd * n_ff;
+
+    const float * gu_w_f32 = (weight_type == GGML_TYPE_F32) ? (const float *)gate_up_weight + gu_offset : nullptr;
+    const half  * gu_w_f16 = (weight_type == GGML_TYPE_F16) ? (const half  *)gate_up_weight + gu_offset : nullptr;
+    const float * dn_w_f32 = (weight_type == GGML_TYPE_F32) ? (const float *)down_weight    + dn_offset : nullptr;
+    const half  * dn_w_f16 = (weight_type == GGML_TYPE_F16) ? (const half  *)down_weight    + dn_offset : nullptr;
+
+    const float * inp = input + token_idx * n_embd;
+
+    // Phase 1: gate_up projection, tiled over n_embd
+    // Each thread processes rows tid, tid+blockDim.x, tid+2*blockDim.x, ...
+    for (int64_t my_row = tid; my_row < n_ff * 2; my_row += blockDim.x) {
+        bool is_gate = my_row < n_ff;
+        int64_t local_row = is_gate ? my_row : my_row - n_ff;
+
+        float sum = 0.0f;
+        for (int64_t tile_start = 0; tile_start < n_embd; tile_start += FUSED_MOE_TILE_DIM) {
+            // Load input tile into shared memory (all threads participate)
+            int64_t tidx = tile_start + tid;
+            smem_input[tid] = (tidx < n_embd) ? inp[tidx] : 0.0f;
+            __syncthreads();
+
+            // Compute partial dot product (only active threads read their weight row)
+            if (gu_w_f16) {
+                for (int64_t j = 0; j < FUSED_MOE_TILE_DIM && tile_start + j < n_embd; j++) {
+                    sum += __half2float(gu_w_f16[my_row * n_embd + tile_start + j]) * smem_input[j];
+                }
+            } else if (gu_w_f32) {
+                for (int64_t j = 0; j < FUSED_MOE_TILE_DIM && tile_start + j < n_embd; j++) {
+                    sum += gu_w_f32[my_row * n_embd + tile_start + j] * smem_input[j];
+                }
+            }
+            __syncthreads();
         }
-    } else if (weight_type == GGML_TYPE_F32) {
-        const float * w = (const float *)weight;
-        for (int64_t j = tid; j < n_embd; j += blockDim.x) {
-            sum += w[row * n_embd + j] * input[j];
-        }
-    }
-    // TODO: Add quantized weight dequantization (Q4_K, Q5_K, Q6_K, Q8_0, Q2_K)
 
-    // Warp reduction
-    for (int offset = warpSize / 2; offset > 0; offset /= 2) {
-        sum += __shfl_down_sync(0xffffffff, sum, offset);
+        if (is_gate) smem_gate_act[local_row] = silu_f32(sum);
+        else         smem_up_val[local_row]   = sum;
     }
 
-    __shared__ float sdata[TILE_SIZE / 32];
-    int lane = tid % warpSize;
-    int wid = tid / warpSize;
-    if (lane == 0) sdata[wid] = sum;
     __syncthreads();
 
-    if (wid == 0) {
-        sum = (lane < (TILE_SIZE / 32)) ? sdata[lane] : 0.0f;
-        for (int offset = warpSize / 2; offset > 0; offset /= 2) {
-            sum += __shfl_down_sync(0xffffffff, sum, offset);
-        }
-        if (lane == 0) {
-            if (is_gate) {
-                gate_out[local_row] = silu_f32(sum);
-            } else {
-                up_out[local_row] = sum;
+    // Phase 2: activated = SiLU(gate) * up
+    for (int64_t row = tid; row < n_ff; row += blockDim.x) {
+        smem_gate_act[row] *= smem_up_val[row];
+    }
+    __syncthreads();
+
+    // Phase 3: down projection, tiled over n_ff
+    for (int64_t row = tid; row < n_embd; row += blockDim.x) {
+        float sum = 0.0f;
+
+        for (int64_t tile_start = 0; tile_start < n_ff; tile_start += FUSED_MOE_TILE_DIM) {
+            int64_t tidx = tile_start + tid;
+            smem_input[tid] = (tidx < n_ff) ? smem_gate_act[tidx] : 0.0f;
+            __syncthreads();
+
+            if (dn_w_f16) {
+                for (int64_t j = 0; j < FUSED_MOE_TILE_DIM && tile_start + j < n_ff; j++) {
+                    sum += __half2float(dn_w_f16[row * n_ff + tile_start + j]) * smem_input[j];
+                }
+            } else if (dn_w_f32) {
+                for (int64_t j = 0; j < FUSED_MOE_TILE_DIM && tile_start + j < n_ff; j++) {
+                    sum += dn_w_f32[row * n_ff + tile_start + j] * smem_input[j];
+                }
             }
+            __syncthreads();
         }
+
+        output[row * n_expert_used * n_tokens + expert_idx * n_tokens + token_idx] = sum;
     }
 }
 
@@ -335,6 +345,53 @@ __global__ void fused_moe_gate_up_kernel(
 static std::mutex g_fused_moe_mutex;
 static bool g_fused_moe_enabled[GGML_CUDA_MAX_DEVICES] = {false};
 static moe_expert_cache g_moe_cache[GGML_CUDA_MAX_DEVICES];
+
+// Fused MoE state: stores gate_up data between the two mul_mat_id calls
+// The gate_up mul_mat_id is called first, then the down mul_mat_id.
+// We save gate_up data at the gate_up call and launch the fused kernel at the down call.
+struct fused_moe_state {
+    bool     active;            // true after gate_up call, before down call
+    int      device;            // CUDA device
+    int64_t  n_embd;
+    int64_t  n_ff;
+    int64_t  n_expert;
+    int64_t  n_expert_used;
+    int64_t  n_tokens;
+    ggml_type weight_type;
+    // Saved from gate_up mul_mat_id call
+    const void * gate_up_weight; // [n_ff*2, n_embd, n_expert]
+    const float * input;         // [n_embd, n_tokens]
+    const int32_t * ids;         // [n_expert_used, n_tokens]
+    // Temporary buffer for fused output
+    float * fused_output;        // [n_embd, n_expert_used, n_tokens]
+    size_t   fused_output_size;
+};
+
+static fused_moe_state g_fused_state[GGML_CUDA_MAX_DEVICES];
+
+static void fused_state_reset(fused_moe_state & s) {
+    if (s.fused_output) {
+        cudaFree(s.fused_output);
+    }
+    s.active = false;
+    s.device = -1;
+    s.n_embd = 0;
+    s.n_ff = 0;
+    s.n_expert = 0;
+    s.n_expert_used = 0;
+    s.n_tokens = 0;
+    s.weight_type = GGML_TYPE_COUNT;
+    s.gate_up_weight = nullptr;
+    s.input = nullptr;
+    s.ids = nullptr;
+    s.fused_output = nullptr;
+    s.fused_output_size = 0;
+}
+
+static fused_moe_state * get_fused_state(int device) {
+    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) return nullptr;
+    return &g_fused_state[device];
+}
 
 // Internal: get expert cache for device
 static moe_expert_cache * get_moe_cache(int device) {
@@ -358,6 +415,10 @@ bool ggml_cuda_fused_moe_get_enabled(int device) {
 void ggml_cuda_fused_moe_init(int device, int64_t n_expert, size_t max_vram_mb, int32_t n_streams) {
     moe_expert_cache * cache = get_moe_cache(device);
     if (!cache) return;
+
+    // Reset fused state
+    fused_moe_state * state = get_fused_state(device);
+    memset(state, 0, sizeof(*state));
 
     size_t max_vram_bytes = max_vram_mb * 1024 * 1024;
     moe_expert_cache_init(cache, n_expert, max_vram_bytes, n_streams);
@@ -391,23 +452,34 @@ void ggml_cuda_fused_moe_prefetch(
 }
 
 // Check if fused MoE can be used for a given tensor
+// Check if a MUL_MAT_ID call is the gate_up part of a MoE layer
+// Heuristic: gate_up takes input [n_embd] and produces output [n_ff*2]
+// where n_embd > n_ff*2 (input dim > output dim).
+// down takes input [n_ff] and produces output [n_embd]
+// where n_ff < n_embd (input dim < output dim).
+// So: gate_up if src1->ne[0] > dst->ne[0], down if src1->ne[0] < dst->ne[0].
+static bool is_gate_up_mul_mat_id(const ggml_tensor * dst) {
+    if (dst->op != GGML_OP_MUL_MAT_ID) return false;
+    const ggml_tensor * src1 = dst->src[1];
+    // gate_up: input is [n_embd, n_tokens], output is [n_ff*2, n_expert_used, n_tokens]
+    //   n_embd > n_ff*2, so src1->ne[0] > dst->ne[0]
+    // down: input is [n_ff, n_expert_used, n_tokens], output is [n_embd, n_expert_used, n_tokens]
+    //   n_ff < n_embd, so src1->ne[0] < dst->ne[0]
+    return src1->ne[0] > dst->ne[0];
+}
+
+// Check if fused MoE can be used for a given tensor
 bool ggml_cuda_should_use_fused_moe(
     const ggml_tensor * dst,
     int                 device) {
-    // Only use fused MoE if:
-    // 1. Tensor is MUL_MAT_ID (expert FFN)
-    // 2. Fused MoE is enabled in context
-    // 3. Weights are on CPU (need prefetch) or already in VRAM cache
-    // 4. Weight type is supported (F16, F32 for now)
-
     if (dst->op != GGML_OP_MUL_MAT_ID) return false;
 
     const ggml_tensor * src0 = dst->src[0];
     const ggml_tensor * ids  = dst->src[2];
 
-    // Check weight type support
+    // Check weight type support (F16, F32 only for now)
     if (src0->type != GGML_TYPE_F16 && src0->type != GGML_TYPE_F32) {
-        return false; // Quantized types need dequantization (TODO)
+        return false;
     }
 
     // Check that we have a valid cache
@@ -415,123 +487,191 @@ bool ggml_cuda_should_use_fused_moe(
     if (!cache || !cache->buffer) return false;
 
     // Check that ids tensor is small enough (MoE routing indices)
-    if (ids->ne[0] > 16) return false; // n_expert_used > 16 is suspicious
+    if (ids->ne[0] > 16) return false;
 
     return true;
 }
 
 // =============================================================================
-// Fused MoE Forward Dispatch (Phase 2)
+// Fused MoE Forward Dispatch (Phase 3)
 // =============================================================================
-
-// Helper: get expert weight pointer from cache or source tensor
-static const void * get_expert_weight_fused(
-    moe_expert_cache * cache,
-    const ggml_tensor * src0,
-    int32_t expert_id,
-    size_t expert_weight_size) {
-    // Try cache first
-    void * cached = moe_expert_cache_get_weight(cache, expert_id);
-    if (cached) return cached;
-
-    // Fall back to source tensor data (may be on CPU or GPU)
-    return (const char *)src0->data + (size_t)expert_id * expert_weight_size;
-}
-
-// Fused MoE forward: processes one MUL_MAT_ID node (gate_up OR down)
-// For the full MoE layer, this is called twice:
-//   1. is_gate_up=true:  input [n_embd] × gate_up_exps [n_ff*2, n_embd] → gate_up [n_ff*2]
-//   2. is_gate_up=false: gate_up_result [n_ff] × down_exps [n_embd, n_ff] → output [n_embd]
 //
-// The fusion happens at a higher level: we combine gate_up + SiLU + down
-// into a single kernel launch per expert, avoiding intermediate global memory writes.
+// Strategy: The MoE FFN has two sequential MUL_MAT_ID calls:
+//   1. gate_up: input [n_embd, n_tokens] x W_gate_up [n_ff*2, n_embd, n_expert]
+//                -> gate_up_out [n_ff*2, n_expert_used, n_tokens]
+//   2. down:    cur [n_ff, n_expert_used, n_tokens] x W_down [n_embd, n_ff, n_expert]
+//                -> output [n_embd, n_expert_used, n_tokens]
+//
+// We intercept both calls. At the gate_up call, we save the gate_up weights,
+// input, and expert indices. At the down call, we launch the fused kernel
+// that computes gate_up + SiLU + down in a single launch.
+//
+// The gate_up output tensor is filled with zeros (it's only used by the SwiGLU
+// node, which we skip in the fused path). The down output gets the final result.
+
 void ggml_cuda_fused_moe_forward(
     ggml_backend_cuda_context & ctx,
     ggml_tensor * dst,
-    bool           is_gate_up) {
-    const ggml_tensor * src0 = dst->src[0]; // expert weights
-    const ggml_tensor * src1 = dst->src[1]; // input tokens
-    const ggml_tensor * ids  = dst->src[2]; // expert indices
-
-    const int64_t n_embd        = src0->ne[0];
-    const int64_t n_ff          = is_gate_up ? src0->ne[0] / 2 : src0->ne[0];
-    const int64_t n_expert_used = ids->ne[0];
-    const int64_t n_tokens      = src1->ne[1];
-    const int64_t n_expert      = src0->ne[2];
+    bool           /*is_gate_up*/) {
+    const ggml_tensor * src0 = dst->src[0];
+    const ggml_tensor * src1 = dst->src[1];
+    const ggml_tensor * ids  = dst->src[2];
 
     const int device = ggml_cuda_get_device();
     cudaStream_t stream = ctx.stream();
     moe_expert_cache * cache = get_moe_cache(device);
+    fused_moe_state * state = get_fused_state(device);
 
-    // Fused MoE forward dispatch — Phase 2 implementation
-    //
-    // Optimization strategy:
-    // 1. Read expert indices from device (needed for cache lookup)
-    // 2. For each unique expert, ensure weights are in VRAM cache
-    //    (async prefetch from CPU→GPU if needed, overlapped across streams)
-    // 3. Execute matmul via standard path (weights are now in VRAM)
-    //
-    // This eliminates the PCIe bottleneck: instead of copying expert weights
-    // through the CPU for every layer, we prefetch them async into a VRAM
-    // ring buffer. The standard mul_mat_id then reads from VRAM directly.
-    //
-    // Phase 3 will replace step 3 with a true fused kernel that combines
-    // gate_up + SiLU + down in a single launch.
+    const int64_t n_expert_used = ids->ne[0];
+    const int64_t n_tokens      = src1->ne[1];
+    const int64_t n_expert      = src0->ne[2];
 
-    // Step 1: Read expert indices from device
-    const int64_t n_get_rows = n_tokens * n_expert_used;
-    std::vector<int32_t> ids_host(n_get_rows);
-    CUDA_CHECK(cudaMemcpyAsync(ids_host.data(), ids->data, n_get_rows * sizeof(int32_t),
-        cudaMemcpyDeviceToHost, stream));
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    // Determine if this is gate_up or down by tensor dimensions
+    bool is_gate = is_gate_up_mul_mat_id(dst);
 
-    // Step 2: Prefetch expert weights into VRAM cache
-    if (cache && cache->buffer) {
-        // Calculate per-expert weight size
-        // For merged gate_up: [n_ff*2, n_embd] per expert
-        // For separate gate/up/down: [n_ff, n_embd] each
-        const size_t weight_element_size = ggml_type_size(src0->type);
-        const size_t expert_gate_up_size = (size_t)n_ff * 2 * n_embd * weight_element_size;
-        const size_t expert_down_size = (size_t)n_embd * n_ff * weight_element_size;
-        const size_t expert_total_size = is_gate_up ? expert_gate_up_size : expert_down_size;
+    if (is_gate) {
+        // ================================================================
+        // Gate-up MUL_MAT_ID call: save state for fused launch at down call
+        // ================================================================
+        const int64_t n_ff   = src0->ne[0] / 2;
+        const int64_t n_embd = src1->ne[0];
 
-        // Collect unique expert indices to avoid duplicate prefetches
-        std::vector<bool> prefetched(n_expert, false);
-        int32_t prefetch_count = 0;
+        // Reset any previous state
+        fused_state_reset(*state);
 
-        for (int64_t i = 0; i < n_get_rows; ++i) {
-            int32_t expert_id = ids_host[i];
-            if (expert_id < 0 || expert_id >= n_expert) continue;
-            if (prefetched[expert_id]) continue;
-            if (moe_expert_cache_lookup(cache, expert_id)) {
+        state->active = true;
+        state->device = device;
+        state->n_embd = n_embd;
+        state->n_ff = n_ff;
+        state->n_expert = n_expert;
+        state->n_expert_used = n_expert_used;
+        state->n_tokens = n_tokens;
+        state->weight_type = src0->type;
+        state->gate_up_weight = src0->data;
+        state->input = (const float *)src1->data;
+        state->ids = (const int32_t *)ids->data;
+
+        // Allocate fused output buffer [n_embd, n_expert_used, n_tokens]
+        state->fused_output_size = (size_t)n_embd * n_expert_used * n_tokens * sizeof(float);
+        CUDA_CHECK(cudaMalloc(&state->fused_output, state->fused_output_size));
+
+        // Prefetch expert weights into VRAM cache
+        if (cache && cache->buffer) {
+            const size_t weight_element_size = ggml_type_size(src0->type);
+            const size_t expert_size = (size_t)n_ff * 2 * n_embd * weight_element_size;
+
+            // Read expert indices
+            const int64_t n_get_rows = n_tokens * n_expert_used;
+            std::vector<int32_t> ids_host(n_get_rows);
+            CUDA_CHECK(cudaMemcpyAsync(ids_host.data(), ids->data,
+                n_get_rows * sizeof(int32_t), cudaMemcpyDeviceToHost, stream));
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+
+            std::vector<bool> prefetched(n_expert, false);
+            int32_t prefetch_count = 0;
+
+            for (int64_t i = 0; i < n_get_rows; ++i) {
+                int32_t expert_id = ids_host[i];
+                if (expert_id < 0 || expert_id >= n_expert) continue;
+                if (prefetched[expert_id]) continue;
+                if (moe_expert_cache_lookup(cache, expert_id)) {
+                    prefetched[expert_id] = true;
+                    continue;
+                }
+                const void * weight_ptr = (const char *)src0->data + (size_t)expert_id * expert_size;
+                int32_t stream_idx = prefetch_count % cache->n_prefetch_streams;
+                moe_expert_cache_prefetch(cache, expert_id, weight_ptr, expert_size, stream_idx);
                 prefetched[expert_id] = true;
-                continue;
+                prefetch_count++;
             }
 
-            // Determine weight pointer for this expert
-            const void * weight_ptr = (const char *)src0->data + (size_t)expert_id * expert_total_size;
+            for (int32_t s = 0; s < cache->n_prefetch_streams; ++s) {
+                moe_expert_cache_prefetch_wait(cache, s);
+            }
 
-            // Check if weight data is on CPU (needs prefetch) or already on GPU
-            // For now, always prefetch (safe for both CPU and GPU weights)
-            int32_t stream_idx = prefetch_count % cache->n_prefetch_streams;
-            moe_expert_cache_prefetch(cache, expert_id, weight_ptr, expert_total_size, stream_idx);
-
-            prefetched[expert_id] = true;
-            prefetch_count++;
+            if (prefetch_count > 0) {
+                fprintf(stderr, "fused-moe: prefetched %d experts (device=%d, gate_up)\\n",
+                    prefetch_count, device);
+            }
         }
 
-        // Wait for all prefetches to complete
-        for (int32_t s = 0; s < cache->n_prefetch_streams; ++s) {
-            moe_expert_cache_prefetch_wait(cache, s);
+        // Zero out the gate_up output tensor (SwiGLU will be a no-op in fused path)
+        CUDA_CHECK(cudaMemsetAsync(dst->data, 0,
+            (size_t)dst->ne[0] * dst->ne[1] * dst->ne[2] * sizeof(float), stream));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    } else {
+        // ================================================================
+        // Down MUL_MAT_ID call: launch the fused kernel
+        // ================================================================
+        const int64_t n_embd = src0->ne[0]; // down weights: [n_embd, n_ff, n_expert]
+        const int64_t n_ff   = src0->ne[1];
+        const void * down_weight = src0->data;
+
+        // If we don't have saved state (shouldn't happen), fall back to standard path
+        if (!state->active || state->device != device) {
+            fprintf(stderr, "fused-moe: warning: no fused state for down call, falling back\\n");
+            ggml_cuda_mul_mat_id(ctx, dst);
+            return;
         }
 
-        if (prefetch_count > 0) {
-            fprintf(stderr, "fused-moe: prefetched %d experts (device=%d, %s)\n",
-                prefetch_count, device, is_gate_up ? "gate_up" : "down");
+        // Verify dimensions match
+        if (state->n_embd != n_embd || state->n_ff != n_ff) {
+            fprintf(stderr, "fused-moe: warning: dimension mismatch, falling back\\n");
+            ggml_cuda_mul_mat_id(ctx, dst);
+            return;
         }
+
+        // Launch fused kernel
+        // gridDim = (n_expert_used, n_tokens)
+        // blockDim = FUSED_MOE_TILE_DIM (128 threads)
+        dim3 grid(n_expert_used, n_tokens);
+        dim3 block(FUSED_MOE_TILE_DIM);
+
+        // Shared memory: TILE_DIM*4 + n_ff*8 bytes
+        size_t smem_size = (size_t)(FUSED_MOE_TILE_DIM + n_ff * 2) * sizeof(float);
+
+        fused_moe_gate_up_silu_down_kernel<<<grid, block, smem_size, stream>>>(
+            state->gate_up_weight,
+            down_weight,
+            state->input,
+            state->fused_output,
+            state->ids,
+            n_embd,
+            n_ff,
+            n_expert_used,
+            n_tokens,
+            n_expert,
+            state->weight_type);
+
+        CUDA_CHECK(cudaGetLastError());
+
+        // Copy fused output to dst tensor
+        // Both are [n_embd, n_expert_used, n_tokens], dst may have padding
+        const size_t slice_bytes = (size_t)n_embd * n_expert_used * sizeof(float);
+        const size_t dst_stride  = dst->nb[2];  // stride between token slices
+        const size_t src_stride  = slice_bytes; // contiguous
+        if (dst_stride == src_stride) {
+            // Contiguous: single memcpy
+            CUDA_CHECK(cudaMemcpyAsync(dst->data, state->fused_output,
+                slice_bytes * n_tokens, cudaMemcpyDeviceToDevice, stream));
+        } else {
+            // Non-contiguous: copy slice by slice
+            for (int64_t t = 0; t < n_tokens; t++) {
+                CUDA_CHECK(cudaMemcpyAsync(
+                    (char *)dst->data + t * dst_stride,
+                    (char *)state->fused_output + t * src_stride,
+                    slice_bytes, cudaMemcpyDeviceToDevice, stream));
+            }
+        }
+
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+
+        fprintf(stderr, "fused-moe: fused kernel launched (device=%d, n_tokens=%ld, n_expert_used=%ld)\\n",
+            device, (long)n_tokens, (long)n_expert_used);
+
+        // Reset state
+        fused_state_reset(*state);
     }
-
-    // Step 3: Execute the matmul via the standard path
-    // (In Phase 3, this will be replaced by the fused kernel)
-    ggml_cuda_mul_mat_id(ctx, dst);
 }
+
