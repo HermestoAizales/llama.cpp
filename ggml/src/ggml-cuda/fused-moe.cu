@@ -599,10 +599,11 @@ void ggml_cuda_fused_moe_forward(
             }
         }
 
-        // Zero out the gate_up output tensor (SwiGLU will be a no-op in fused path)
-        CUDA_CHECK(cudaMemsetAsync(dst->data, 0,
-            (size_t)dst->ne[0] * dst->ne[1] * dst->ne[2] * sizeof(float), stream));
-        CUDA_CHECK(cudaStreamSynchronize(stream));
+        // Note: We do NOT zero out the gate_up output tensor.
+        // The SwiGLU node in the graph still processes this tensor.
+        // The fused kernel computes SwiGLU internally, so the graph's SwiGLU
+        // is redundant but harmless (minimal overhead).
+        // TODO Phase 4: Skip SwiGLU node in build_moe_ffn() when fused_moe is active.
 
     } else {
         // ================================================================
