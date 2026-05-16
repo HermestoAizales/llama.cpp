@@ -30,6 +30,9 @@ struct preset_params {
     int32_t kv_cache_bounded  = 0;
     int32_t fit_target_mib    = 0;
     int32_t n_cpu_moe         = -1;
+    int32_t fused_moe         = -1;     // -1 = don't override, 0 = off, 1 = on
+    int32_t moe_prefetch_streams = 0;   // 0 = don't override
+    int32_t moe_max_vram_mb    = 0;     // 0 = don't override (auto)
     std::string spec_type;
     int32_t spec_ngram_size    = 0;
     bool    flash_attn_set     = false;

@@ -49,6 +49,12 @@ struct optimizer_config {
     // -1 = don't override, 0 = all MoE on CPU (--cpu-moe), > 0 = first N layers MoE on CPU
     int         n_cpu_moe;
 
+    // --- Fused MoE --
+    // -1 = don't override, 0 = off, 1 = on
+    int         fused_moe;
+    int         moe_prefetch_streams;  // 0 = don't override
+    int         moe_max_vram_mb;       // 0 = don't override (auto)
+
     // -- Speculative decoding --
     // If enabled, the optimizer will test with a small draft model (if available)
     // or n-gram speculation.  Empty = don't use speculation.
@@ -99,6 +105,11 @@ struct optimizer_user_params {
 
     // --- MoE ---
     bool        allow_moe_cpu       = false;  // allow CPU offload for MoE experts
+
+    // --- Fused MoE --
+    bool        allow_fused_moe     = false;  // test fused MoE kernel (gate_up + silu + down)
+    int         fused_moe_streams   = 2;      // prefetch streams for fused MoE
+    int         moe_max_vram_mb     = 0;      // VRAM budget for expert cache (0=auto)
 
     // --- Speculative decoding ---
     bool        allow_speculative   = false;  // test n-gram speculation

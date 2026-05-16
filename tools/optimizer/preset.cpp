@@ -88,6 +88,9 @@ bool preset_load(const std::string & path, preset_params & out) {
         else if (key == "kv_cache_bounded")  out.kv_cache_bounded = to_int(value, 0);
         else if (key == "fit_target_mib")    out.fit_target_mib   = to_int(value, 0);
         else if (key == "n_cpu_moe")         out.n_cpu_moe        = to_int(value, -1);
+        else if (key == "fused_moe")         out.fused_moe        = to_int(value, -1);
+        else if (key == "moe_prefetch_streams") out.moe_prefetch_streams = to_int(value, 0);
+        else if (key == "moe_max_vram_mb")   out.moe_max_vram_mb  = to_int(value, 0);
         else if (key == "spec_type")         out.spec_type        = value;
         else if (key == "spec_ngram_size")   out.spec_ngram_size  = to_int(value, 0);
         else if (key == "flash_attn") {      out.flash_attn_set = true; out.flash_attn = to_bool(value); }
@@ -140,6 +143,9 @@ bool preset_save(const std::string & path, const preset_params & in) {
     w_bool("no_repack", in.no_extra_bufts);
     w_int("kv_cache_bounded", in.kv_cache_bounded, 0);
     w_int("fit_target_mib", in.fit_target_mib, 0);
+    w_int("fused_moe", in.fused_moe, -1);
+    w_int("moe_prefetch_streams", in.moe_prefetch_streams, 0);
+    w_int("moe_max_vram_mb", in.moe_max_vram_mb, 0);
 
     return true;
 }
@@ -180,6 +186,9 @@ void preset_apply(const preset_params & p, common_params & params) {
         std::fill(params.fit_params_target.begin(),
                   params.fit_params_target.end(), bytes);
     }
+    if (p.fused_moe >= 0)                params.fused_moe       = (p.fused_moe == 1);
+    if (p.moe_prefetch_streams > 0)     params.moe_prefetch_streams = p.moe_prefetch_streams;
+    if (p.moe_max_vram_mb > 0)          params.moe_max_vram_mb = p.moe_max_vram_mb;
     // Note: n_cpu_moe, spec_type, flash_attn, swa_full, numa, ctx_shift,
     // cont_batching are optimizer-internal and applied via model/context
     // params in benchmark_single, not via common_params.

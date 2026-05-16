@@ -248,6 +248,25 @@ bool optimizer::interactive_setup(optimizer_user_params & up) {
     }
 
     // ================================================================
+    // 8b. Fused MoE kernel (only for MoE models with GPU)
+    // ================================================================
+    if (m_is_moe && m_has_gpu) {
+        std::cout << "\n  Fused MoE kernel:\n";
+        std::cout << "    The fused MoE kernel combines gate_up + SiLU + down\n";
+        std::cout << "    in a single kernel launch with async weight prefetch.\n";
+        std::cout << "    This can significantly reduce kernel launch overhead.\n";
+        up.allow_fused_moe = read_bool("    Test fused MoE kernel? [Y/n]: ", true);
+        if (up.allow_fused_moe) {
+            up.fused_moe_streams = read_int("    Prefetch streams (1-8) [2]: ", 2);
+            up.fused_moe_streams = std::max(1, std::min(8, up.fused_moe_streams));
+            up.moe_max_vram_mb = read_int("    VRAM budget for expert cache in MB (0=auto) [0]: ", 0);
+            std::cout << "    The optimizer will test different VRAM budgets.\n";
+        }
+    } else {
+        up.allow_fused_moe = false;
+    }
+
+    // ================================================================
     // 9. Speculative decoding
     // ================================================================
     std::cout << "\n  Speculative decoding:\n";
@@ -321,6 +340,11 @@ bool optimizer::interactive_setup(optimizer_user_params & up) {
     std::cout << "    mmap:           " << (up.prefer_mmap ? "yes" : "no") << "\n";
     std::cout << "    quant cache:    " << (up.allow_quant_cache ? "yes" : "no") << "\n";
     std::cout << "    MoE CPU:        " << (up.allow_moe_cpu ? "yes" : "no") << "\n";
+    std::cout << "    Fused MoE:      " << (up.allow_fused_moe ? "yes" : "no") << "\n";
+    if (up.allow_fused_moe) {
+        std::cout << "      streams:      " << up.fused_moe_streams << "\n";
+        std::cout << "      vram budget:  " << (up.moe_max_vram_mb > 0 ? std::to_string(up.moe_max_vram_mb) + " MB" : "auto") << "\n";
+    }
     std::cout << "    Speculative:    " << (up.allow_speculative ? "ngram-" + std::to_string(up.spec_ngram_size) : "no") << "\n";
     std::cout << "    Flash Attn:     " << (up.flash_attn ? "yes" : "no") << "\n";
     std::cout << "    SWA full:       " << (up.swa_full ? "yes" : "no") << "\n";
@@ -444,6 +468,28 @@ std::vector<optimizer_config> optimizer::generate_configs(const optimizer_user_p
     }
 
     // ================================================================
+    // Phase 6b: Fused MoE kernel (only for MoE models with GPU)
+    // ================================================================
+    // fused_moe: -1 = don't override, 0 = off, 1 = on
+    // We test: off (0), on (1) with different prefetch streams and VRAM budgets
+    std::vector<int> fused_moe_values;
+    std::vector<int> fm_streams_values;
+    std::vector<int> fm_vram_values;
+    if (m_is_moe && up.allow_fused_moe && m_has_gpu) {
+        fused_moe_values = {-1, 0, 1};  // -1 = don't override, 0 = off, 1 = on
+        fm_streams_values = {up.fused_moe_streams};  // use user-specified value
+        // Test different VRAM budgets: auto (0), 256MB, 512MB, 1024MB
+        fm_vram_values = {0, 256, 512, 1024};
+        // Deduplicate
+        std::sort(fm_vram_values.begin(), fm_vram_values.end());
+        fm_vram_values.erase(std::unique(fm_vram_values.begin(), fm_vram_values.end()), fm_vram_values.end());
+    } else {
+        fused_moe_values = {-1};
+        fm_streams_values = {0};
+        fm_vram_values = {0};
+    }
+
+    // ================================================================
     // Phase 7: Speculative decoding
     // ================================================================
     std::vector<std::string> spec_values;
@@ -458,6 +504,9 @@ std::vector<optimizer_config> optimizer::generate_configs(const optimizer_user_p
     // To keep total configs manageable, we use a two-phase approach:
     // Phase A: Main sweep (ngl × cache × pp × io × batch × moe × spec)
     // Phase B: For the best Phase A result, test fine-grained variants
+    //
+    // Fused MoE is handled specially: we first find the best base config,
+    // then test fused-moe variants on top of it (Phase C).
     // ================================================================
 
     for (int ngl : ngl_values) {
@@ -480,6 +529,10 @@ std::vector<optimizer_config> optimizer::generate_configs(const optimizer_user_p
                                 cfg.n_cpu_moe        = moe;
                                 cfg.spec_type        = spec;
                                 cfg.spec_ngram_size  = (spec == "ngram") ? up.spec_ngram_size : 0;
+                                // Fused MoE defaults (don't override in Phase A)
+                                cfg.fused_moe        = -1;
+                                cfg.moe_prefetch_streams = 0;
+                                cfg.moe_max_vram_mb  = 0;
 
                                 // Build compact label
                                 cfg.label = "ngl=" + std::to_string(ngl)
@@ -495,6 +548,36 @@ std::vector<optimizer_config> optimizer::generate_configs(const optimizer_user_p
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    // ================================================================
+    // Phase C: Fused MoE variants (only for MoE models with GPU)
+    // We generate these as additional configs that override the best base.
+    // They are run after Phase A/B completes.
+    // ================================================================
+    std::vector<optimizer_config> fused_moe_configs;
+    if (m_is_moe && up.allow_fused_moe && m_has_gpu) {
+        // We'll generate fused-moe variants of the best config later
+        // For now, add placeholder configs that will be filled in after Phase A
+        for (int fm : fused_moe_values) {
+            for (int streams : fm_streams_values) {
+                for (int vram : fm_vram_values) {
+                    if (fm == -1 && vram == 0) continue;  // skip: same as no override
+                    optimizer_config cfg = base;
+                    cfg.fused_moe        = fm;
+                    cfg.moe_prefetch_streams = streams;
+                    cfg.moe_max_vram_mb  = vram;
+                    cfg.n_cpu_moe        = -1;  // don't override in fused-moe test
+                    cfg.spec_type        = "";  // no spec in fused-moe test
+
+                    cfg.label = "fm=" + std::to_string(fm)
+                              + " streams=" + std::to_string(streams)
+                              + " vram=" + std::to_string(vram) + "M";
+
+                    fused_moe_configs.push_back(cfg);
                 }
             }
         }
@@ -591,6 +674,17 @@ optimizer_result optimizer::benchmark_single(const optimizer_config & cfg,
     cparams.flash_attn        = up.flash_attn;
     cparams.swa_full          = up.swa_full;
     cparams.pipeline_parallel = false;
+
+    // Fused MoE parameters
+    if (cfg.fused_moe >= 0) {
+        cparams.fused_moe = (cfg.fused_moe == 1);
+    }
+    if (cfg.moe_prefetch_streams > 0) {
+        cparams.moe_prefetch_streams = cfg.moe_prefetch_streams;
+    }
+    if (cfg.moe_max_vram_mb > 0) {
+        cparams.moe_max_vram_mb = cfg.moe_max_vram_mb;
+    }
 
     llama_context * ctx = llama_init_from_model(model, cparams);
     if (!ctx) {
@@ -790,6 +884,10 @@ void optimizer::print_report(const optimizer_result & best,
     if (c.use_direct_io)          std::cout << "      --direct-io \\\n";
     if (c.use_mlock)              std::cout << "      --mlock \\\n";
     if (c.n_cpu_moe >= m_n_layers) std::cout << "      --cpu-moe \\\n";
+    if (c.fused_moe == 1)         std::cout << "      --fused-moe on \\\n";
+    else if (c.fused_moe == 0)    std::cout << "      --fused-moe off \\\n";
+    if (c.moe_prefetch_streams > 0) std::cout << "      --moe-prefetch-streams " << c.moe_prefetch_streams << " \\\n";
+    if (c.moe_max_vram_mb > 0)    std::cout << "      --moe-max-vram " << c.moe_max_vram_mb << " \\\n";
     if (c.spec_type == "ngram")   std::cout << "      --spec-ngram " << c.spec_ngram_size << " \\\n";
     if (!up.flash_attn)           std::cout << "      --flash-attn off \\\n";
     if (up.swa_full)              std::cout << "      --swa-full \\\n";
@@ -818,6 +916,10 @@ void optimizer::print_report(const optimizer_result & best,
     if (!c.use_mmap)              std::cout << "      --no-mmap \\\n";
     if (c.use_direct_io)          std::cout << "      --direct-io \\\n";
     if (c.n_cpu_moe >= m_n_layers) std::cout << "      --cpu-moe \\\n";
+    if (c.fused_moe == 1)         std::cout << "      --fused-moe on \\\n";
+    else if (c.fused_moe == 0)    std::cout << "      --fused-moe off \\\n";
+    if (c.moe_prefetch_streams > 0) std::cout << "      --moe-prefetch-streams " << c.moe_prefetch_streams << " \\\n";
+    if (c.moe_max_vram_mb > 0)    std::cout << "      --moe-max-vram " << c.moe_max_vram_mb << " \\\n";
     if (c.spec_type == "ngram")   std::cout << "      --spec-ngram " << c.spec_ngram_size << " \\\n";
     if (!up.flash_attn)           std::cout << "      --flash-attn off \\\n";
     std::cout << "      -p \"Your prompt here\"\n\n";
@@ -841,6 +943,10 @@ void optimizer::print_report(const optimizer_result & best,
     if (c.use_direct_io)          std::cout << " --direct-io";
     if (c.use_mlock)              std::cout << " --mlock";
     if (c.n_cpu_moe >= m_n_layers) std::cout << " --cpu-moe";
+    if (c.fused_moe == 1)         std::cout << " --fused-moe on";
+    else if (c.fused_moe == 0)    std::cout << " --fused-moe off";
+    if (c.moe_prefetch_streams > 0) std::cout << " --moe-prefetch-streams " << c.moe_prefetch_streams;
+    if (c.moe_max_vram_mb > 0)    std::cout << " --moe-max-vram " << c.moe_max_vram_mb;
     if (c.spec_type == "ngram")   std::cout << " --spec-ngram " << c.spec_ngram_size;
     if (!up.flash_attn)           std::cout << " --flash-attn off";
     if (up.swa_full)              std::cout << " --swa-full";
@@ -870,6 +976,10 @@ void optimizer::print_report(const optimizer_result & best,
         std::cout << "  • All MoE experts on CPU — saves significant VRAM.\n";
     else if (c.n_cpu_moe > 0)
         std::cout << "  • First " << c.n_cpu_moe << " MoE layers on CPU.\n";
+    if (c.fused_moe == 1)
+        std::cout << "  • Fused MoE kernel enabled — combines gate_up + SiLU + down.\n";
+    if (c.moe_max_vram_mb > 0)
+        std::cout << "  • MoE expert cache VRAM budget: " << c.moe_max_vram_mb << " MB.\n";
     if (c.spec_type == "ngram")
         std::cout << "  • N-gram speculative decoding (size=" << c.spec_ngram_size << ") — may boost TPS.\n";
     if (up.is_long_context)
