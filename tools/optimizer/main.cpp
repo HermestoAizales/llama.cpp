@@ -144,7 +144,6 @@ int main(int argc, char ** argv) {
         pp.n_batch          = best.config.n_batch;
         pp.n_ubatch         = best.config.n_ubatch;
         pp.n_parallel       = up.n_parallel;
-        pp.pipeline_partial = best.config.pipeline_partial;
         pp.use_mmap_set     = true;
         pp.use_mmap         = best.config.use_mmap;
         pp.use_direct_io    = best.config.use_direct_io;
@@ -152,7 +151,6 @@ int main(int argc, char ** argv) {
         pp.no_kv_offload    = !best.config.offload_kqv;
         pp.no_op_offload    = !best.config.op_offload;
         pp.no_extra_bufts   = best.config.no_extra_bufts;
-        pp.kv_cache_bounded = 0;
         pp.fit_target_mib   = best.config.fit_target_mib;
 
         if (preset_save(save_preset_path, pp)) {
