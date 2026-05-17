@@ -6,7 +6,6 @@
 
 #include "ggml.h"
 #include "ggml-backend.h"
-#include "llama.h"
 
 // ---------------------------------------------------------------------------
 // A single benchmark configuration to test.
