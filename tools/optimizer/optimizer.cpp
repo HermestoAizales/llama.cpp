@@ -1,8 +1,8 @@
 #include "optimizer.h"
 
 #include "ggml.h"
+#include "ggml-backend.h"
 #include "llama.h"
-#include "common/common.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -119,9 +119,10 @@ bool optimizer::interactive_setup(optimizer_user_params & up) {
         m_n_gpu_devices = 0;
         m_has_gpu       = false;
 
-        int n_devices = llama_model_n_devices(model);
-        for (int i = 0; i < n_devices; i++) {
-            ggml_backend_dev_t dev = llama_model_get_device(model, i);
+        // Detect GPUs via ggml backend device enumeration
+        size_t n_devices = ggml_backend_dev_count();
+        for (size_t i = 0; i < n_devices; i++) {
+            ggml_backend_dev_t dev = ggml_backend_dev_get(i);
             if (dev) {
                 auto type = ggml_backend_dev_type(dev);
                 if (type == GGML_BACKEND_DEVICE_TYPE_GPU ||
