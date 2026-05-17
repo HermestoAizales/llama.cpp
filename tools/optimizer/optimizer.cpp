@@ -103,7 +103,7 @@ bool optimizer::interactive_setup(optimizer_user_params & up) {
 
     // --- Detect model + hardware ---
     {
-        struct llama_model_params mparams = llama_model_default_params();
+        struct llama_model_params mparams = {};
         mparams.use_mmap  = true;
         mparams.use_mlock = false;
         mparams.no_alloc  = true;
@@ -582,7 +582,7 @@ optimizer_result optimizer::benchmark_single(const optimizer_config & cfg,
     auto prev_logger = ggml_log_set(bench_logger, nullptr);
 
     // --- Build model params ---
-    struct llama_model_params mparams = llama_model_default_params();
+    struct llama_model_params mparams = {};
     mparams.n_gpu_layers  = cfg.n_gpu_layers;
     mparams.use_mmap      = cfg.use_mmap;
     mparams.use_direct_io = cfg.use_direct_io;
@@ -615,7 +615,7 @@ optimizer_result optimizer::benchmark_single(const optimizer_config & cfg,
     }
 
     // --- Build context params ---
-    struct llama_context_params cparams = llama_context_default_params();
+    struct llama_context_params cparams = {};
     cparams.n_ctx             = up.desired_ctx;
     cparams.n_batch           = cfg.n_batch;
     cparams.n_ubatch          = cfg.n_ubatch;
