@@ -19,7 +19,6 @@ struct optimizer_preset_params {
     int32_t n_threads         = 0;
     int32_t n_threads_batch   = 0;
     int32_t n_parallel        = 0;
-    bool    pipeline_partial  = false;
     bool    use_mmap_set      = false;
     bool    use_mmap          = true;
     bool    use_direct_io     = false;
@@ -27,7 +26,6 @@ struct optimizer_preset_params {
     bool    no_kv_offload     = false;
     bool    no_op_offload     = false;
     bool    no_extra_bufts    = false;
-    int32_t kv_cache_bounded  = 0;
     int32_t fit_target_mib    = 0;
     int32_t n_cpu_moe         = -1;
     int32_t fused_moe         = -1;

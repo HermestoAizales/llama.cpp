@@ -67,7 +67,6 @@ bool optimizer_preset_load(const std::string & path, optimizer_preset_params & o
         else if (key == "n_threads")         out.n_threads        = to_int(value, 0);
         else if (key == "n_threads_batch")   out.n_threads_batch  = to_int(value, 0);
         else if (key == "n_parallel")        out.n_parallel       = to_int(value, 0);
-        else if (key == "pipeline_partial")  out.pipeline_partial = to_bool(value);
         else if (key == "mmap") {
             out.use_mmap_set = true;
             out.use_mmap     = to_bool(value);
@@ -77,7 +76,6 @@ bool optimizer_preset_load(const std::string & path, optimizer_preset_params & o
         else if (key == "no_kv_offload")     out.no_kv_offload    = to_bool(value);
         else if (key == "no_op_offload")     out.no_op_offload    = to_bool(value);
         else if (key == "no_repack")         out.no_extra_bufts   = to_bool(value);
-        else if (key == "kv_cache_bounded")  out.kv_cache_bounded = to_int(value, 0);
         else if (key == "fit_target_mib")    out.fit_target_mib   = to_int(value, 0);
         else if (key == "n_cpu_moe")         out.n_cpu_moe        = to_int(value, -1);
         else if (key == "fused_moe")         out.fused_moe        = to_int(value, -1);
@@ -120,7 +118,6 @@ bool optimizer_preset_save(const std::string & path, const optimizer_preset_para
     w_int("n_threads", in.n_threads, 0);
     w_int("n_threads_batch", in.n_threads_batch, 0);
     w_int("n_parallel", in.n_parallel, 0);
-    w_bool("pipeline_partial", in.pipeline_partial);
     if (in.use_mmap_set) {
         f << "mmap = " << (in.use_mmap ? "true" : "false") << "\n";
     }
@@ -129,7 +126,6 @@ bool optimizer_preset_save(const std::string & path, const optimizer_preset_para
     w_bool("no_kv_offload", in.no_kv_offload);
     w_bool("no_op_offload", in.no_op_offload);
     w_bool("no_repack", in.no_extra_bufts);
-    w_int("kv_cache_bounded", in.kv_cache_bounded, 0);
     w_int("fit_target_mib", in.fit_target_mib, 0);
     w_int("n_cpu_moe", in.n_cpu_moe, -1);
     w_int("fused_moe", in.fused_moe, -1);
@@ -154,7 +150,6 @@ void optimizer_preset_apply(const optimizer_preset_params & p, common_params & p
     if (p.n_batch > 0)                  params.n_batch         = p.n_batch;
     if (p.n_ubatch > 0)                 params.n_ubatch        = p.n_ubatch;
     if (p.n_parallel > 0)               params.n_parallel      = p.n_parallel;
-    params.pipeline_partial             = p.pipeline_partial;
     if (p.use_mmap_set) {
         params.use_mmap                 = p.use_mmap;
         params.use_direct_io            = p.use_direct_io;
@@ -165,7 +160,6 @@ void optimizer_preset_apply(const optimizer_preset_params & p, common_params & p
     if (p.no_kv_offload)               params.no_kv_offload   = true;
     if (p.no_op_offload)               params.no_op_offload   = true;
     if (p.no_extra_bufts)              params.no_extra_bufts  = true;
-    if (p.kv_cache_bounded > 0)        params.kv_cache_bounded = p.kv_cache_bounded;
     if (p.fit_target_mib > 0) {
         size_t bytes = static_cast<size_t>(p.fit_target_mib) * 1024 * 1024;
         std::fill(params.fit_params_target.begin(),
