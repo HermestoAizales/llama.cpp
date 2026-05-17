@@ -20,7 +20,7 @@ target_include_directories(${TARGET} PRIVATE
 )
 
 target_link_libraries(${TARGET} PRIVATE
-    common
+    llama-common
     llama
     ggml
     ${CMAKE_THREAD_LIBS_INIT}
