@@ -1,10 +1,8 @@
 #include "optimizer.h"
 #include "preset.h"
 
-#include "common/common.h"
-#include "common/log.h"
-
 #include "llama.h"
+#include "ggml.h"
 
 #include <cstdio>
 #include <cstdlib>

@@ -2,6 +2,7 @@
 #include "gguf.h"
 #include "ggml-cuda.h"
 #include "ggml-backend.h"
+#include "../tools/optimizer/preset.h"
 
 // Fused MoE CUDA backend function pointers
 // Loaded dynamically at runtime to support both static linking and GGML_BACKEND_DL
