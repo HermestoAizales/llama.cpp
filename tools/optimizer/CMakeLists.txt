@@ -28,7 +28,4 @@ target_link_libraries(${TARGET} PRIVATE
 
 target_compile_features(${TARGET} PRIVATE cxx_std_17)
 
-target_compile_definitions(${TARGET} PRIVATE
-    GGML_API=
-    LLAMA_API=
-)
+

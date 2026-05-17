@@ -566,10 +566,6 @@ std::vector<optimizer_config> optimizer::generate_configs(const optimizer_user_p
 // Single benchmark
 // ---------------------------------------------------------------------------
 
-static void bench_logger(ggml_log_level level, const char * text, void *) {
-    if (level >= GGML_LOG_LEVEL_WARN) fprintf(stderr, "%s", text);
-}
-
 optimizer_result optimizer::benchmark_single(const optimizer_config & cfg,
                                             const optimizer_user_params & up) const {
     optimizer_result result;
@@ -577,8 +573,6 @@ optimizer_result optimizer::benchmark_single(const optimizer_config & cfg,
     result.success  = false;
     result.gen_tps  = 0.0f;
     result.prompt_tps = 0.0f;
-
-    auto prev_logger = ggml_log_set(bench_logger, nullptr);
 
     // --- Build model params ---
     struct llama_model_params mparams = {};
@@ -609,7 +603,6 @@ optimizer_result optimizer::benchmark_single(const optimizer_config & cfg,
     llama_model * model = llama_model_load_from_file(up.model_path.c_str(), mparams);
     if (!model) {
         result.error = "model load failed (OOM?)";
-        ggml_log_set(prev_logger, nullptr);
         return result;
     }
 
@@ -640,7 +633,6 @@ optimizer_result optimizer::benchmark_single(const optimizer_config & cfg,
     if (!ctx) {
         result.error = "context creation failed (OOM)";
         llama_model_free(model);
-        ggml_log_set(prev_logger, nullptr);
         return result;
     }
 
@@ -698,7 +690,6 @@ optimizer_result optimizer::benchmark_single(const optimizer_config & cfg,
 
     llama_free(ctx);
     llama_model_free(model);
-    ggml_log_set(prev_logger, nullptr);
     return result;
 }
 
