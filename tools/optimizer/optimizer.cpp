@@ -457,36 +457,17 @@ std::vector<optimizer_config> optimizer::generate_configs(const optimizer_user_p
     // Phase 6: MoE CPU offload (only for MoE models)
     // ================================================================
     // n_cpu_moe: -1 = don't override, 0 = all experts on CPU, N = first N layers
+    // Phase A uses coarse values; Phase B refines around the best with step=1.
     std::vector<int> moe_values;
     if (m_is_moe && up.allow_moe_cpu && m_has_gpu) {
-        // Test: all on GPU (0), half on CPU, all on CPU (m_n_layers)
-        moe_values = {-1, 0, m_n_layers / 2, m_n_layers};
+        // Coarse sweep: all on GPU (0), quarter, half, three-quarter, all on CPU
+        int q1 = m_n_layers / 4;
+        int q3 = (3 * m_n_layers) / 4;
+        moe_values = {-1, 0, q1, m_n_layers / 2, q3, m_n_layers};
         std::sort(moe_values.begin(), moe_values.end());
         moe_values.erase(std::unique(moe_values.begin(), moe_values.end()), moe_values.end());
     } else {
         moe_values = {-1};  // don't override
-    }
-
-    // ================================================================
-    // Phase 6b: Fused MoE kernel (only for MoE models with GPU)
-    // ================================================================
-    // fused_moe: -1 = don't override, 0 = off, 1 = on
-    // We test: off (0), on (1) with different prefetch streams and VRAM budgets
-    std::vector<int> fused_moe_values;
-    std::vector<int> fm_streams_values;
-    std::vector<int> fm_vram_values;
-    if (m_is_moe && up.allow_fused_moe && m_has_gpu) {
-        fused_moe_values = {-1, 0, 1};  // -1 = don't override, 0 = off, 1 = on
-        fm_streams_values = {up.fused_moe_streams};  // use user-specified value
-        // Test different VRAM budgets: auto (0), 256MB, 512MB, 1024MB
-        fm_vram_values = {0, 256, 512, 1024};
-        // Deduplicate
-        std::sort(fm_vram_values.begin(), fm_vram_values.end());
-        fm_vram_values.erase(std::unique(fm_vram_values.begin(), fm_vram_values.end()), fm_vram_values.end());
-    } else {
-        fused_moe_values = {-1};
-        fm_streams_values = {0};
-        fm_vram_values = {0};
     }
 
     // ================================================================
@@ -548,36 +529,6 @@ std::vector<optimizer_config> optimizer::generate_configs(const optimizer_user_p
                             }
                         }
                     }
-                }
-            }
-        }
-    }
-
-    // ================================================================
-    // Phase C: Fused MoE variants (only for MoE models with GPU)
-    // We generate these as additional configs that override the best base.
-    // They are run after Phase A/B completes.
-    // ================================================================
-    std::vector<optimizer_config> fused_moe_configs;
-    if (m_is_moe && up.allow_fused_moe && m_has_gpu) {
-        // We'll generate fused-moe variants of the best config later
-        // For now, add placeholder configs that will be filled in after Phase A
-        for (int fm : fused_moe_values) {
-            for (int streams : fm_streams_values) {
-                for (int vram : fm_vram_values) {
-                    if (fm == -1 && vram == 0) continue;  // skip: same as no override
-                    optimizer_config cfg = base;
-                    cfg.fused_moe        = fm;
-                    cfg.moe_prefetch_streams = streams;
-                    cfg.moe_max_vram_mb  = vram;
-                    cfg.n_cpu_moe        = -1;  // don't override in fused-moe test
-                    cfg.spec_type        = "";  // no spec in fused-moe test
-
-                    cfg.label = "fm=" + std::to_string(fm)
-                              + " streams=" + std::to_string(streams)
-                              + " vram=" + std::to_string(vram) + "M";
-
-                    fused_moe_configs.push_back(cfg);
                 }
             }
         }
@@ -756,16 +707,19 @@ optimizer_result optimizer::benchmark_single(const optimizer_config & cfg,
 // ---------------------------------------------------------------------------
 
 std::vector<optimizer_result> optimizer::run_benchmarks(const optimizer_user_params & up) const {
-    auto configs = generate_configs(up);
+    // ================================================================
+    // Phase A: Coarse sweep
+    // ================================================================
+    auto configs_a = generate_configs(up);
     std::vector<optimizer_result> results;
 
-    std::cout << "\n  Running " << configs.size() << " configurations...\n";
+    std::cout << "\n  Phase A: Coarse sweep (" << configs_a.size() << " configs)...\n";
     std::cout << "  (Each: load model + warmup + " << m_benchmark_tokens << " gen tokens)\n\n";
 
     int idx = 0;
-    for (const auto & cfg : configs) {
+    for (const auto & cfg : configs_a) {
         idx++;
-        std::cout << "  [" << std::setw(2) << idx << "/" << configs.size() << "] "
+        std::cout << "  [A" << std::setw(2) << idx << "/" << configs_a.size() << "] "
                   << std::left << std::setw(56) << cfg.label << " ... " << std::flush;
 
         auto r = benchmark_single(cfg, up);
@@ -781,6 +735,128 @@ std::vector<optimizer_result> optimizer::run_benchmarks(const optimizer_user_par
             std::cout << "FAIL  " << r.error << "\n";
         }
     }
+
+    // ================================================================
+    // Phase B: Fine-grained MoE refinement
+    // Find the best Phase A result that used n_cpu_moe, then test
+    // moe_best ± range in step=1 to catch steep cliffs.
+    // ================================================================
+    if (m_is_moe && up.allow_moe_cpu && m_has_gpu) {
+        // Find best Phase A result with n_cpu_moe set
+        int best_moe_val = -1;
+        float best_moe_tps = -1.0f;
+        optimizer_config best_moe_cfg;
+
+        for (const auto & r : results) {
+            if (!r.success) continue;
+            if (r.config.n_cpu_moe < 0) continue;  // skip don't-override
+            if (r.gen_tps > best_moe_tps) {
+                best_moe_tps = r.gen_tps;
+                best_moe_val = r.config.n_cpu_moe;
+                best_moe_cfg = r.config;
+            }
+        }
+
+        if (best_moe_val >= 0) {
+            int refine_range = 5;
+            std::vector<int> refine_values;
+            for (int delta = -refine_range; delta <= refine_range; ++delta) {
+                int v = best_moe_val + delta;
+                if (v < 0 || v > m_n_layers) continue;
+                // Skip if already tested in Phase A
+                bool already_tested = false;
+                for (const auto & r : results) {
+                    if (r.config.n_cpu_moe == v) { already_tested = true; break; }
+                }
+                if (!already_tested) {
+                    refine_values.push_back(v);
+                }
+            }
+
+            if (!refine_values.empty()) {
+                std::cout << "\n  Phase B: MoE refinement around n_cpu_moe=" << best_moe_val
+                          << " (" << refine_values.size() << " configs)...\n\n";
+
+                // Use the best config as base, only vary n_cpu_moe
+                for (int moe : refine_values) {
+                    optimizer_config cfg = best_moe_cfg;
+                    cfg.n_cpu_moe = moe;
+                    cfg.label = "refine moe=" + std::to_string(moe);
+
+                    std::cout << "  [B ] " << std::left << std::setw(56) << cfg.label << " ... " << std::flush;
+
+                    auto r = benchmark_single(cfg, up);
+                    results.push_back(r);
+
+                    if (r.success) {
+                        std::cout << std::fixed << std::setprecision(1) << std::setw(6) << r.gen_tps << " t/s gen";
+                        if (r.prompt_tps > 0.0f) {
+                            std::cout << "  " << std::setprecision(0) << r.prompt_tps << " t/s prompt";
+                        }
+                        std::cout << "\n";
+                    } else {
+                        std::cout << "FAIL  " << r.error << "\n";
+                    }
+                }
+            }
+        }
+    }
+
+    // ================================================================
+    // Phase C: Fused MoE variants on the overall best
+    // ================================================================
+    if (m_is_moe && up.allow_fused_moe && m_has_gpu) {
+        // Find overall best result so far
+        optimizer_result overall_best;
+        overall_best.success = false;
+        overall_best.gen_tps = -1.0f;
+        for (const auto & r : results) {
+            if (r.success && r.gen_tps > overall_best.gen_tps) {
+                overall_best = r;
+            }
+        }
+
+        if (overall_best.success) {
+            std::vector<optimizer_config> fm_configs;
+            int fm_streams = up.fused_moe_streams;
+            std::vector<int> fm_vram_values = {0, 256, 512, 1024};
+            std::sort(fm_vram_values.begin(), fm_vram_values.end());
+            fm_vram_values.erase(std::unique(fm_vram_values.begin(), fm_vram_values.end()), fm_vram_values.end());
+
+            for (int fm : {0, 1}) {
+                for (int vram : fm_vram_values) {
+                    optimizer_config cfg = overall_best.config;
+                    cfg.fused_moe = fm;
+                    cfg.moe_prefetch_streams = fm_streams;
+                    cfg.moe_max_vram_mb = vram;
+                    cfg.label = "fm=" + std::to_string(fm)
+                              + " streams=" + std::to_string(fm_streams)
+                              + " vram=" + std::to_string(vram) + "M";
+                    fm_configs.push_back(cfg);
+                }
+            }
+
+            std::cout << "\n  Phase C: Fused MoE variants (" << fm_configs.size() << " configs)...\n\n";
+
+            for (const auto & cfg : fm_configs) {
+                std::cout << "  [C ] " << std::left << std::setw(56) << cfg.label << " ... " << std::flush;
+
+                auto r = benchmark_single(cfg, up);
+                results.push_back(r);
+
+                if (r.success) {
+                    std::cout << std::fixed << std::setprecision(1) << std::setw(6) << r.gen_tps << " t/s gen";
+                    if (r.prompt_tps > 0.0f) {
+                        std::cout << "  " << std::setprecision(0) << r.prompt_tps << " t/s prompt";
+                    }
+                    std::cout << "\n";
+                } else {
+                    std::cout << "FAIL  " << r.error << "\n";
+                }
+            }
+        }
+    }
+
     return results;
 }
 
