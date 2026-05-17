@@ -168,7 +168,7 @@ private:
     bool        m_is_moe          = false;
 
     // --- Tunables ---
-    int         m_benchmark_tokens = 30;
+    mutable int m_benchmark_tokens = 30;
     int         m_warmup_tokens   = 5;
     int         m_prompt_bench_tokens = 128; // tokens for prompt-bench
 };

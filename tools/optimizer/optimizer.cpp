@@ -622,12 +622,9 @@ optimizer_result optimizer::benchmark_single(const optimizer_config & cfg,
     cparams.n_seq_max         = cfg.n_parallel;
     cparams.type_k            = static_cast<ggml_type>(cfg.cache_type_k < 0 ? GGML_TYPE_F16 : cfg.cache_type_k);
     cparams.type_v            = static_cast<ggml_type>(cfg.cache_type_v < 0 ? GGML_TYPE_F16 : cfg.cache_type_v);
-    cparams.pipeline_partial  = cfg.pipeline_partial;
     cparams.offload_kqv       = cfg.offload_kqv;
     cparams.op_offload        = cfg.op_offload;
-    cparams.flash_attn        = up.flash_attn;
     cparams.swa_full          = up.swa_full;
-    cparams.pipeline_parallel = false;
 
     // Fused MoE parameters
     if (cfg.fused_moe >= 0) {
@@ -650,7 +647,8 @@ optimizer_result optimizer::benchmark_single(const optimizer_config & cfg,
 
     // --- Warmup ---
     {
-        llama_token bos = llama_model_bos_token(model);
+        const llama_vocab * vocab = llama_model_get_vocab(model);
+        llama_token bos = llama_vocab_bos(vocab);
         if (bos < 0) bos = 1;
         llama_token tokens[6] = {bos, 1, 2, 3, 4, 5};
         int n_w = std::min(6, m_warmup_tokens);
