@@ -4,8 +4,7 @@
 #include <vector>
 #include <cstdint>
 
-// ggml type forward — we include ggml.h in the .cpp
-struct ggml_type;
+#include "ggml.h"
 
 // ---------------------------------------------------------------------------
 // A single benchmark configuration to test.

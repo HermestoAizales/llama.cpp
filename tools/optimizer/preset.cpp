@@ -1,5 +1,6 @@
 #include "preset.h"
 
+#include "ggml.h"
 #include "common.h"
 
 #include <cstdio>

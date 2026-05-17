@@ -2,6 +2,7 @@
 #include "gguf.h"
 #include "ggml-cuda.h"
 #include "ggml-backend.h"
+#include "../tools/optimizer/preset.h"
 
 // Fused MoE CUDA backend function pointers
 // Loaded dynamically at runtime to support both static linking and GGML_BACKEND_DL
@@ -1188,13 +1189,9 @@ common_init_result::common_init_result(common_params & params) :
     // Load model preset if specified (applied before fit so preset values are respected)
     if (!params.model_preset.empty()) {
         LOG_INF("%s: loading model preset from '%s'\n", __func__, params.model_preset.c_str());
-        common_preset_context ctx(llama_example::LLAMA_EXAMPLE_SERVER, false);
-        common_preset global;
-        auto presets = ctx.load_from_ini(params.model_preset, global);
-        if (!presets.empty()) {
-            auto it = presets.find("default");
-            if (it == presets.end()) it = presets.begin();
-            it->second.apply_to_params(params);
+        preset_params pp;
+        if (preset_load(params.model_preset, pp)) {
+            preset_apply(pp, params);
             LOG_INF("%s: model preset loaded successfully\n", __func__);
         } else {
             LOG_WRN("%s: failed to load model preset from '%s', continuing without preset\n",
