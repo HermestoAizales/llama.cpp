@@ -1,6 +1,5 @@
-#include "preset.h"
+#include "optimizer_preset.h"
 
-#include "ggml.h"
 #include "common.h"
 
 #include <cstdio>
@@ -8,10 +7,6 @@
 #include <cstring>
 #include <fstream>
 #include <sstream>
-
-// ---------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------
 
 static std::string trim(const std::string & s) {
     size_t a = s.find_first_not_of(" \t\r\n");
@@ -38,11 +33,7 @@ static bool to_bool(const std::string & s) {
     return (l == "1" || l == "true" || l == "yes" || l == "on");
 }
 
-// ---------------------------------------------------------------------------
-// preset_load
-// ---------------------------------------------------------------------------
-
-bool preset_load(const std::string & path, preset_params & out) {
+bool optimizer_preset_load(const std::string & path, optimizer_preset_params & out) {
     std::ifstream f(path);
     if (!f.is_open()) {
         fprintf(stderr, "preset: cannot open '%s'\n", path.c_str());
@@ -103,18 +94,14 @@ bool preset_load(const std::string & path, preset_params & out) {
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// preset_save
-// ---------------------------------------------------------------------------
-
-bool preset_save(const std::string & path, const preset_params & in) {
+bool optimizer_preset_save(const std::string & path, const optimizer_preset_params & in) {
     std::ofstream f(path);
     if (!f.is_open()) {
         fprintf(stderr, "preset: cannot write '%s'\n", path.c_str());
         return false;
     }
 
-    f << "# llama.cpp model preset\n";
+    f << "# llama.cpp optimizer preset\n";
     f << "# Usage: llama-server --model model.gguf --model-preset thisfile.ini\n\n";
     f << "[preset]\n";
 
@@ -144,6 +131,7 @@ bool preset_save(const std::string & path, const preset_params & in) {
     w_bool("no_repack", in.no_extra_bufts);
     w_int("kv_cache_bounded", in.kv_cache_bounded, 0);
     w_int("fit_target_mib", in.fit_target_mib, 0);
+    w_int("n_cpu_moe", in.n_cpu_moe, -1);
     w_int("fused_moe", in.fused_moe, -1);
     w_int("moe_prefetch_streams", in.moe_prefetch_streams, 0);
     w_int("moe_max_vram_mb", in.moe_max_vram_mb, 0);
@@ -151,11 +139,7 @@ bool preset_save(const std::string & path, const preset_params & in) {
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// preset_apply
-// ---------------------------------------------------------------------------
-
-void preset_apply(const preset_params & p, common_params & params) {
+void optimizer_preset_apply(const optimizer_preset_params & p, common_params & params) {
     if (p.n_ctx > 0)                    params.n_ctx           = p.n_ctx;
     if (p.n_gpu_layers != -999)         params.n_gpu_layers    = p.n_gpu_layers;
     if (p.split_mode >= 0)              params.split_mode      = static_cast<llama_split_mode>(p.split_mode);
@@ -187,10 +171,7 @@ void preset_apply(const preset_params & p, common_params & params) {
         std::fill(params.fit_params_target.begin(),
                   params.fit_params_target.end(), bytes);
     }
-    if (p.fused_moe >= 0)                params.fused_moe       = (p.fused_moe == 1);
+    if (p.fused_moe >= 0)               params.fused_moe       = (p.fused_moe == 1);
     if (p.moe_prefetch_streams > 0)     params.moe_prefetch_streams = p.moe_prefetch_streams;
     if (p.moe_max_vram_mb > 0)          params.moe_max_vram_mb = p.moe_max_vram_mb;
-    // Note: n_cpu_moe, spec_type, flash_attn, swa_full, numa, ctx_shift,
-    // cont_batching are optimizer-internal and applied via model/context
-    // params in benchmark_single, not via common_params.
 }

@@ -58,6 +58,8 @@ add_library(${TARGET}
     arg.h
     base64.hpp
     chat-auto-parser-generator.cpp
+    optimizer_preset.cpp
+    optimizer_preset.h
     chat-auto-parser-helpers.cpp
     chat-auto-parser.h
     chat-diff-analyzer.cpp
