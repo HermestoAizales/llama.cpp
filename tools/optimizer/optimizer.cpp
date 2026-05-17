@@ -1,8 +1,6 @@
 #include "optimizer.h"
 
 #include "ggml.h"
-#include "ggml-backend.h"
-#include "llama.h"
 
 #include <cstdio>
 #include <cstdlib>
