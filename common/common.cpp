@@ -3,6 +3,7 @@
 
 #include "build-info.h"
 #include "common.h"
+#include "preset.h"
 #include "fit.h"
 #include "log.h"
 #include "llama.h"
@@ -1164,6 +1165,22 @@ common_init_result::common_init_result(common_params & params) :
     pimpl(new impl{}) {
     auto mparams = common_model_params_to_llama(params);
     auto cparams = common_context_params_to_llama(params);
+
+    // Load model preset if specified (applied before fit so preset values are respected)
+    if (!params.model_preset.empty()) {
+        LOG_INF("%s: loading model preset from '%s'\n", __func__, params.model_preset.c_str());
+        common_optimizer_preset_params pp;
+        if (common_optimizer_preset_load(params.model_preset, pp)) {
+            common_optimizer_preset_apply(pp, params);
+            LOG_INF("%s: model preset loaded successfully\n", __func__);
+        } else {
+            LOG_WRN("%s: failed to load model preset from '%s', continuing without preset\n",
+                __func__, params.model_preset.c_str());
+        }
+        // Re-derive llama params from the (potentially modified) common_params
+        mparams = common_model_params_to_llama(params);
+        cparams = common_context_params_to_llama(params);
+    }
 
     if (params.fit_params) {
         LOG_INF("%s: fitting params to device memory ...\n", __func__);

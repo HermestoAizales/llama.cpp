@@ -3,6 +3,7 @@
 #include "common.h"
 #include "arg.h"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <map>
@@ -82,3 +83,56 @@ struct common_preset_context {
     // apply presets over a base preset (same idea as CSS cascading)
     common_presets cascade(const common_preset & base, const common_presets & presets) const;
 };
+
+//
+// Optimizer preset: simple flat parameter struct for use by llama-optimizer
+// Fields at sentinel values mean "don't override".
+//
+
+struct common_optimizer_preset_params {
+    std::string name;
+
+    // Context
+    int32_t n_ctx             = 0;
+
+    // GPU offload
+    int32_t n_gpu_layers      = -999;   // -999 = don't override, -1 = auto, <= -2 = all
+    int32_t split_mode        = -1;     // -1 = don't override
+    bool    no_kv_offload     = false;
+    bool    no_op_offload     = false;
+    bool    no_extra_bufts    = false;
+
+    // KV cache types (stored as string in preset, converted on apply)
+    std::string cache_type_k;
+    std::string cache_type_v;
+
+    // Batching
+    int32_t n_batch           = 0;
+    int32_t n_ubatch          = 0;
+
+    // Parallel / server
+    int32_t n_parallel        = 0;
+
+    // Memory
+    bool    use_mmap_set      = false;  // false = don't override
+    bool    use_mmap          = true;
+    bool    use_direct_io     = false;
+    bool    use_mlock         = false;
+
+    // Attention
+    int32_t flash_attn_set    = 0;      // 0 = don't override, 1 = on, -1 = off
+    bool    swa_full          = false;
+
+    // Speculative decoding type (stored as string)
+    std::string spec_type;
+
+    // NUMA strategy (stored as string)
+    std::string numa_str;
+
+    // Context & batching features
+    bool    ctx_shift         = false;
+    bool    cont_batching     = true;
+};
+bool common_optimizer_preset_load(const std::string & path, common_optimizer_preset_params & out);
+bool common_optimizer_preset_save(const std::string & path, const common_optimizer_preset_params & in);
+void common_optimizer_preset_apply(const common_optimizer_preset_params & preset, common_params & params);
