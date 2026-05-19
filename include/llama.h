@@ -381,6 +381,14 @@ extern "C" {
         bool kv_unified;  // use a unified buffer across the input sequences when computing the attention
                           // try to disable when n_seq_max > 1 for improved performance when the sequences do not share a large prefix
                           // ref: https://github.com/ggml-org/llama.cpp/pull/14363
+        bool hisa;        // use Hierarchical Indexed Sparse Attention
+        int32_t hisa_block_size; // block size for HISA sparse attention (0 = auto)
+        int32_t hisa_min_tokens; // min KV tokens before HISA activates (0 = always on)
+        float hisa_sparsity; // fraction of blocks to select (0.0=all, 0.5=half, 0.9=top 10%)
+        bool hisa_sink_protect; // protect attention sink tokens (block 0) from eviction (default: true)
+        float hisa_sparsity_scale; // layer-adaptive sparsity scale (0.0=uniform, 1.0=pyramid, default: 0.0)
+        bool hisa_per_head; // per-head sparse attention: select Top-K blocks per KV-head (default: false)
+        int32_t kv_cache_bounded; // bounded KV cache: max active tokens (0 = unlimited, default: 0)
 
         // Fused MoE [EXPERIMENTAL]
         bool     fused_moe;            // use fused MoE kernel (gate_up + SiLU + down in single launch)

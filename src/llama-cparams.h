@@ -40,11 +40,19 @@ struct llama_cparams {
     bool no_perf;
     bool warmup;
     bool op_offload;
-    bool kv_unified;
+    bool kv_unified;  // use a unified buffer across the input sequences when computing the attention
     bool pipeline_parallel;
     bool fused_moe;
     int32_t moe_prefetch_streams;
     int32_t moe_max_vram_mb;
+    bool hisa;              // use Hierarchical Indexed Sparse Attention
+    int32_t hisa_block_size; // block size for HISA sparse attention
+    int32_t hisa_min_tokens; // minimum KV tokens before HISA activates (0 = always on)
+    float hisa_sparsity;    // fraction of blocks to select (0.0=all, 0.5=half, 0.9=top 10%)
+    bool hisa_sink_protect; // protect attention sink tokens (block 0) from eviction
+    float hisa_sparsity_scale; // layer-adaptive sparsity scale (0.0=uniform, 1.0=pyramid)
+    bool hisa_per_head; // per-head sparse attention: select Top-K blocks per KV-head
+    int32_t kv_cache_bounded; // bounded KV cache: max active tokens (0 = unlimited)
 
     enum llama_context_type ctx_type;
     enum llama_pooling_type pooling_type;

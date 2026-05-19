@@ -583,6 +583,14 @@ extern "C" {
 
         GGML_OP_GLU,
 
+        GGML_OP_HISA_BLOCK_POOL,    // HISA: mean-pool K rows into blocks
+        GGML_OP_HISA_GATHER,        // HISA: gather rows by index list
+        GGML_OP_HISA_BLOCK_GATHER,  // HISA: gather full blocks by block index list
+        GGML_OP_HISA_GATHER_MASK,  // HISA: gather mask rows via two-level index mapping
+
+        GGML_OP_RESIDUAL_STORE,     // Bounded KV: store residual state to checkpoint buffer
+        GGML_OP_RESIDUAL_RESTORE,   // Bounded KV: load residual state from checkpoint buffer
+
         GGML_OP_COUNT,
     };
 
@@ -2554,6 +2562,50 @@ extern "C" {
             struct ggml_tensor  * g,
             struct ggml_tensor  * beta,
             struct ggml_tensor  * state);
+
+    // HISA operators
+
+    // Mean-pool K rows into blocks. src: [d, n_rows, n_heads, n_batch] -> dst: [d, n_blocks, n_heads, n_batch]
+    // where n_blocks = ceil(n_rows / block_size). block_size must evenly divide n_rows.
+    GGML_API struct ggml_tensor * ggml_hisa_block_pool(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * src,
+            int64_t               n_rows,
+            int                   block_size);
+
+    // Gather rows by index list. src: [d, n_rows, n_heads, n_batch], idx: [n_indices] -> dst: [d, n_indices, n_heads, n_batch]
+    GGML_API struct ggml_tensor * ggml_hisa_gather(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * src,
+            struct ggml_tensor  * idx);
+
+    // Gather full blocks by block index list. src: [d, n_blocks, n_heads, n_batch], idx: [n_indices] -> dst: [d, n_indices, n_heads, n_batch]
+    GGML_API struct ggml_tensor * ggml_hisa_block_gather(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * src,
+            struct ggml_tensor  * idx,
+            int                   block_size);
+
+    // Gather mask rows via two-level index mapping.
+    // src: [d, n_kv, n_heads, n_batch], idx: [n_tokens, n_heads, n_batch], idx2: [n_indices]
+    // idx2 selects from idx, not from src directly.
+    GGML_API struct ggml_tensor * ggml_hisa_gather_mask(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * src,
+            struct ggml_tensor  * idx,
+            struct ggml_tensor  * idx2,
+            int64_t               n_indices);
+
+    // Residual checkpoint operators for bounded KV cache
+    // Store residual state: src: [d, n_tokens, 1, 1] -> dst: [d, n_tokens, 1, 1] (copy to checkpoint buffer)
+    GGML_API struct ggml_tensor * ggml_residual_store(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * src);
+
+    // Restore residual state: src: [d, n_tokens, 1, 1] -> dst: [d, n_tokens, 1, 1] (copy from checkpoint buffer)
+    GGML_API struct ggml_tensor * ggml_residual_restore(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * src);
 
     // custom operators
 

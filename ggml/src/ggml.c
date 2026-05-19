@@ -1078,9 +1078,17 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "OPT_STEP_SGD",
 
     "GLU",
+
+    "HISA_BLOCK_POOL",
+    "HISA_GATHER",
+    "HISA_BLOCK_GATHER",
+    "HISA_GATHER_MASK",
+
+    "RESIDUAL_STORE",
+    "RESIDUAL_RESTORE",
 };
 
-static_assert(GGML_OP_COUNT == 96, "GGML_OP_COUNT != 96");
+static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 100");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1174,6 +1182,11 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "A X = B, A triangular, solve X",
     "gated_delta_net(q, k, v, g, beta, s)",
 
+    "hisa_block_pool(k, n_rows, block_size)",
+    "hisa_gather(k, idx)",
+    "hisa_block_gather(k, idx, block_size)",
+    "hisa_gather_mask(k, idx, idx2)",
+
     "unary(x)",
 
     "map_custom(x)",
@@ -1190,7 +1203,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "glu(x)",
 };
 
-static_assert(GGML_OP_COUNT == 96, "GGML_OP_COUNT != 96");
+static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 100");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -5403,6 +5416,168 @@ void ggml_flash_attn_ext_add_sinks(
     GGML_ASSERT(sinks->type == GGML_TYPE_F32);
 
     a->src[4] = sinks;
+}
+
+// ggml_hisa_block_pool
+// Mean-pool K rows into blocks.
+// src: [d, n_rows, n_heads, n_batch] -> dst: [d, n_blocks, n_heads, n_batch]
+// where n_blocks = n_rows / block_size.
+struct ggml_tensor * ggml_hisa_block_pool(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * src,
+        int64_t               n_rows,
+        int                   block_size) {
+    GGML_ASSERT(n_rows > 0);
+    GGML_ASSERT(block_size > 0);
+    GGML_ASSERT(n_rows % block_size == 0);
+
+    const int64_t d       = src->ne[0];
+    const int64_t n_heads = src->ne[2];
+    const int64_t n_batch = src->ne[3];
+    const int64_t n_blocks = n_rows / block_size;
+
+    int64_t ne[4] = { d, n_blocks, n_heads, n_batch };
+    // Preserve the source tensor type (F16, F32, etc.)
+    struct ggml_tensor * result = ggml_new_tensor(ctx, src->type, 4, ne);
+
+    int32_t params[2] = { (int32_t)n_rows, (int32_t)block_size };
+    ggml_set_op_params(result, params, sizeof(params));
+
+    result->op     = GGML_OP_HISA_BLOCK_POOL;
+    result->src[0] = src;
+
+    return result;
+}
+
+// ggml_hisa_gather
+// Gather rows by index list.
+// src: [d, n_rows, n_heads, n_batch], idx: [n_indices] -> dst: [d, n_indices, n_heads, n_batch]
+struct ggml_tensor * ggml_hisa_gather(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * src,
+        struct ggml_tensor  * idx) {
+    GGML_ASSERT(src->type == GGML_TYPE_F32);
+    GGML_ASSERT(idx->type == GGML_TYPE_I32);
+    GGML_ASSERT(idx->ne[1] == 1);
+    GGML_ASSERT(idx->ne[2] == 1);
+    GGML_ASSERT(idx->ne[3] == 1);
+
+    const int64_t n_indices = idx->ne[0];
+    const int64_t d         = src->ne[0];
+    const int64_t n_heads   = src->ne[2];
+    const int64_t n_batch   = src->ne[3];
+
+    int64_t ne[4] = { d, n_indices, n_heads, n_batch };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    result->op     = GGML_OP_HISA_GATHER;
+    result->src[0] = src;
+    result->src[1] = idx;
+
+    return result;
+}
+
+// ggml_hisa_block_gather
+// Gather full blocks by block index list.
+// src: [d, n_blocks, n_heads, n_batch], idx: [n_indices] -> dst: [d, n_indices, n_heads, n_batch]
+struct ggml_tensor * ggml_hisa_block_gather(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * src,
+        struct ggml_tensor  * idx,
+        int                   block_size) {
+    GGML_ASSERT(src->type == GGML_TYPE_F32);
+    GGML_ASSERT(idx->type == GGML_TYPE_I32);
+    GGML_ASSERT(idx->ne[1] == 1);
+    GGML_ASSERT(idx->ne[2] == 1);
+    GGML_ASSERT(idx->ne[3] == 1);
+    GGML_ASSERT(block_size > 0);
+
+    const int64_t n_indices = idx->ne[0];
+    const int64_t d         = src->ne[0];
+    const int64_t n_heads   = src->ne[2];
+    const int64_t n_batch   = src->ne[3];
+
+    int64_t ne[4] = { d, n_indices, n_heads, n_batch };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    int32_t params[1] = { (int32_t)block_size };
+    ggml_set_op_params(result, params, sizeof(params));
+
+    result->op     = GGML_OP_HISA_BLOCK_GATHER;
+    result->src[0] = src;
+    result->src[1] = idx;
+
+    return result;
+}
+
+// ggml_hisa_gather_mask
+// Gather mask rows via two-level index mapping.
+// src: [d, n_kv, n_heads, n_batch], idx: [n_tokens, n_heads, n_batch], idx2: [n_indices]
+// idx2 selects from idx (not src directly), producing dst: [d, n_indices, n_heads, n_batch]
+struct ggml_tensor * ggml_hisa_gather_mask(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * src,
+        struct ggml_tensor  * idx,
+        struct ggml_tensor  * idx2,
+        int64_t               n_indices) {
+    GGML_ASSERT(src->type == GGML_TYPE_F32);
+    GGML_ASSERT(idx->type == GGML_TYPE_I32);
+    GGML_ASSERT(idx2->type == GGML_TYPE_I32);
+    GGML_ASSERT(idx->ne[2] == idx2->ne[1]); // n_heads must match
+
+    const int64_t d         = src->ne[0];
+    const int64_t n_heads   = idx->ne[1];
+    const int64_t n_batch   = idx->ne[2];
+
+    int64_t ne[4] = { d, n_indices, n_heads, n_batch };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    result->op     = GGML_OP_HISA_GATHER_MASK;
+    result->src[0] = src;
+    result->src[1] = idx;
+    result->src[2] = idx2;
+
+    return result;
+}
+
+// ggml_residual_store
+// Store residual state to checkpoint buffer (simple copy).
+// src: [d, n_tokens, 1, 1] -> dst: [d, n_tokens, 1, 1]
+struct ggml_tensor * ggml_residual_store(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * src) {
+    GGML_ASSERT(src->type == GGML_TYPE_F32 || src->type == GGML_TYPE_F16);
+
+    const int64_t d         = src->ne[0];
+    const int64_t n_tokens  = src->ne[1];
+
+    int64_t ne[4] = { d, n_tokens, 1, 1 };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, src->type, 4, ne);
+
+    result->op     = GGML_OP_RESIDUAL_STORE;
+    result->src[0] = src;
+
+    return result;
+}
+
+// ggml_residual_restore
+// Restore residual state from checkpoint buffer (simple copy).
+// src: [d, n_tokens, 1, 1] -> dst: [d, n_tokens, 1, 1]
+struct ggml_tensor * ggml_residual_restore(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * src) {
+    GGML_ASSERT(src->type == GGML_TYPE_F32 || src->type == GGML_TYPE_F16);
+
+    const int64_t d         = src->ne[0];
+    const int64_t n_tokens  = src->ne[1];
+
+    int64_t ne[4] = { d, n_tokens, 1, 1 };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, src->type, 4, ne);
+
+    result->op     = GGML_OP_RESIDUAL_RESTORE;
+    result->src[0] = src;
+
+    return result;
 }
 
 // ggml_flash_attn_back

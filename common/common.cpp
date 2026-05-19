@@ -1647,6 +1647,14 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.op_offload        = !params.no_op_offload;
     cparams.swa_full          = params.swa_full;
     cparams.kv_unified        = params.kv_unified;
+    cparams.hisa              = params.hisa;
+    cparams.hisa_block_size   = params.hisa ? (params.hisa_block_size > 0 ? params.hisa_block_size : (params.hisa_min_tokens > 0 ? params.hisa_min_tokens * 4 : 64)) : 0;
+    cparams.hisa_min_tokens   = params.hisa_min_tokens;
+    cparams.hisa_sparsity     = params.hisa_sparsity;
+    cparams.hisa_sink_protect = params.hisa_sink_protect;
+    cparams.hisa_sparsity_scale = params.hisa_sparsity_scale;
+    cparams.hisa_per_head       = params.hisa_per_head;
+    cparams.kv_cache_bounded    = params.kv_cache_bounded;
 
     // fused MoE params
     cparams.fused_moe           = params.fused_moe;

@@ -440,6 +440,18 @@ struct common_params {
     float   yarn_beta_slow        = -1.0f; // YaRN high correction dim
     int32_t yarn_orig_ctx         =     0; // YaRN original context length
 
+    // HISA params
+    bool    hisa                   = false; // use Hierarchical Indexed Sparse Attention
+    int32_t hisa_min_tokens        = 1;      // minimum tokens for HISA to be active
+    int32_t hisa_block_size        = 0;      // HISA block size (0 = auto from hisa_min_tokens * 4)
+    float   hisa_sparsity          = 0.5f;  // fraction of blocks to select (0.0=all, 0.5=half, 0.9=top 10%)
+    bool    hisa_sink_protect      = true;   // protect attention sink tokens (block 0) from eviction
+    float   hisa_sparsity_scale    = 0.0f;  // layer-adaptive sparsity scale (0.0=uniform, 1.0=pyramid)
+    bool    hisa_per_head          = false;  // per-head sparse attention (SnapKV-inspired)
+
+    // Bounded KV cache params
+    int32_t kv_cache_bounded       = 0;      // bounded KV cache: max active tokens (0 = unlimited)
+
     // offload params
     std::vector<ggml_backend_dev_t> devices; // devices to use for offloading
 

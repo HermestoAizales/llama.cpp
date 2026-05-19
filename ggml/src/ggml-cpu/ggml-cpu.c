@@ -2047,6 +2047,30 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_gated_delta_net(params, tensor);
             } break;
+        case GGML_OP_HISA_BLOCK_POOL:
+            {
+                ggml_compute_forward_hisa_block_pool(params, tensor);
+            } break;
+        case GGML_OP_HISA_GATHER:
+            {
+                ggml_compute_forward_hisa_gather(params, tensor);
+            } break;
+        case GGML_OP_HISA_BLOCK_GATHER:
+            {
+                ggml_compute_forward_hisa_block_gather(params, tensor);
+            } break;
+        case GGML_OP_HISA_GATHER_MASK:
+            {
+                ggml_compute_forward_hisa_gather_mask(params, tensor);
+            } break;
+        case GGML_OP_RESIDUAL_STORE:
+            {
+                ggml_compute_forward_residual_store(params, tensor);
+            } break;
+        case GGML_OP_RESIDUAL_RESTORE:
+            {
+                ggml_compute_forward_residual_restore(params, tensor);
+            } break;
         case GGML_OP_MAP_CUSTOM1:
             {
                 ggml_compute_forward_map_custom1(params, tensor);
@@ -2432,6 +2456,15 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_NONE:
             {
                 n_tasks = 1;
+            } break;
+        case GGML_OP_HISA_BLOCK_POOL:
+        case GGML_OP_HISA_GATHER:
+        case GGML_OP_HISA_BLOCK_GATHER:
+        case GGML_OP_HISA_GATHER_MASK:
+        case GGML_OP_RESIDUAL_STORE:
+        case GGML_OP_RESIDUAL_RESTORE:
+            {
+                n_tasks = n_threads;
             } break;
         case GGML_OP_COUNT:
             {

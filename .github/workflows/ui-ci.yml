@@ -86,7 +86,7 @@ jobs:
         working-directory: tools/ui
 
       - name: Run Unit tests
-        if: ${{ always() && steps.playwright.conclusion == 'success' }}
+        if: ${{ always() && steps.setup.conclusion == 'success' }}
         run: npm run test:unit
         working-directory: tools/ui
 

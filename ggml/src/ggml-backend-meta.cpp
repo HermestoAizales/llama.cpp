@@ -959,6 +959,12 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(co
             case GGML_OP_GATED_DELTA_NET: {
                 split_state = handle_gated_delta_net(src_ss);
             } break;
+            case GGML_OP_HISA_BLOCK_POOL:
+            case GGML_OP_HISA_GATHER:
+            case GGML_OP_HISA_BLOCK_GATHER:
+            case GGML_OP_HISA_GATHER_MASK: {
+                split_state = handle_generic(src_ss, /*scalar_only =*/ false);
+            } break;
             case GGML_OP_UNARY: {
                 split_state = handle_generic(src_ss, /*scalar_only =*/ false);
             } break;

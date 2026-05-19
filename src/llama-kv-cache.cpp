@@ -649,6 +649,16 @@ llama_memory_context_ptr llama_kv_cache::init_batch(
             break;
         }
 
+        // Evict oldest KV entries if bounded cache is full
+        LLAMA_LOG_DEBUG("%s: bounded_kv=%d\n", __func__, bounded_kv);
+        if (bounded_kv) {
+            uint32_t n_new_tokens = 0;
+            for (const auto & ub : ubatches) {
+                n_new_tokens += ub.n_tokens;
+            }
+            evict_bounded(n_new_tokens);
+        }
+
         auto sinfos = prepare(ubatches);
         if (sinfos.empty()) {
             break;
@@ -2350,6 +2360,139 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
     }
 
     return true;
+}
+
+void llama_kv_cache::init_bounded_kv(const llama_cparams & cparams, const llama_hparams & hparams, uint32_t kv_size) {
+    if (cparams.kv_cache_bounded <= 0) {
+        bounded_kv = false;
+        return;
+    }
+
+    bounded_kv     = true;
+    max_bounded    = cparams.kv_cache_bounded;
+    n_embd_res     = hparams.n_embd;
+
+    // Allocate residual checkpoint buffer: kv_size * n_embd * sizeof(fp16)
+    const size_t res_bytes_per_token = (size_t) n_embd_res * sizeof(ggml_fp16_t);
+    const size_t res_total_bytes     = (size_t) kv_size * res_bytes_per_token;
+
+    res_buffer.resize(res_total_bytes, 0);
+    res_valid.assign(kv_size, false);
+    n_res_checkpoints = 0;
+
+    LLAMA_LOG_INFO("%s: bounded KV cache initialized: max_bounded=%d, n_embd_res=%ld, buffer_size=%zu MB\n",
+            __func__, max_bounded, (long)n_embd_res, res_total_bytes / (1024 * 1024));
+}
+
+void llama_kv_cache::evict_bounded(uint32_t n_new_tokens) {
+    if (!bounded_kv) return;
+    if (max_bounded == 0) return;
+
+    // Count currently used cells across all streams
+    uint32_t n_used = 0;
+    for (uint32_t s = 0; s < n_stream; ++s) {
+        n_used += v_cells[s].get_used();
+    }
+
+    LLAMA_LOG_DEBUG("%s: n_used=%d, n_new=%d, max_bounded=%d\n",
+            __func__, n_used, n_new_tokens, max_bounded);
+
+    // Check if we need to evict
+    if ((int32_t)(n_used + n_new_tokens) <= max_bounded) {
+        LLAMA_LOG_DEBUG("%s: no eviction needed\n", __func__);
+        return; // enough space
+    }
+
+    // Number of tokens to evict (evict enough to fit new tokens + 10% headroom)
+    uint32_t n_evict = (n_used + n_new_tokens) - (uint32_t)max_bounded;
+    uint32_t headroom = (uint32_t)max_bounded / 10;
+    if (headroom > n_evict) {
+        n_evict = headroom;
+    }
+
+    LLAMA_LOG_DEBUG("%s: evicting %d tokens (used=%d, new=%d, max=%d)\n",
+            __func__, n_evict, n_used, n_new_tokens, max_bounded);
+
+    // Evict oldest tokens from each stream
+    for (uint32_t s = 0; s < n_stream && n_evict > 0; ++s) {
+        auto & cells = v_cells[s];
+
+        // Collect all used cell indices and sort by position (oldest first)
+        std::vector<std::pair<llama_pos, uint32_t>> pos_idx;
+        const uint32_t n_cells = cells.size();
+        for (uint32_t idx = 0; idx < n_cells; ++idx) {
+            llama_pos p = cells.pos_get(idx);
+            if (p >= 0) {
+                pos_idx.emplace_back(p, idx);
+            }
+        }
+        std::sort(pos_idx.begin(), pos_idx.end());
+
+        // Evict oldest positions (but keep residual checkpoints!)
+        for (const auto & [pos, idx] : pos_idx) {
+            if (n_evict == 0) break;
+            cells.rm(idx);
+            n_evict--;
+        }
+    }
+
+    LLAMA_LOG_DEBUG("%s: eviction complete\n", __func__);
+}
+
+void llama_kv_cache::residual_store(int32_t pos, const void * data, ggml_type type) {
+    if (!bounded_kv) return;
+    if (pos < 0 || pos >= (int32_t) res_valid.size()) return;
+
+    const size_t res_bytes_per_token = (size_t) n_embd_res * sizeof(ggml_fp16_t);
+    const size_t offset = (size_t) pos * res_bytes_per_token;
+
+    // Convert to FP16 for storage
+    const int64_t n_elem = n_embd_res;
+    ggml_fp16_t * dst = (ggml_fp16_t *)(res_buffer.data() + offset);
+
+    if (type == GGML_TYPE_F16) {
+        std::memcpy(dst, data, n_elem * sizeof(ggml_fp16_t));
+    } else if (type == GGML_TYPE_F32) {
+        const float * src = (const float *)data;
+        ggml_fp32_to_fp16_row(src, dst, n_elem);
+    } else {
+        // For quantized types, we'd need to dequantize first
+        // For now, just copy raw bytes (may not be correct for all types)
+        LLAMA_LOG_WARN("%s: residual store for type %d not fully supported\n", __func__, type);
+        std::memcpy(dst, data, res_bytes_per_token);
+    }
+
+    if (!res_valid[pos]) {
+        res_valid[pos] = true;
+        n_res_checkpoints++;
+    }
+}
+
+bool llama_kv_cache::residual_exists(int32_t pos) const {
+    if (!bounded_kv) return false;
+    if (pos < 0 || pos >= (int32_t) res_valid.size()) return false;
+    return res_valid[pos];
+}
+
+const ggml_fp16_t * llama_kv_cache::residual_data(int32_t pos) const {
+    if (!bounded_kv) return nullptr;
+    if (pos < 0 || pos >= (int32_t) res_valid.size()) return nullptr;
+    if (!res_valid[pos]) return nullptr;
+
+    const size_t res_bytes_per_token = (size_t) n_embd_res * sizeof(ggml_fp16_t);
+    const size_t offset = (size_t) pos * res_bytes_per_token;
+    return (const ggml_fp16_t *)(res_buffer.data() + offset);
+}
+
+void llama_kv_cache::residual_invalidate(llama_pos p0, llama_pos p1) {
+    if (!bounded_kv) return;
+    const int32_t n_cells = (int32_t) res_valid.size();
+    for (llama_pos p = p0; p < p1 && p < n_cells; ++p) {
+        if (p >= 0 && res_valid[p]) {
+            res_valid[p] = false;
+            n_res_checkpoints--;
+        }
+    }
 }
 
 //
