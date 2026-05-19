@@ -1647,6 +1647,7 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.op_offload        = !params.no_op_offload;
     cparams.swa_full          = params.swa_full;
     cparams.kv_unified        = params.kv_unified;
+<<<<<<< HEAD
     cparams.hisa              = params.hisa;
     cparams.hisa_block_size   = params.hisa ? (params.hisa_block_size > 0 ? params.hisa_block_size : (params.hisa_min_tokens > 0 ? params.hisa_min_tokens * 4 : 64)) : 0;
     cparams.hisa_min_tokens   = params.hisa_min_tokens;
@@ -1660,6 +1661,9 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.fused_moe           = params.fused_moe;
     cparams.moe_prefetch_streams = params.moe_prefetch_streams;
     cparams.moe_max_vram_mb     = params.moe_max_vram_mb;
+
+    // pipeline partial offload
+    cparams.pipeline_partial  = params.pipeline_partial;
 
     cparams.type_k = params.cache_type_k;
     cparams.type_v = params.cache_type_v;

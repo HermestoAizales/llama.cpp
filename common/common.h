@@ -440,6 +440,7 @@ struct common_params {
     float   yarn_beta_slow        = -1.0f; // YaRN high correction dim
     int32_t yarn_orig_ctx         =     0; // YaRN original context length
 
+<<<<<<< HEAD
     // HISA params
     bool    hisa                   = false; // use Hierarchical Indexed Sparse Attention
     int32_t hisa_min_tokens        = 1;      // minimum tokens for HISA to be active
@@ -451,6 +452,9 @@ struct common_params {
 
     // Bounded KV cache params
     int32_t kv_cache_bounded       = 0;      // bounded KV cache: max active tokens (0 = unlimited)
+
+    // pipeline partial offload
+    bool pipeline_partial = false; // enable pipeline parallelism for partial offload (default: off, saves VRAM)
 
     // offload params
     std::vector<ggml_backend_dev_t> devices; // devices to use for offloading

@@ -42,6 +42,7 @@ struct llama_cparams {
     bool op_offload;
     bool kv_unified;  // use a unified buffer across the input sequences when computing the attention
     bool pipeline_parallel;
+<<<<<<< HEAD
     bool fused_moe;
     int32_t moe_prefetch_streams;
     int32_t moe_max_vram_mb;
@@ -53,6 +54,7 @@ struct llama_cparams {
     float hisa_sparsity_scale; // layer-adaptive sparsity scale (0.0=uniform, 1.0=pyramid)
     bool hisa_per_head; // per-head sparse attention: select Top-K blocks per KV-head
     int32_t kv_cache_bounded; // bounded KV cache: max active tokens (0 = unlimited)
+    bool pipeline_partial;  // enable pipeline parallelism for partial offload
 
     enum llama_context_type ctx_type;
     enum llama_pooling_type pooling_type;

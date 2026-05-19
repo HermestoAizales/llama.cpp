@@ -347,10 +347,10 @@ llama_context::llama_context(
         // enabling pipeline parallelism in the scheduler increases memory usage, so it is only done when necessary
         bool pipeline_parallel =
             model.n_devices() > 1 &&
-            model.n_gpu_layers() > model.hparams.n_layer &&
             model.split_mode() == LLAMA_SPLIT_MODE_LAYER &&
             cparams.offload_kqv &&
-            !model.has_tensor_overrides();
+            !model.has_tensor_overrides() &&
+            (model.n_gpu_layers() > model.hparams.n_layer || cparams.pipeline_partial);
 
         // pipeline parallelism requires support for async compute and events in all devices
         if (pipeline_parallel) {
