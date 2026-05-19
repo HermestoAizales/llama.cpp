@@ -2182,6 +2182,9 @@ int32_t llama_model_n_swa(const llama_model * model) {
     return model->hparams.n_swa;
 }
 
+int32_t llama_model_n_expert(const llama_model * model) {
+    return model->hparams.n_expert;
+}
 
 uint32_t llama_model_n_cls_out(const struct llama_model * model) {
     return model->hparams.n_cls_out;
@@ -2493,10 +2496,6 @@ bool llama_model_is_diffusion(const llama_model * model) {
 
 const std::vector<std::pair<std::string, ggml_tensor *>> & llama_internal_get_tensor_map(const llama_model * model) {
     return model->tensors_by_name;
-}
-
-int32_t llama_model_n_expert(const struct llama_model * model) {
-    return model->hparams.n_expert;
 }
 
 int32_t llama_model_n_devices(const struct llama_model * model) {

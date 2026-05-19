@@ -468,6 +468,11 @@ struct common_params {
     enum llama_attention_type    attention_type    = LLAMA_ATTENTION_TYPE_UNSPECIFIED; // attention type for embeddings
     enum llama_flash_attn_type   flash_attn_type   = LLAMA_FLASH_ATTN_TYPE_AUTO; // whether to use Flash Attention
 
+    // fused MoE params
+    bool    fused_moe            = false;  // use fused MoE kernel with async weight prefetch
+    int32_t moe_prefetch_streams = 2;      // number of parallel prefetch streams for expert weights
+    int32_t moe_max_vram_mb      = 0;      // max VRAM (MB) for expert weight ring buffer (0 = auto = 25% of free VRAM)
+
     struct common_params_sampling    sampling;
     struct common_params_speculative speculative;
     struct common_params_vocoder     vocoder;

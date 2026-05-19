@@ -1,5 +1,25 @@
 #include "ggml.h"
 #include "gguf.h"
+#include "ggml-cuda.h"
+#include "ggml-backend.h"
+
+// Fused MoE CUDA backend function pointers
+// Loaded dynamically at runtime to support both static linking and GGML_BACKEND_DL
+static void (*ggml_backend_cuda_set_fused_moe_fn)(int device, bool enable) = nullptr;
+static void (*ggml_backend_cuda_fused_moe_init_cache_fn)(int device, int64_t n_expert, size_t max_vram_mb, int32_t n_streams) = nullptr;
+static bool g_fused_moe_cuda_funcs_loaded = false;
+
+static void load_fused_moe_cuda_funcs() {
+    if (g_fused_moe_cuda_funcs_loaded) return;
+    g_fused_moe_cuda_funcs_loaded = true;
+    // Try to get function pointers from the CUDA backend registration
+    // This works with both static linking and dynamic backend loading (GGML_BACKEND_DL)
+    ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
+    if (reg) {
+        ggml_backend_cuda_set_fused_moe_fn = (void(*)(int, bool))ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_set_fused_moe");
+        ggml_backend_cuda_fused_moe_init_cache_fn = (void(*)(int, int64_t, size_t, int32_t))ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_fused_moe_init_cache");
+    }
+}
 
 #include "build-info.h"
 #include "common.h"
@@ -1282,6 +1302,52 @@ common_init_result::common_init_result(common_params & params) :
     }
 
     pimpl->context.reset(lctx);
+
+    // Initialize fused MoE if enabled
+    if (params.fused_moe) {
+        const int n_expert = llama_model_n_expert(model);
+        if (n_expert > 0) {
+            // Find CUDA backends and enable fused MoE
+            // This works with both static linking and dynamic backend loading (GGML_BACKEND_DL)
+            bool cuda_found = false;
+            for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+                ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+                if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+                    const char * name = ggml_backend_dev_name(dev);
+                    if (strncmp(name, "cuda", 4) == 0 || strncmp(name, "CUDA", 4) == 0) {
+                        size_t free_mem = 0, total_mem = 0;
+                        ggml_backend_dev_memory(dev, &free_mem, &total_mem);
+
+                        // Use configured VRAM budget or auto (25% of free VRAM)
+                        size_t max_vram_mb = params.moe_max_vram_mb;
+                        if (max_vram_mb == 0) {
+                            max_vram_mb = (free_mem / (1024 * 1024)) / 4;
+                        }
+
+                        // Use the loop index as device index (works for single-GPU setups)
+                        int device = (int)i;
+                        load_fused_moe_cuda_funcs();
+                        if (ggml_backend_cuda_set_fused_moe_fn && ggml_backend_cuda_fused_moe_init_cache_fn) {
+                            ggml_backend_cuda_set_fused_moe_fn(device, true);
+                            ggml_backend_cuda_fused_moe_init_cache_fn(device, n_expert, max_vram_mb, params.moe_prefetch_streams);
+                        } else {
+                            LOG_WRN("%s: --fused-moe enabled but CUDA backend functions not available, ignoring\n", __func__);
+                            continue;
+                        }
+
+                        LOG_INF("%s: fused MoE enabled on CUDA device %zu (experts=%d, vram_budget=%zuMB, streams=%d)\n",
+                            __func__, i, (int)n_expert, max_vram_mb, params.moe_prefetch_streams);
+                        cuda_found = true;
+                    }
+                }
+            }
+            if (!cuda_found) {
+                LOG_WRN("%s: --fused-moe enabled but no CUDA backend found, ignoring\n", __func__);
+            }
+        } else {
+            LOG_WRN("%s: --fused-moe enabled but model has no experts, ignoring\n", __func__);
+        }
+    }
 }
 
 llama_model * common_init_result::model() {
@@ -1581,6 +1647,11 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.op_offload        = !params.no_op_offload;
     cparams.swa_full          = params.swa_full;
     cparams.kv_unified        = params.kv_unified;
+
+    // fused MoE params
+    cparams.fused_moe           = params.fused_moe;
+    cparams.moe_prefetch_streams = params.moe_prefetch_streams;
+    cparams.moe_max_vram_mb     = params.moe_max_vram_mb;
 
     cparams.type_k = params.cache_type_k;
     cparams.type_v = params.cache_type_v;

@@ -3351,8 +3351,11 @@ llama_context_params llama_context_default_params() {
         /*.op_offload                  =*/ true,
         /*.swa_full                    =*/ true,
         /*.kv_unified                  =*/ false,
-        /*.sampler                     =*/ nullptr,
-        /*.n_sampler                   =*/ 0,
+        /*.fused_moe                   =*/ false,
+        /*.moe_prefetch_streams        =*/ 2,
+        /*.moe_max_vram_mb             =*/ 0,
+        /*.samplers                    =*/ nullptr,
+        /*.n_samplers                  =*/ 0,
     };
 
     return result;

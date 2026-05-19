@@ -1584,7 +1584,14 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
     const bool has_gate = gate_exps || gate_up_exps;
 
-    switch (type_op) {
+    // Fused MoE path: skip the activation function (SwiGLU/GELU/etc) because
+    // the fused CUDA kernel computes gate_up + activation + down internally.
+    // The graph still needs cur/up views for the down MUL_MAT_ID call, but
+    // the activation is a no-op since the fused kernel ignores cur and uses
+    // its own internally computed SwiGLU output.
+    const bool skip_activation = cparams.fused_moe && gate_up_exps;
+
+    if (!skip_activation) switch (type_op) {
         case LLM_FFN_SILU:
             if (gate_exps) {
                 // Step35: per-layer clamp for routed experts
@@ -1649,6 +1656,14 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             } break;
         default:
             GGML_ABORT("fatal error");
+    }
+
+    if (skip_activation) {
+        // Fused MoE: cur is still the raw gate view from gate_up.
+        // The fused kernel computes SwiGLU internally, so we don't need
+        // to apply the activation here. Just use cur as-is for the down
+        // MUL_MAT_ID (the fused kernel will ignore this tensor anyway).
+        // cur already points to the gate view [n_ff, n_expert_used, n_tokens]
     }
 
     experts = build_lora_mm_id(down_exps, cur, selected_experts); // [n_embd, n_expert_used, n_tokens]

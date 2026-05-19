@@ -1114,6 +1114,10 @@ const ggml_cuda_device_info & ggml_cuda_info();
 void ggml_cuda_set_device(int device);
 int ggml_cuda_get_device();
 
+// Fused MoE: non-static wrapper for mul_mat_id (called from fused-moe.cu for fallback)
+struct ggml_backend_cuda_context;
+void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+
 struct ggml_cuda_pool {
     virtual ~ggml_cuda_pool() = default;
 
@@ -1423,6 +1427,9 @@ struct ggml_backend_cuda_context {
         return false;
     }
 #endif // USE_CUDA_GRAPH
+
+    // Fused MoE state
+    bool fused_moe = false;  ///< enable fused MoE kernel with async weight prefetch
 
     explicit ggml_backend_cuda_context(int device) :
         device(device),

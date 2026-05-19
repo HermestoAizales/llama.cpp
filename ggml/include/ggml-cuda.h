@@ -45,6 +45,17 @@ GGML_BACKEND_API void ggml_backend_cuda_unregister_host_buffer(void * buffer);
 
 GGML_BACKEND_API ggml_backend_reg_t ggml_backend_cuda_reg(void);
 
+// Fused MoE with async weight prefetch
+// Enable/disable fused MoE kernel for a specific CUDA device
+GGML_BACKEND_API void ggml_backend_cuda_set_fused_moe(int device, bool enable);
+GGML_BACKEND_API bool ggml_backend_cuda_get_fused_moe(int device);
+
+// Initialize expert weight cache for fused MoE
+// max_vram_mb: maximum VRAM to use for expert weight cache (0 = auto)
+// n_streams: number of parallel prefetch streams
+GGML_BACKEND_API void ggml_backend_cuda_fused_moe_init_cache(int device, int64_t n_expert, size_t max_vram_mb, int32_t n_streams);
+GGML_BACKEND_API void ggml_backend_cuda_fused_moe_free_cache(int device);
+
 #ifdef  __cplusplus
 }
 #endif

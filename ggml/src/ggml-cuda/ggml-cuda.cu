@@ -30,6 +30,15 @@
 #include "ggml-cuda/mmq.cuh"
 #include "ggml-cuda/mmvf.cuh"
 #include "ggml-cuda/mmvq.cuh"
+
+// Fused MoE — variable defined in fused-moe.cu
+extern bool g_fused_moe_enabled[];
+extern void ggml_cuda_fused_moe_set_enabled(int device, bool enable);
+extern bool ggml_cuda_fused_moe_get_enabled(int device);
+extern void ggml_cuda_fused_moe_init(int device, int64_t n_expert, size_t max_vram_mb, int32_t n_streams);
+extern void ggml_cuda_fused_moe_free(int device);
+extern bool ggml_cuda_should_use_fused_moe(const ggml_tensor * dst, int device);
+extern void ggml_cuda_fused_moe_forward(ggml_backend_cuda_context & ctx, ggml_tensor * dst, bool is_gate_up);
 #include "ggml-cuda/norm.cuh"
 #include "ggml-cuda/opt-step-adamw.cuh"
 #include "ggml-cuda/opt-step-sgd.cuh"
@@ -63,6 +72,7 @@
 #include "ggml-cuda/tri.cuh"
 #include "ggml-cuda/cumsum.cuh"
 #include "ggml-cuda/fill.cuh"
+#include "ggml-cuda/fused-moe.cuh"
 #include "ggml.h"
 
 #include <algorithm>
@@ -89,6 +99,29 @@ static_assert(sizeof(half) == sizeof(ggml_fp16_t), "wrong fp16 size");
 
 #define GGML_LOG_WARN_ONCE(str) \
     { static std::once_flag warn_flag; std::call_once(warn_flag, []() { GGML_LOG_WARN(str); }); }
+
+// =============================================================================
+// Fused MoE global state (per device)
+// =============================================================================
+
+// Fused MoE state and API (delegated to fused-moe.cu)
+// The actual cache and state live in fused-moe.cu to avoid circular dependencies.
+
+GGML_BACKEND_API void ggml_backend_cuda_set_fused_moe(int device, bool enable) {
+    ggml_cuda_fused_moe_set_enabled(device, enable);
+}
+
+GGML_BACKEND_API bool ggml_backend_cuda_get_fused_moe(int device) {
+    return ggml_cuda_fused_moe_get_enabled(device);
+}
+
+GGML_BACKEND_API void ggml_backend_cuda_fused_moe_init_cache(int device, int64_t n_expert, size_t max_vram_mb, int32_t n_streams) {
+    ggml_cuda_fused_moe_init(device, n_expert, max_vram_mb, n_streams);
+}
+
+GGML_BACKEND_API void ggml_backend_cuda_fused_moe_free_cache(int device) {
+    ggml_cuda_fused_moe_free(device);
+}
 
 [[noreturn]]
 void ggml_cuda_error(const char * stmt, const char * func, const char * file, int line, const char * msg) {
@@ -2619,13 +2652,23 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
     }
 }
 
-static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * src0 = dst->src[0];
     const ggml_tensor * src1 = dst->src[1];
     const ggml_tensor * ids  = dst->src[2];
 
     GGML_ASSERT(src1->type == GGML_TYPE_F32);
     GGML_ASSERT(dst->type  == GGML_TYPE_F32);
+
+    // Fused MoE path: check if we should use the fused kernel
+    // This is enabled per-device via ggml_backend_cuda_set_fused_moe() and uses the
+    // expert weight cache for async prefetch from RAM to VRAM.
+    // Works for both target model and MTP draft context since the flag is per-device.
+    ctx.fused_moe = g_fused_moe_enabled[ctx.device];
+    if (ctx.fused_moe && ggml_cuda_should_use_fused_moe(dst, ctx.device)) {
+        ggml_cuda_fused_moe_forward(ctx, dst, /*is_gate_up=*/ true);
+        return;
+    }
     GGML_ASSERT(!ggml_backend_buft_is_cuda_split(src0->buffer->buft) && "mul_mat_id does not support split buffers");
 
     GGML_TENSOR_BINARY_OP_LOCALS
@@ -5598,6 +5641,19 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_get_features") == 0) {
         return (void *)ggml_backend_cuda_get_features;
+    }
+    // Fused MoE functions
+    if (strcmp(name, "ggml_backend_cuda_set_fused_moe") == 0) {
+        return (void *)ggml_backend_cuda_set_fused_moe;
+    }
+    if (strcmp(name, "ggml_backend_cuda_get_fused_moe") == 0) {
+        return (void *)ggml_backend_cuda_get_fused_moe;
+    }
+    if (strcmp(name, "ggml_backend_cuda_fused_moe_init_cache") == 0) {
+        return (void *)ggml_backend_cuda_fused_moe_init_cache;
+    }
+    if (strcmp(name, "ggml_backend_cuda_fused_moe_free_cache") == 0) {
+        return (void *)ggml_backend_cuda_fused_moe_free_cache;
     }
     return nullptr;
 }
