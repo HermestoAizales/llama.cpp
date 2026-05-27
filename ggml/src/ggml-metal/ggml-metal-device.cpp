@@ -1897,11 +1897,7 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_pad(ggml_metal_l
     char base[256];
     char name[256];
 
-    // note: this is slower
-    //const bool is_c4 = op->src[0]->ne[0] % 4 == 0 && op->ne[0] % 4 == 0;
-    const bool is_c4 = false;
-
-    snprintf(base, 256, "kernel_pad_%s%s", ggml_type_name(op->src[0]->type), is_c4 ? "_4" : "");
+    snprintf(base, 256, "kernel_pad_%s", ggml_type_name(op->src[0]->type));
     snprintf(name, 256, "%s", base);
 
     ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
@@ -1910,8 +1906,6 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_pad(ggml_metal_l
     }
 
     res = ggml_metal_library_compile_pipeline(lib, base, name, nullptr);
-
-    res.c4 = is_c4;
 
     return res;
 }
@@ -2054,6 +2048,90 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_count_equal(ggml
 
     res.smem = 32 * sizeof(int32_t);
     res.nsg  = nsg;
+
+    return res;
+}
+
+// ============================================================
+// HISA Metal Pipeline Getters
+// ============================================================
+
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_hisa_block_pool(ggml_metal_library_t lib, const ggml_tensor * op) {
+    char base[256];
+    char name[256];
+
+    const char * t0_str = ggml_type_name(op->src[0]->type);
+    const char * t_str  = ggml_type_name(op->type);
+
+    snprintf(base, sizeof(base), "kernel_hisa_block_pool_%s", t0_str);
+    snprintf(name, sizeof(name), "%s", base);
+
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        res = ggml_metal_library_compile_pipeline(lib, base, name, nullptr);
+    }
+
+    // Threadgroup: x=block_size for shared memory, y/z from grid
+    // block_size is in args.block_size, smem = 256 floats (shared per threadgroup)
+    res.smem = 256 * sizeof(float);
+
+    return res;
+}
+
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_hisa_gather(ggml_metal_library_t lib, const ggml_tensor * op) {
+    char base[256];
+    char name[256];
+
+    const char * t0_str = ggml_type_name(op->src[0]->type);
+    const char * t_str  = ggml_type_name(op->type);
+
+    snprintf(base, sizeof(base), "kernel_hisa_gather_%s_simple", t0_str);
+    snprintf(name, sizeof(name), "%s", base);
+
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        res = ggml_metal_library_compile_pipeline(lib, base, name, nullptr);
+    }
+
+    res.smem = 0;
+
+    return res;
+}
+
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_hisa_block_gather(ggml_metal_library_t lib, const ggml_tensor * op) {
+    char base[256];
+    char name[256];
+
+    const char * t0_str = ggml_type_name(op->src[0]->type);
+    const char * t_str  = ggml_type_name(op->type);
+
+    snprintf(base, sizeof(base), "kernel_hisa_block_gather_%s", t0_str);
+    snprintf(name, sizeof(name), "%s", base);
+
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        res = ggml_metal_library_compile_pipeline(lib, base, name, nullptr);
+    }
+
+    res.smem = 0;
+
+    return res;
+}
+
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_hisa_gather_mask(ggml_metal_library_t lib, const ggml_tensor * op) {
+    char base[256];
+    char name[256];
+
+    // gather_mask only supports f16 (half)
+    snprintf(base, sizeof(base), "kernel_hisa_gather_mask_%s", ggml_type_name(op->src[0]->type));
+    snprintf(name, sizeof(name), "%s", base);
+
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        res = ggml_metal_library_compile_pipeline(lib, base, name, nullptr);
+    }
+
+    res.smem = 0;
 
     return res;
 }

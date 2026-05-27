@@ -2643,7 +2643,7 @@ kernel void kernel_gated_delta_net_impl(
         b_ptr += args.ne21;
         g_ptr += args.ne21*G;
 
-        if (K > 1) {
+        if (K > 1u) {
             const int target_slot = (int)t - shift;
             if (target_slot >= 0 && target_slot < (int)K) {
                 device float * dst_state = (device float *) (dst) + attn_size + (uint)target_slot * state_size_per_snap + state_out_base;
@@ -2655,7 +2655,7 @@ kernel void kernel_gated_delta_net_impl(
         }
     }
 
-    if (K == 1) {
+    if (K == 1u) {
         device float * dst_state = (device float *) (dst) + attn_size + state_out_base;
         FOR_UNROLL (short j = 0; j < NSG; j++) {
             const short is = tx*NSG + j;
@@ -5104,7 +5104,7 @@ kernel void kernel_upscale_bilinear_f32(
                 for (int64_t sx = x_min; sx < x_max; ++sx) {
                     const float wx = MAX(0.0f, 1.0f - fabs((float)sx - f00) * invscale0);
                     const float w  = wx * wy;
-                    device const float * src_ptr = (device const float *)(src0 + sy*args.nb01 + sx*args.nb00);
+                    const device const float * src_ptr = (device const float *)(src0 + sy*args.nb01 + sx*args.nb00);
                     sum  += (*src_ptr) * w;
                     wsum += w;
                 }
@@ -5286,7 +5286,7 @@ kernel void kernel_upscale_bicubic_f32(
                 const int64_t ix = MAX(0, MIN(args.ne00 - 1, i00 + dx));
                 const float wx = (dx == -1) ? w_x0 : (dx == 0) ? w_x1 : (dx == 1) ? w_x2 : w_x3;
 
-                device const float * src_ptr = (device const float *)(src_slice + iy * args.nb01 + ix * args.nb00);
+                const device const float * src_ptr = (device const float *)(src_slice + iy * args.nb01 + ix * args.nb00);
                 sum += (*src_ptr) * wx * wy;
             }
         }
@@ -5329,46 +5329,42 @@ kernel void kernel_roll_f32(
     }
 }
 
-template <typename T>
-kernel void kernel_pad_impl(
+kernel void kernel_pad_f32(
     constant ggml_metal_kargs_pad & args,
     device  const char * src0,
     device        char * dst,
     uint3 tgpig[[threadgroup_position_in_grid]],
     uint3 tpitg[[thread_position_in_threadgroup]],
     uint3   ntg[[threads_per_threadgroup]]) {
-    const int32_t i3 = tgpig.z;
-    const int32_t i2 = tgpig.y;
-    const int32_t k0 = tgpig.x/args.ne1;
-    const int32_t i1 = tgpig.x - k0*args.ne1;
 
-    const int32_t i03 = i3;
-    const int32_t i02 = i2;
-    const int32_t i01 = i1;
+    const int64_t i3 = tgpig.z;
+    const int64_t i2 = tgpig.y;
+    const int64_t i1 = tgpig.x;
 
-    device const T * src0_ptr = (device const T *) (src0 + i03*args.nb03 + i02*args.nb02 + i01*args.nb01);
-    device       T * dst_ptr  = (device       T *) (dst  +  i3*args.nb3  +  i2*args.nb2  +  i1*args.nb1);
+    const int64_t i03 = i3;
+    const int64_t i02 = i2;
+    const int64_t i01 = i1;
 
-    for (int32_t l0 = 0; l0 < 1024; l0 += ntg.x) {
-        const int32_t i0 = k0*1024 + tpitg.x + l0;
-        if (i0 >= args.ne0) {
-            break;
+    device const float * src0_ptr = (device const float *) (src0 + i03*args.nb03 + i02*args.nb02 + i01*args.nb01);
+    device       float * dst_ptr  = (device       float *) (dst  +  i3*args.nb3  +  i2*args.nb2  +  i1*args.nb1);
+
+    if (i1 < args.ne01 && i2 < args.ne02 && i3 < args.ne03) {
+        for (int i0 = tpitg.x; i0 < args.ne0; i0 += ntg.x) {
+            if (i0 < args.ne00) {
+                dst_ptr[i0] = src0_ptr[i0];
+            } else {
+                dst_ptr[i0] = 0.0f;
+            }
         }
 
-        if (i0 < args.ne00 && i1 < args.ne01 && i2 < args.ne02 && i3 < args.ne03) {
-            dst_ptr[i0] = src0_ptr[i0];
-        } else {
-            dst_ptr[i0] = 0.0f;
-        }
+        return;
+    }
+
+    for (int i0 = tpitg.x; i0 < args.ne0; i0 += ntg.x) {
+        dst_ptr[i0] = 0.0f;
     }
 }
 
-typedef decltype(kernel_pad_impl<float>) kernel_pad_t;
-
-template [[host_name("kernel_pad_f32")]]   kernel kernel_pad_t kernel_pad_impl<float>;
-template [[host_name("kernel_pad_f32_4")]] kernel kernel_pad_t kernel_pad_impl<float4>;
-
-// TODO: this is slow - optimize
 kernel void kernel_pad_reflect_1d_f32(
     constant   ggml_metal_kargs_pad_reflect_1d & args,
     device  const char * src0,
@@ -7332,27 +7328,23 @@ kernel void kernel_cpy_t_t(
         device  const char * src0,
         device        char * dst,
         uint3   tgpig[[threadgroup_position_in_grid]],
-        ushort3 tpitg[[thread_position_in_threadgroup]],
+        ushort  tiitg[[thread_index_in_threadgroup]],
         ushort3   ntg[[threads_per_threadgroup]]) {
-    const int32_t i03 = tgpig[2];
-    const int32_t i02 = tgpig[1];
-    const int32_t i01 = ntg[1] == 1 ? tgpig[0]%args.ne01 : tgpig[0]*ntg[1] + tpitg.y;
-    const int32_t iw0 = ntg[1] == 1 ? tgpig[0]/args.ne01 : 0;
-
-    if (i01 >= args.ne01) {
-        return;
-    }
+    const int i03 = tgpig[2];
+    const int i02 = tgpig[1];
+    const int i01 = ntg[1] == 1 ? tgpig[0]%args.ne01 : tgpig[0]*ntg[1] + tiitg/ntg[0];
+    const int iw0 = ntg[1] == 1 ? tgpig[0]/args.ne01 : 0;
 
     const int64_t n = i03*args.ne02*args.ne01*args.ne00 + i02*args.ne01*args.ne00 + i01*args.ne00;
 
-    const int32_t i3 = n/(args.ne2*args.ne1*args.ne0);
-    const int32_t i2 = (n - i3*args.ne2*args.ne1*args.ne0)/(args.ne1*args.ne0);
-    const int32_t i1 = (n - i3*args.ne2*args.ne1*args.ne0 - i2*args.ne1*args.ne0)/args.ne0;
-    const int32_t i0 = (n - i3*args.ne2*args.ne1*args.ne0 - i2*args.ne1*args.ne0 - i1*args.ne0);
+    const int64_t i3 = n/(args.ne2*args.ne1*args.ne0);
+    const int64_t i2 = (n - i3*args.ne2*args.ne1*args.ne0)/(args.ne1*args.ne0);
+    const int64_t i1 = (n - i3*args.ne2*args.ne1*args.ne0 - i2*args.ne1*args.ne0)/args.ne0;
+    const int64_t i0 = (n - i3*args.ne2*args.ne1*args.ne0 - i2*args.ne1*args.ne0 - i1*args.ne0);
 
     device T1 * dst_data = (device T1 *) (dst + i3*args.nb3 + i2*args.nb2 + i1*args.nb1 + i0*args.nb0);
 
-    for (int32_t i00 = iw0*ntg[0] + tpitg.x; i00 < args.ne00;) {
+    for (int64_t i00 = iw0*ntg[0] + tiitg%ntg[0]; i00 < args.ne00; ) {
         device const T0 * src = (device T0 *)(src0 + i03*args.nb03 + i02*args.nb02 + i01*args.nb01 + i00*args.nb00);
         dst_data[i00] = (T1) src[0];
         break;
@@ -7384,27 +7376,23 @@ kernel void kernel_cpy_f32_q(
         device const char * src0,
         device char * dst,
         uint3   tgpig[[threadgroup_position_in_grid]],
-        ushort3 tpitg[[thread_position_in_threadgroup]],
+        ushort  tiitg[[thread_index_in_threadgroup]],
         ushort3   ntg[[threads_per_threadgroup]]) {
-    const int32_t i03 = tgpig[2];
-    const int32_t i02 = tgpig[1];
-    const int32_t i01 = ntg[1] == 1 ? tgpig[0]%args.ne01 : tgpig[0]*ntg[1] + tpitg.y;
-    const int32_t iw0 = ntg[1] == 1 ? tgpig[0]/args.ne01 : 0;
-
-    if (i01 >= args.ne01) {
-        return;
-    }
+    const int i03 = tgpig[2];
+    const int i02 = tgpig[1];
+    const int i01 = ntg[1] == 1 ? tgpig[0]%args.ne01 : tgpig[0]*ntg[1] + tiitg/ntg[0];
+    const int iw0 = ntg[1] == 1 ? tgpig[0]/args.ne01 : 0;
 
     const int64_t n = i03*args.ne02*args.ne01*args.ne00 + i02*args.ne01*args.ne00 + i01*args.ne00;
 
-    const int32_t i3 = n / (args.ne2*args.ne1*args.ne0);
-    const int32_t i2 = (n - i3*args.ne2*args.ne1*args.ne0) / (args.ne1*args.ne0);
-    const int32_t i1 = (n - i3*args.ne2*args.ne1*args.ne0 - i2*args.ne1*args.ne0) / args.ne0;
-    const int32_t i0 = (n - i3*args.ne2*args.ne1*args.ne0 - i2*args.ne1*args.ne0 - i1*args.ne0)/QK;
+    const int64_t i3 = n / (args.ne2*args.ne1*args.ne0);
+    const int64_t i2 = (n - i3*args.ne2*args.ne1*args.ne0) / (args.ne1*args.ne0);
+    const int64_t i1 = (n - i3*args.ne2*args.ne1*args.ne0 - i2*args.ne1*args.ne0) / args.ne0;
+    const int64_t i0 = (n - i3*args.ne2*args.ne1*args.ne0 - i2*args.ne1*args.ne0 - i1*args.ne0)/QK;
 
     device block_q * dst_data = (device block_q *)(dst + i3*args.nb3 + i2*args.nb2 + i1*args.nb1 + i0*args.nb0);
 
-    for (int32_t i00 = iw0*ntg[0] + tpitg.x; i00 < args.nk0;) {
+    for (int64_t i00 = iw0*ntg[0] + tiitg%ntg[0]; i00 < args.nk0; ) {
         device const float * src = (device const float *)(src0 + i03*args.nb03 + i02*args.nb02 + i01*args.nb01 + (i00*QK)*args.nb00);
 
         quantize_func(src, dst_data[i00]);
@@ -7429,28 +7417,24 @@ kernel void kernel_cpy_q_f32(
         device  const char * src0,
         device        char * dst,
         uint3   tgpig[[threadgroup_position_in_grid]],
-        ushort3 tpitg[[thread_position_in_threadgroup]],
+        ushort  tiitg[[thread_index_in_threadgroup]],
         ushort3   ntg[[threads_per_threadgroup]]) {
-    const int32_t i03 = tgpig[2];
-    const int32_t i02 = tgpig[1];
-    const int32_t i01 = ntg[1] == 1 ? tgpig[0]%args.ne01 : tgpig[0]*ntg[1] + tpitg.y;
-    const int32_t iw0 = ntg[1] == 1 ? tgpig[0]/args.ne01 : 0;
-
-    if (i01 >= args.ne01) {
-        return;
-    }
+    const int i03 = tgpig[2];
+    const int i02 = tgpig[1];
+    const int i01 = ntg[1] == 1 ? tgpig[0]%args.ne01 : tgpig[0]*ntg[1] + tiitg/ntg[0];
+    const int iw0 = ntg[1] == 1 ? tgpig[0]/args.ne01 : 0;
 
     const int64_t n = i03*args.ne02*args.ne01*args.ne00 + i02*args.ne01*args.ne00 + i01*args.ne00;
 
-    const int32_t i3 = n/(args.ne2*args.ne1*args.ne0);
-    const int32_t i2 = (n - i3*args.ne2*args.ne1*args.ne0)/(args.ne1*args.ne0);
-    const int32_t i1 = (n - i3*args.ne2*args.ne1*args.ne0 - i2*args.ne1*args.ne0)/args.ne0;
-    const int32_t i0 = (n - i3*args.ne2*args.ne1*args.ne0 - i2*args.ne1*args.ne0 - i1*args.ne0);
+    const int64_t i3 = n/(args.ne2*args.ne1*args.ne0);
+    const int64_t i2 = (n - i3*args.ne2*args.ne1*args.ne0)/(args.ne1*args.ne0);
+    const int64_t i1 = (n - i3*args.ne2*args.ne1*args.ne0 - i2*args.ne1*args.ne0)/args.ne0;
+    const int64_t i0 = (n - i3*args.ne2*args.ne1*args.ne0 - i2*args.ne1*args.ne0 - i1*args.ne0);
 
     device const block_q * src_data = (device const block_q *)(src0 + i03*args.nb03 + i02*args.nb02 + i01*args.nb01);
     device       T4x4    * dst_data = (device       T4x4    *)(dst  +  i3*args.nb3  +  i2*args.nb2  +  i1*args.nb1 + i0*args.nb0);
 
-    for (int32_t i00 = iw0*ntg[0] + tpitg.x; i00 < args.nk0;) {
+    for (int64_t i00 = iw0*ntg[0] + tiitg%ntg[0]; i00 < args.nk0; ) {
         T4x4 temp;
         dequantize_func(src_data + i00/nl, i00%nl, temp);
         dst_data[i00] = temp;
@@ -7486,11 +7470,7 @@ kernel void kernel_concat(
 
     const int i3 = tgpig.z;
     const int i2 = tgpig.y;
-    const int i1 = ntg.y == 1 ? tgpig.x : tgpig.x*ntg.y + tpitg.y;
-
-    if (i1 >= args.ne1) {
-        return;
-    }
+    const int i1 = tgpig.x;
 
     int o[4] = {0, 0, 0, 0};
     o[args.dim] = args.dim == 0 ? args.ne00 : (args.dim == 1 ? args.ne01 : (args.dim == 2 ? args.ne02 : args.ne03));
@@ -10697,3 +10677,266 @@ kernel void kernel_count_equal(
 typedef decltype(kernel_count_equal<int32_t>) kernel_count_equal_t;
 
 template [[host_name("kernel_count_equal_i32")]] kernel kernel_count_equal_t kernel_count_equal<int32_t>;
+
+// ============================================================
+// HISA (Hierarchical Indexed Sparse Attention) Metal Kernels
+// ============================================================
+
+// HISA_BLOCK_POOL: mean-pool K rows into blocks
+threadgroup align(64) typedef struct { float s_data[256]; } hisa_block_pool_shmem;
+
+kernel void kernel_hisa_block_pool_f32(
+        constant ggml_metal_kargs_hisa_block_pool & args,
+        device const float * src,
+        device       float * dst,
+        uint3   tgpig[[threadgroup_position_in_grid]],
+        ushort  tid[[thread_index_in_threadgroup]],
+        ushort3 ntg[[threads_per_threadgroup]]) {
+
+    const int32_t iblk = tgpig.x;
+    const int32_t ih = tgpig.y;
+    const int32_t ib = tgpig.z;
+
+    if (iblk >= args.n_blocks || ib >= args.n_batch) return;
+
+    device const float * src_base = (device const float *)((const char *)src + ib * args.src_nb3 + ih * args.src_nb2);
+    device       float * dst_base = (device       float *)((const char *)dst + ib * args.dst_nb3 + ih * args.dst_nb2);
+
+    threadgroup hisa_block_pool_shmem & shmem = *reinterpret_cast<threadgroup hisa_block_pool_shmem *>(get_threadgroup_memory(1));
+
+    // Coalesced load of block data into shared memory
+    float thread_sum = 0.0f;
+    for (int b = tid; b < args.block_size; b += ntg.x) {
+        shmem.s_data[b] = src_base[(iblk * args.block_size + b) * args.d];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Compute sum reduction
+    for (int b = tid; b < args.block_size; b += ntg.x) {
+        thread_sum += shmem.s_data[b];
+    }
+
+    // SIMD-group reduction
+    for (int offset = ntg.x / 2; offset > 0; offset /= 2) {
+        thread_sum += simd_shuffle_down(thread_sum, offset);
+    }
+
+    // One thread per SIMD group writes result
+    if (tid % ntg.x == 0) {
+        int simd_idx = tid / ntg.x;
+        atomic_fetch_add_explicit(&dst_base[iblk * args.d + simd_idx], thread_sum / (float)args.block_size, memory_order_relaxed);
+    }
+}
+
+kernel void kernel_hisa_block_pool_f16(
+        constant ggml_metal_kargs_hisa_block_pool & args,
+        device const half * src,
+        device       half * dst,
+        uint3   tgpig[[threadgroup_position_in_grid]],
+        ushort  tid[[thread_index_in_threadgroup]],
+        ushort3 ntg[[threads_per_threadgroup]]) {
+
+    const int32_t iblk = tgpig.x;
+    const int32_t ih = tgpig.y;
+    const int32_t ib = tgpig.z;
+
+    if (iblk >= args.n_blocks || ib >= args.n_batch) return;
+
+    device const half * src_base = (device const half *)((const char *)src + ib * args.src_nb3 + ih * args.src_nb2);
+    device       half * dst_base = (device       half *)((const char *)dst + ib * args.dst_nb3 + ih * args.dst_nb2);
+
+    threadgroup hisa_block_pool_shmem & shmem = *reinterpret_cast<threadgroup hisa_block_pool_shmem *>(get_threadgroup_memory(1));
+
+    float thread_sum = 0.0f;
+    for (int b = tid; b < args.block_size; b += ntg.x) {
+        shmem.s_data[b] = src_base[(iblk * args.block_size + b) * args.d];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (int b = tid; b < args.block_size; b += ntg.x) {
+        thread_sum += (float)shmem.s_data[b];
+    }
+
+    for (int offset = ntg.x / 2; offset > 0; offset /= 2) {
+        thread_sum += simd_shuffle_down(thread_sum, offset);
+    }
+
+    if (tid % ntg.x == 0) {
+        int simd_idx = tid / ntg.x;
+        atomic_fetch_add_explicit(&dst_base[iblk * args.d + simd_idx], thread_sum / (float)args.block_size, memory_order_relaxed);
+    }
+}
+
+// HISA_GATHER: gather rows by index list
+kernel void kernel_hisa_gather_f32(
+        constant ggml_metal_kargs_hisa_gather & args,
+        device const float * src,
+        device const int32_t * indices,
+        device       float * dst,
+        uint gid[[thread_position_in_grid]]) {
+
+    if (gid >= args.d * args.budget) return;
+
+    const int64_t j = gid % args.d;
+    const int64_t is = gid / args.d;
+
+    const uint3 tgpig [[threadgroup_position_in_grid]] = uint3(gid % args.n_heads_kv, 0, 0);
+    // Simplified: use global grid for simplicity
+    // We'll dispatch per element with 1D grid
+    const int64_t ih = gid / (args.d * args.budget) % args.n_heads_kv;
+    if (ih >= args.n_heads_kv) return;
+
+    // Actually, let's use a simpler approach - thread per output element
+    // Re-compute based on simple 1D layout
+}
+
+// Simpler HISA_GATHER: one thread per output element
+kernel void kernel_hisa_gather_f32_simple(
+        constant ggml_metal_kargs_hisa_gather & args,
+        device const float * src,
+        device const int32_t * indices,
+        device       float * dst,
+        uint gid[[thread_position_in_grid]]) {
+
+    // Layout: [budget * n_heads_kv * n_batch, d]
+    const int64_t total = args.d * args.budget * args.n_heads_kv * args.n_batch;
+    if (gid >= total) return;
+
+    int64_t tmp = gid;
+    const int64_t ib = tmp / (args.d * args.budget * args.n_heads_kv); tmp %= (args.d * args.budget * args.n_heads_kv);
+    const int64_t ih = tmp / (args.d * args.budget); tmp %= (args.d * args.budget);
+    const int64_t is = tmp / args.d;
+    const int64_t j = tmp % args.d;
+
+    if (ih >= args.n_heads_kv) return;
+
+    const int32_t idx_val = *(const int32_t *)((const char *)indices + is * args.idx_nb0 + ih * args.idx_nb2 + ib * args.idx_nb3);
+    *((float *)((char *)dst + ib * args.dst_nb3 + ih * args.dst_nb2 + is * args.dst_nb1 + j * sizeof(float))) =
+        *((const float *)((const char *)src + ib * args.src_nb3 + ih * args.src_nb2 + idx_val * args.src_nb1 + j * sizeof(float)));
+}
+
+kernel void kernel_hisa_gather_f16_simple(
+        constant ggml_metal_kargs_hisa_gather & args,
+        device const half * src,
+        device const int32_t * indices,
+        device       half * dst,
+        uint gid[[thread_position_in_grid]]) {
+
+    const int64_t total = args.d * args.budget * args.n_heads_kv * args.n_batch;
+    if (gid >= total) return;
+
+    int64_t tmp = gid;
+    const int64_t ib = tmp / (args.d * args.budget * args.n_heads_kv); tmp %= (args.d * args.budget * args.n_heads_kv);
+    const int64_t ih = tmp / (args.d * args.budget); tmp %= (args.d * args.budget);
+    const int64_t is = tmp / args.d;
+    const int64_t j = tmp % args.d;
+
+    if (ih >= args.n_heads_kv) return;
+
+    const int32_t idx_val = *(const int32_t *)((const char *)indices + is * args.idx_nb0 + ih * args.idx_nb2 + ib * args.idx_nb3);
+    *((half *)((char *)dst + ib * args.dst_nb3 + ih * args.dst_nb2 + is * args.dst_nb1 + j * sizeof(half))) =
+        *((const half *)((const char *)src + ib * args.src_nb3 + ih * args.src_nb2 + idx_val * args.src_nb1 + j * sizeof(half)));
+}
+
+// HISA_BLOCK_GATHER: gather full blocks by block index list
+kernel void kernel_hisa_block_gather_f32(
+        constant ggml_metal_kargs_hisa_block_gather & args,
+        device const float * src,
+        device const int32_t * block_indices,
+        device       float * dst,
+        uint gid[[thread_position_in_grid]]) {
+
+    // Layout: [m * n_heads_kv * n_batch, d * block_size]
+    const int64_t total = args.d * args.m * args.block_size * args.n_heads_kv * args.n_batch;
+    if (gid >= total) return;
+
+    int64_t tmp = gid;
+    const int64_t ib = tmp / (args.d * args.m * args.block_size * args.n_heads_kv); tmp %= (args.d * args.m * args.block_size * args.n_heads_kv);
+    const int64_t ih = tmp / (args.d * args.m * args.block_size); tmp %= (args.d * args.m * args.block_size);
+    const int64_t im = tmp / (args.d * args.block_size); tmp %= (args.d * args.block_size);
+    const int64_t b = tmp / args.d;
+    const int64_t j = tmp % args.d;
+
+    if (ih >= args.n_heads_kv) return;
+
+    const int32_t blk_idx = *(const int32_t *)((const char *)block_indices + im * args.idx_nb0 + ih * args.idx_nb2 + ib * args.idx_nb3);
+    const int32_t src_row = blk_idx * args.block_size + (int32_t)b;
+    const int64_t dst_row = im * args.block_size + b;
+
+    *((float *)((char *)dst + ib * args.dst_nb3 + ih * args.dst_nb2 + dst_row * args.dst_nb1 + j * sizeof(float))) =
+        *((const float *)((const char *)src + ib * args.src_nb3 + ih * args.src_nb2 + src_row * args.src_nb1 + j * sizeof(float)));
+}
+
+kernel void kernel_hisa_block_gather_f16(
+        constant ggml_metal_kargs_hisa_block_gather & args,
+        device const half * src,
+        device const int32_t * block_indices,
+        device       half * dst,
+        uint gid[[thread_position_in_grid]]) {
+
+    const int64_t total = args.d * args.m * args.block_size * args.n_heads_kv * args.n_batch;
+    if (gid >= total) return;
+
+    int64_t tmp = gid;
+    const int64_t ib = tmp / (args.d * args.m * args.block_size * args.n_heads_kv); tmp %= (args.d * args.m * args.block_size * args.n_heads_kv);
+    const int64_t ih = tmp / (args.d * args.m * args.block_size); tmp %= (args.d * args.m * args.block_size);
+    const int64_t im = tmp / (args.d * args.block_size); tmp %= (args.d * args.block_size);
+    const int64_t b = tmp / args.d;
+    const int64_t j = tmp % args.d;
+
+    if (ih >= args.n_heads_kv) return;
+
+    const int32_t blk_idx = *(const int32_t *)((const char *)block_indices + im * args.idx_nb0 + ih * args.idx_nb2 + ib * args.idx_nb3);
+    const int32_t src_row = blk_idx * args.block_size + (int32_t)b;
+    const int64_t dst_row = im * args.block_size + b;
+
+    *((half *)((char *)dst + ib * args.dst_nb3 + ih * args.dst_nb2 + dst_row * args.dst_nb1 + j * sizeof(half))) =
+        *((const half *)((const char *)src + ib * args.src_nb3 + ih * args.src_nb2 + src_row * args.src_nb1 + j * sizeof(half)));
+}
+
+// HISA_GATHER_MASK: gather mask rows via two-level index mapping
+kernel void kernel_hisa_gather_mask_f16(
+        constant ggml_metal_kargs_hisa_gather_mask & args,
+        device const half * kq_mask,
+        device const int32_t * topm_indices,
+        device const int32_t * top_budget_indices,
+        device       half * dst,
+        uint gid[[thread_position_in_grid]]) {
+
+    const int total = args.budget * args.T * args.S;
+    if (gid >= total) return;
+
+    int s = gid / (args.budget * args.T);
+    int remainder = gid - s * args.budget * args.T;
+    int j = remainder / args.T;
+    int t = remainder - j * args.T;
+
+    const int32_t cand_idx = *(const int32_t *)((const char *)top_budget_indices + j * args.topb_nb0 + s * args.topb_nb3);
+    const int32_t block_ord = cand_idx / args.block_size;
+    const int32_t block_off = cand_idx % args.block_size;
+    const int32_t block_idx = *(const int32_t *)((const char *)topm_indices + block_ord * args.topm_nb0 + s * args.topm_nb3);
+    const int32_t abs_pos = block_idx * args.block_size + block_off;
+
+    *((half *)((char *)dst + s * args.dst_nb3 + t * args.dst_nb1 + abs_pos * args.dst_nb0)) =
+        *((const half *)((const char *)kq_mask + s * args.mask_nb3 + t * args.mask_nb1 + abs_pos * args.mask_nb0));
+}
+
+// Residual checkpoint copy kernels
+kernel void kernel_residual_copy_f32(
+        device const float * src,
+        device       float * dst,
+        const   int64_t   total,
+        uint gid[[thread_position_in_grid]]) {
+    if ((int64_t)gid >= total) return;
+    dst[gid] = src[gid];
+}
+
+kernel void kernel_residual_copy_f16(
+        device const half * src,
+        device       half * dst,
+        const   int64_t   total,
+        uint gid[[thread_position_in_grid]]) {
+    if ((int64_t)gid >= total) return;
+    dst[gid] = src[gid];
+}
+

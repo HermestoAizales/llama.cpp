@@ -3,6 +3,7 @@
 #include "ggml.h"
 #include "llama-arch.h"
 #include "llama-graph.h"
+#include "llama-kv-cache.h"
 #include "llama-impl.h"
 #include "llama-batch.h"
 #include "llama-io.h"
@@ -183,7 +184,20 @@ llama_context::llama_context(
     cparams.n_ubatch = std::min(cparams.n_batch, params.n_ubatch == 0 ? params.n_batch : params.n_ubatch);
 
     cparams.op_offload = params.op_offload;
-    cparams.kv_unified = params.kv_unified;
+    cparams.kv_unified        = params.kv_unified;
+    cparams.hisa               = params.hisa;
+    cparams.hisa_block_size    = params.hisa ? (params.hisa_block_size > 0 ? params.hisa_block_size : (params.hisa_min_tokens > 0 ? params.hisa_min_tokens * 4 : 64)) : 0;
+    cparams.hisa_min_tokens    = params.hisa_min_tokens;
+    cparams.hisa_sparsity      = params.hisa_sparsity;
+    cparams.hisa_sink_protect  = params.hisa_sink_protect;
+    cparams.hisa_sparsity_scale = params.hisa_sparsity_scale;
+    cparams.hisa_per_head      = params.hisa_per_head;
+    cparams.kv_cache_bounded   = params.kv_cache_bounded;
+    cparams.fused_moe          = params.fused_moe;
+    cparams.moe_prefetch_streams = params.moe_prefetch_streams;
+    cparams.moe_max_vram_mb    = params.moe_max_vram_mb;
+    cparams.n_cpu_moe          = params.n_cpu_moe;
+    cparams.pipeline_partial   = params.pipeline_partial;
 
     // initialized later
     cparams.pipeline_parallel = false;
@@ -1311,6 +1325,37 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
         ret = status;
         return nullptr;
+    }
+
+    // Store residual checkpoints for bounded KV cache
+    LLAMA_LOG_DEBUG("%s: kv_cache_bounded=%d\n", __func__, cparams.kv_cache_bounded);
+    if (cparams.kv_cache_bounded > 0) {
+        auto * kv = dynamic_cast<llama_kv_cache *>(memory.get());
+        if (kv) {
+            const auto & hparams = model.hparams;
+            const uint32_t n_layer = hparams.n_layer;
+
+            // Find and store residual checkpoint tensors for each layer
+            for (uint32_t il = 0; il < n_layer; ++il) {
+                char name_buf[64];
+                snprintf(name_buf, sizeof(name_buf), "res_ckpt_%u", il);
+                ggml_tensor * t = ggml_graph_get_tensor(res->get_gf(), name_buf);
+                if (t) {
+                    // Get tensor data into a temporary buffer
+                    std::vector<uint8_t> tmp(ggml_nbytes(t));
+                    ggml_backend_tensor_get(t, tmp.data(), 0, ggml_nbytes(t));
+
+                    // Store for each position in the ubatch
+                    for (uint32_t i = 0; i < ubatch.n_tokens; i++) {
+                        const llama_pos pos = ubatch.pos[i];
+                        if (pos >= 0 && pos < (int32_t) kv->res_valid.size()) {
+                            const size_t src_stride = t->ne[0] * ggml_type_size(t->type);
+                            kv->residual_store(pos, (char *)tmp.data() + i * src_stride, t->type);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     ret = GGML_STATUS_SUCCESS;
@@ -3364,6 +3409,19 @@ llama_context_params llama_context_default_params() {
         /*.op_offload                  =*/ true,
         /*.swa_full                    =*/ true,
         /*.kv_unified                  =*/ false,
+        /*.hisa                        =*/ false,
+        /*.hisa_block_size             =*/ 0,
+        /*.hisa_min_tokens             =*/ 0,
+        /*.hisa_sparsity               =*/ 0.5f,
+        /*.hisa_sink_protect           =*/ true,
+        /*.hisa_sparsity_scale         =*/ 0.0f,
+        /*.hisa_per_head               =*/ false,
+        /*.kv_cache_bounded            =*/ 0,
+        /*.pipeline_partial            =*/ false,
+        /*.fused_moe                   =*/ false,
+        /*.moe_prefetch_streams        =*/ 2,
+        /*.moe_max_vram_mb             =*/ 0,
+        /*.n_cpu_moe                   =*/ 0,
         /*.sampler                     =*/ nullptr,
         /*.n_sampler                   =*/ 0,
     };

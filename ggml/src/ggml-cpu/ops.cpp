@@ -10686,6 +10686,314 @@ void ggml_compute_forward_gated_delta_net(
     }
 }
 
+// HISA operators - CPU implementations
+
+// ggml_compute_forward_hisa_block_pool
+// Mean-pool K rows into blocks
+// Supports F32 and F16 source/destination types
+void ggml_compute_forward_hisa_block_pool(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    GGML_UNUSED(params);
+    const ggml_tensor * src0 = dst->src[0];
+    const int64_t n_rows     = ggml_get_op_params_i32(dst, 0);
+    const int32_t block_size = ggml_get_op_params_i32(dst, 1);
+
+    const int64_t d       = src0->ne[0];
+    const int64_t n_heads = src0->ne[2];
+    const int64_t n_batch = src0->ne[3];
+    const int64_t n_blocks = n_rows / block_size;
+
+    const size_t nb0 = src0->nb[0];
+    const size_t nb1 = src0->nb[1];
+    const size_t nb2 = src0->nb[2];
+    const size_t nb3 = src0->nb[3];
+
+    const size_t d_nb1 = dst->nb[1];
+    const size_t d_nb2 = dst->nb[2];
+    const size_t d_nb3 = dst->nb[3];
+
+    const int64_t total_blocks = n_blocks * n_heads * n_batch;
+
+    if (src0->type == GGML_TYPE_F32) {
+        const float * src0_data = (const float *) src0->data;
+        float * dst_data = (float *) dst->data;
+
+        for (int64_t blk = 0; blk < total_blocks; blk++) {
+            const int64_t ib = blk % n_blocks;
+            const int64_t ih = (blk / n_blocks) % n_heads;
+            const int64_t ibt = blk / (n_blocks * n_heads);
+
+            float * dst_ptr = (float *)((char *)dst_data + ib * d_nb1 + ih * d_nb2 + ibt * d_nb3);
+            const float * src_ptr = (const float *)((const char *)src0_data + ib * block_size * nb1 + ih * nb2 + ibt * nb3);
+
+            for (int64_t di = 0; di < d; di++) {
+                float sum = 0.0f;
+                for (int bs = 0; bs < block_size; bs++) {
+                    sum += src_ptr[di + bs * nb1 / sizeof(float)];
+                }
+                dst_ptr[di] = sum / (float)block_size;
+            }
+        }
+    } else if (src0->type == GGML_TYPE_F16) {
+        const ggml_fp16_t * src0_data = (const ggml_fp16_t *) src0->data;
+        ggml_fp16_t * dst_data = (ggml_fp16_t *) dst->data;
+
+        for (int64_t blk = 0; blk < total_blocks; blk++) {
+            const int64_t ib = blk % n_blocks;
+            const int64_t ih = (blk / n_blocks) % n_heads;
+            const int64_t ibt = blk / (n_blocks * n_heads);
+
+            ggml_fp16_t * dst_ptr = (ggml_fp16_t *)((char *)dst_data + ib * d_nb1 + ih * d_nb2 + ibt * d_nb3);
+            const ggml_fp16_t * src_ptr = (const ggml_fp16_t *)((const char *)src0_data + ib * block_size * nb1 + ih * nb2 + ibt * nb3);
+
+            for (int64_t di = 0; di < d; di++) {
+                float sum = 0.0f;
+                for (int bs = 0; bs < block_size; bs++) {
+                    sum += ggml_fp16_to_fp32(src_ptr[di + bs * nb1 / sizeof(ggml_fp16_t)]);
+                }
+                dst_ptr[di] = ggml_fp32_to_fp16(sum / (float)block_size);
+            }
+        }
+    } else {
+        GGML_ABORT("hisa_block_pool: unsupported type %s", ggml_type_name(src0->type));
+    }
+}
+
+// ggml_compute_forward_hisa_gather
+// Gather rows by index list
+void ggml_compute_forward_hisa_gather(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    GGML_UNUSED(params);
+    const ggml_tensor * src0 = dst->src[0];
+    const ggml_tensor * idx  = dst->src[1];
+
+    const int32_t * idx_data = (const int32_t *) idx->data;
+
+    const int64_t d      = src0->ne[0];
+    const int64_t n_heads = src0->ne[2];
+    const int64_t n_batch = src0->ne[3];
+    const int64_t n_indices = idx->ne[0];
+
+    const size_t nb0 = src0->nb[0];
+    const size_t nb1 = src0->nb[1];
+    const size_t nb2 = src0->nb[2];
+    const size_t nb3 = src0->nb[3];
+
+    const size_t d_nb1 = dst->nb[1];
+    const size_t d_nb2 = dst->nb[2];
+    const size_t d_nb3 = dst->nb[3];
+
+    if (src0->type == GGML_TYPE_F32) {
+        const float * src0_data = (const float *) src0->data;
+        float * dst_data = (float *) dst->data;
+
+        for (int64_t ii = 0; ii < n_indices; ii++) {
+            const int32_t row_idx = idx_data[ii];
+            const int64_t i0 = ii % n_indices;
+            const int64_t i1 = (ii / n_indices) % n_heads;
+            const int64_t i2 = (ii / (n_indices * n_heads)) % n_batch;
+
+            float * dst_ptr = (float *)((char *)dst_data + i0 * d_nb1 + i1 * d_nb2 + i2 * d_nb3);
+            const float * src_ptr = (const float *)((const char *)src0_data + row_idx * nb1 + i1 * nb2 + i2 * nb3);
+
+            for (int64_t di = 0; di < d; di++) {
+                dst_ptr[di] = *(const float *)((const char *)src_ptr + di * nb0);
+            }
+        }
+    } else if (src0->type == GGML_TYPE_F16) {
+        const ggml_fp16_t * src0_data = (const ggml_fp16_t *) src0->data;
+        ggml_fp16_t * dst_data = (ggml_fp16_t *) dst->data;
+
+        for (int64_t ii = 0; ii < n_indices; ii++) {
+            const int32_t row_idx = idx_data[ii];
+            const int64_t i0 = ii % n_indices;
+            const int64_t i1 = (ii / n_indices) % n_heads;
+            const int64_t i2 = (ii / (n_indices * n_heads)) % n_batch;
+
+            ggml_fp16_t * dst_ptr = (ggml_fp16_t *)((char *)dst_data + i0 * d_nb1 + i1 * d_nb2 + i2 * d_nb3);
+            const ggml_fp16_t * src_ptr = (const ggml_fp16_t *)((const char *)src0_data + row_idx * nb1 + i1 * nb2 + i2 * nb3);
+
+            for (int64_t di = 0; di < d; di++) {
+                dst_ptr[di] = *(const ggml_fp16_t *)((const char *)src_ptr + di * nb0);
+            }
+        }
+    } else {
+        GGML_ABORT("hisa_gather: unsupported type %s", ggml_type_name(src0->type));
+    }
+}
+
+// ggml_compute_forward_hisa_block_gather
+// Gather full blocks by block index list
+// Supports F32 and F16 source/destination types
+void ggml_compute_forward_hisa_block_gather(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    GGML_UNUSED(params);
+    const ggml_tensor * src0 = dst->src[0];
+    const ggml_tensor * idx  = dst->src[1];
+    const int32_t block_size = ggml_get_op_params_i32(dst, 0);
+
+    const int32_t * idx_data = (const int32_t *) idx->data;
+
+    const int64_t d      = src0->ne[0];
+    const int64_t n_heads = src0->ne[2];
+    const int64_t n_batch = src0->ne[3];
+    const int64_t n_indices = idx->ne[0];
+
+    const size_t nb0 = src0->nb[0];
+    const size_t nb1 = src0->nb[1];
+    const size_t nb2 = src0->nb[2];
+    const size_t nb3 = src0->nb[3];
+
+    const size_t d_nb1 = dst->nb[1];
+    const size_t d_nb2 = dst->nb[2];
+    const size_t d_nb3 = dst->nb[3];
+
+    const size_t row_bytes = nb1; // bytes per row within a block
+
+    if (src0->type == GGML_TYPE_F32) {
+        const float * src0_data = (const float *) src0->data;
+        float * dst_data = (float *) dst->data;
+
+        for (int64_t ii = 0; ii < n_indices; ii++) {
+            const int32_t block_idx = idx_data[ii];
+            const int64_t i0 = ii % n_indices;
+            const int64_t i1 = (ii / n_indices) % n_heads;
+            const int64_t i2 = (ii / (n_indices * n_heads)) % n_batch;
+
+            float * dst_ptr = (float *)((char *)dst_data + i0 * d_nb1 + i1 * d_nb2 + i2 * d_nb3);
+            const float * src_block = (const float *)((const char *)src0_data + block_idx * nb1 + i1 * nb2 + i2 * nb3);
+
+            const int64_t block_rows = block_size;
+            for (int64_t br = 0; br < block_rows; br++) {
+                for (int64_t di = 0; di < d; di++) {
+                    dst_ptr[di] = *(const float *)((const char *)src_block + br * row_bytes + di * nb0);
+                }
+                dst_ptr = (float *)((char *)dst_ptr + d_nb1);
+            }
+        }
+    } else if (src0->type == GGML_TYPE_F16) {
+        const ggml_fp16_t * src0_data = (const ggml_fp16_t *) src0->data;
+        ggml_fp16_t * dst_data = (ggml_fp16_t *) dst->data;
+
+        for (int64_t ii = 0; ii < n_indices; ii++) {
+            const int32_t block_idx = idx_data[ii];
+            const int64_t i0 = ii % n_indices;
+            const int64_t i1 = (ii / n_indices) % n_heads;
+            const int64_t i2 = (ii / (n_indices * n_heads)) % n_batch;
+
+            ggml_fp16_t * dst_ptr = (ggml_fp16_t *)((char *)dst_data + i0 * d_nb1 + i1 * d_nb2 + i2 * d_nb3);
+            const ggml_fp16_t * src_block = (const ggml_fp16_t *)((const char *)src0_data + block_idx * nb1 + i1 * nb2 + i2 * nb3);
+
+            const int64_t block_rows = block_size;
+            for (int64_t br = 0; br < block_rows; br++) {
+                for (int64_t di = 0; di < d; di++) {
+                    dst_ptr[di] = *(const ggml_fp16_t *)((const char *)src_block + br * row_bytes + di * nb0);
+                }
+                dst_ptr = (ggml_fp16_t *)((char *)dst_ptr + d_nb1);
+            }
+        }
+    } else {
+        GGML_ABORT("hisa_block_gather: unsupported type %s", ggml_type_name(src0->type));
+    }
+}
+
+// ggml_compute_forward_hisa_gather_mask
+// Gather mask rows via two-level index mapping
+void ggml_compute_forward_hisa_gather_mask(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    GGML_UNUSED(params);
+    const ggml_tensor * src0 = dst->src[0]; // K: [d, n_kv, n_heads, n_batch]
+    const ggml_tensor * idx  = dst->src[1]; // token indices: [n_tokens, n_heads, n_batch]
+    const ggml_tensor * idx2 = dst->src[2]; // mask indices: [n_indices]
+
+    const int32_t * idx_data = (const int32_t *) idx->data;
+    const int32_t * idx2_data = (const int32_t *) idx2->data;
+
+    const int64_t d      = src0->ne[0];
+    const int64_t n_heads = idx->ne[1];
+    const int64_t n_batch = idx->ne[2];
+    const int64_t n_indices = idx2->ne[0];
+
+    const size_t nb0 = src0->nb[0];
+    const size_t nb1 = src0->nb[1];
+    const size_t nb2 = src0->nb[2];
+    const size_t nb3 = src0->nb[3];
+
+    const size_t d_nb1 = dst->nb[1];
+    const size_t d_nb2 = dst->nb[2];
+    const size_t d_nb3 = dst->nb[3];
+
+    if (src0->type == GGML_TYPE_F32) {
+        const float * src0_data = (const float *) src0->data;
+        float * dst_data = (float *) dst->data;
+
+        for (int64_t mi = 0; mi < n_indices; mi++) {
+            const int32_t idx_entry = idx2_data[mi];
+            const int64_t mt = idx_entry % idx->ne[0];
+            const int64_t mh = (idx_entry / idx->ne[0]) % n_heads;
+            const int64_t mb = idx_entry / (idx->ne[0] * n_heads);
+            const int32_t kv_row = idx_data[mt * n_heads * n_batch + mh * n_batch + mb];
+            const float * src_ptr = (const float *)((const char *)src0_data + kv_row * nb1 + mh * nb2 + mb * nb3);
+            float * dst_ptr = (float *)((char *)dst_data + mi * d_nb1 + mh * d_nb2 + mb * d_nb3);
+            for (int64_t di = 0; di < d; di++) {
+                dst_ptr[di] = *(const float *)((const char *)src_ptr + di * nb0);
+            }
+        }
+    } else if (src0->type == GGML_TYPE_F16) {
+        const ggml_fp16_t * src0_data = (const ggml_fp16_t *) src0->data;
+        ggml_fp16_t * dst_data = (ggml_fp16_t *) dst->data;
+
+        for (int64_t mi = 0; mi < n_indices; mi++) {
+            const int32_t idx_entry = idx2_data[mi];
+            const int64_t mt = idx_entry % idx->ne[0];
+            const int64_t mh = (idx_entry / idx->ne[0]) % n_heads;
+            const int64_t mb = idx_entry / (idx->ne[0] * n_heads);
+            const int32_t kv_row = idx_data[mt * n_heads * n_batch + mh * n_batch + mb];
+            const ggml_fp16_t * src_ptr = (const ggml_fp16_t *)((const char *)src0_data + kv_row * nb1 + mh * nb2 + mb * nb3);
+            ggml_fp16_t * dst_ptr = (ggml_fp16_t *)((char *)dst_data + mi * d_nb1 + mh * d_nb2 + mb * d_nb3);
+            for (int64_t di = 0; di < d; di++) {
+                dst_ptr[di] = *(const ggml_fp16_t *)((const char *)src_ptr + di * nb0);
+            }
+        }
+    } else {
+        GGML_ABORT("hisa_gather_mask: unsupported type %s", ggml_type_name(src0->type));
+    }
+}
+
+// ggml_compute_forward_residual_store
+// Store residual state to checkpoint buffer (simple copy)
+void ggml_compute_forward_residual_store(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    GGML_UNUSED(params);
+    const ggml_tensor * src0 = dst->src[0];
+
+    const int64_t d        = src0->ne[0];
+    const int64_t n_tokens = src0->ne[1];
+    const size_t nbytes    = d * n_tokens * ggml_type_size(src0->type);
+
+    memcpy(dst->data, src0->data, nbytes);
+}
+
+// ggml_compute_forward_residual_restore
+// Restore residual state from checkpoint buffer (simple copy)
+void ggml_compute_forward_residual_restore(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    GGML_UNUSED(params);
+    const ggml_tensor * src0 = dst->src[0];
+
+    const int64_t d        = src0->ne[0];
+    const int64_t n_tokens = src0->ne[1];
+    const size_t nbytes    = d * n_tokens * ggml_type_size(src0->type);
+
+    memcpy(dst->data, src0->data, nbytes);
+}
+
 // ggml_compute_forward_rwkv_wkv7
 
 static void ggml_compute_forward_rwkv_wkv7_f32(

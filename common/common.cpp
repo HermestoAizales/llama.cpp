@@ -1,5 +1,26 @@
 #include "ggml.h"
 #include "gguf.h"
+#include "ggml-cuda.h"
+#include "ggml-backend.h"
+#include "optimizer_preset.h"
+
+// Fused MoE CUDA backend function pointers
+// Loaded dynamically at runtime to support both static linking and GGML_BACKEND_DL
+static void (*ggml_backend_cuda_set_fused_moe_fn)(int device, bool enable) = nullptr;
+static void (*ggml_backend_cuda_fused_moe_init_cache_fn)(int device, int64_t n_expert, size_t max_vram_mb, int32_t n_streams) = nullptr;
+static bool g_fused_moe_cuda_funcs_loaded = false;
+
+static void load_fused_moe_cuda_funcs() {
+    if (g_fused_moe_cuda_funcs_loaded) return;
+    g_fused_moe_cuda_funcs_loaded = true;
+    // Try to get function pointers from the CUDA backend registration
+    // This works with both static linking and dynamic backend loading (GGML_BACKEND_DL)
+    ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
+    if (reg) {
+        ggml_backend_cuda_set_fused_moe_fn = (void(*)(int, bool))ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_set_fused_moe");
+        ggml_backend_cuda_fused_moe_init_cache_fn = (void(*)(int, int64_t, size_t, int32_t))ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_fused_moe_init_cache");
+    }
+}
 
 #include "build-info.h"
 #include "common.h"
@@ -443,27 +464,6 @@ std::string string_strip(const std::string & str) {
         end--;
     }
     return str.substr(start, end - start);
-}
-
-std::string string_lcs(std::string_view a, std::string_view b) {
-    if (a.empty() || b.empty()) return {};
-
-    std::vector<std::vector<size_t>> dp(a.size() + 1, std::vector<size_t>(b.size() + 1, 0));
-    size_t best_len = 0;
-    size_t best_end_a = 0;
-
-    for (size_t i = 1; i <= a.size(); ++i) {
-        for (size_t j = 1; j <= b.size(); ++j) {
-            if (a[i - 1] == b[j - 1]) {
-                dp[i][j] = dp[i - 1][j - 1] + 1;
-                if (dp[i][j] > best_len) {
-                    best_len = dp[i][j];
-                    best_end_a = i;
-                }
-            }
-        }
-    }
-    return std::string(a.substr(best_end_a - best_len, best_len));
 }
 
 std::string string_get_sortable_timestamp() {
@@ -1186,6 +1186,22 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     auto mparams = common_model_params_to_llama(params);
     auto cparams = common_context_params_to_llama(params);
 
+    // Load model preset if specified (applied before fit so preset values are respected)
+    if (!params.model_preset.empty()) {
+        LOG_INF("%s: loading model preset from '%s'\n", __func__, params.model_preset.c_str());
+        optimizer_preset_params pp;
+        if (optimizer_preset_load(params.model_preset, pp)) {
+            optimizer_preset_apply(pp, params);
+            LOG_INF("%s: model preset loaded successfully\n", __func__);
+        } else {
+            LOG_WRN("%s: failed to load model preset from '%s', continuing without preset\n",
+                __func__, params.model_preset.c_str());
+        }
+        // Re-derive llama params from the (potentially modified) common_params
+        mparams = common_model_params_to_llama(params);
+        cparams = common_context_params_to_llama(params);
+    }
+
     if (params.fit_params) {
         LOG_INF("%s: fitting params to device memory ...\n", __func__);
         LOG_INF("%s: (for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)\n", __func__);
@@ -1194,7 +1210,7 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
             params.tensor_buft_overrides.data(),
             params.fit_params_target.data(),
             params.fit_params_min_ctx,
-            params.verbosity >= LOG_LEVEL_DEBUG ? GGML_LOG_LEVEL_DEBUG : GGML_LOG_LEVEL_ERROR);
+            params.verbosity >= 4 ? GGML_LOG_LEVEL_DEBUG : GGML_LOG_LEVEL_ERROR);
     }
 
     llama_model * model = llama_model_load_from_file(params.model.path.c_str(), mparams);
@@ -1203,10 +1219,6 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     }
 
     pimpl->model.reset(model);
-
-    if (model_only) {
-        return;
-    }
 
     const llama_vocab * vocab = llama_model_get_vocab(model);
 
@@ -1277,6 +1289,29 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
         cparams.n_samplers = pimpl->samplers_seq_config.size();
     }
 
+    // [TAG_RS_STATE_ROLLBACK_SUPPORT]
+    // TODO: ngram speculative methods require checkpointing in addition to partial RS rollback
+    //       currently this is not supported. so we disable the partial rollback
+    if (cparams.n_rs_seq > 0 && (llama_model_is_recurrent(model) || llama_model_is_hybrid(model))) {
+        auto & types = params.speculative.types;
+
+        for (int i = 0; i < (int) types.size(); i++) {
+            if (types[i] == COMMON_SPECULATIVE_TYPE_NONE) {
+                continue;
+            }
+            if (types[i] == COMMON_SPECULATIVE_TYPE_DRAFT_MTP) {
+                continue;
+            }
+
+            cparams.n_rs_seq = 0;
+
+            LOG_WRN("%s: recurrent state rollback is not compatible with '%s' - disabling rollback support\n", __func__,
+                    common_speculative_type_to_str(types[i]).c_str());
+
+            break;
+        }
+    }
+
     llama_context * lctx = llama_init_from_model(model, cparams);
     if (lctx == NULL) {
         LOG_ERR("%s: failed to create context with model '%s'\n", __func__, params.model.path.c_str());
@@ -1284,6 +1319,52 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     }
 
     pimpl->context.reset(lctx);
+
+    // Initialize fused MoE if enabled
+    if (params.fused_moe) {
+        const int n_expert = llama_model_n_expert(model);
+        if (n_expert > 0) {
+            // Find CUDA backends and enable fused MoE
+            // This works with both static linking and dynamic backend loading (GGML_BACKEND_DL)
+            bool cuda_found = false;
+            for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+                ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+                if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+                    const char * name = ggml_backend_dev_name(dev);
+                    if (strncmp(name, "cuda", 4) == 0 || strncmp(name, "CUDA", 4) == 0) {
+                        size_t free_mem = 0, total_mem = 0;
+                        ggml_backend_dev_memory(dev, &free_mem, &total_mem);
+
+                        // Use configured VRAM budget or auto (25% of free VRAM)
+                        size_t max_vram_mb = params.moe_max_vram_mb;
+                        if (max_vram_mb == 0) {
+                            max_vram_mb = (free_mem / (1024 * 1024)) / 4;
+                        }
+
+                        // Use the loop index as device index (works for single-GPU setups)
+                        int device = (int)i;
+                        load_fused_moe_cuda_funcs();
+                        if (ggml_backend_cuda_set_fused_moe_fn && ggml_backend_cuda_fused_moe_init_cache_fn) {
+                            ggml_backend_cuda_set_fused_moe_fn(device, true);
+                            ggml_backend_cuda_fused_moe_init_cache_fn(device, n_expert, max_vram_mb, params.moe_prefetch_streams);
+                        } else {
+                            LOG_WRN("%s: --fused-moe enabled but CUDA backend functions not available, ignoring\n", __func__);
+                            continue;
+                        }
+
+                        LOG_INF("%s: fused MoE enabled on CUDA device %zu (experts=%d, vram_budget=%zuMB, streams=%d)\n",
+                            __func__, i, (int)n_expert, max_vram_mb, params.moe_prefetch_streams);
+                        cuda_found = true;
+                    }
+                }
+            }
+            if (!cuda_found) {
+                LOG_WRN("%s: --fused-moe enabled but no CUDA backend found, ignoring\n", __func__);
+            }
+        } else {
+            LOG_WRN("%s: --fused-moe enabled but model has no experts, ignoring\n", __func__);
+        }
+    }
 }
 
 llama_model * common_init_result::model() {
@@ -1317,10 +1398,6 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
     llama_model * model = res->model();
     if (model == NULL) {
         LOG_ERR("%s: failed to load model '%s'\n", __func__, params.model.path.c_str());
-        return res;
-    }
-
-    if (model_only) {
         return res;
     }
 
@@ -1387,7 +1464,7 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
     }
 
     if (params.warmup) {
-        LOG_INF("%s: warming up the model with an empty run - please wait ... (--no-warmup to disable)\n", __func__);
+        LOG_WRN("%s: warming up the model with an empty run - please wait ... (--no-warmup to disable)\n", __func__);
 
         llama_set_warmup(lctx, true);
 
@@ -1587,6 +1664,22 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.op_offload        = !params.no_op_offload;
     cparams.swa_full          = params.swa_full;
     cparams.kv_unified        = params.kv_unified;
+    cparams.hisa              = params.hisa;
+    cparams.hisa_block_size   = params.hisa ? (params.hisa_block_size > 0 ? params.hisa_block_size : (params.hisa_min_tokens > 0 ? params.hisa_min_tokens * 4 : 64)) : 0;
+    cparams.hisa_min_tokens   = params.hisa_min_tokens;
+    cparams.hisa_sparsity     = params.hisa_sparsity;
+    cparams.hisa_sink_protect = params.hisa_sink_protect;
+    cparams.hisa_sparsity_scale = params.hisa_sparsity_scale;
+    cparams.hisa_per_head       = params.hisa_per_head;
+    cparams.kv_cache_bounded    = params.kv_cache_bounded;
+
+    // fused MoE params
+    cparams.fused_moe           = params.fused_moe;
+    cparams.moe_prefetch_streams = params.moe_prefetch_streams;
+    cparams.moe_max_vram_mb     = params.moe_max_vram_mb;
+
+    // pipeline partial offload
+    cparams.pipeline_partial  = params.pipeline_partial;
 
     cparams.type_k = params.cache_type_k;
     cparams.type_v = params.cache_type_v;

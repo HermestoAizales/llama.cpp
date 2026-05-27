@@ -583,6 +583,17 @@ extern "C" {
 
         GGML_OP_GLU,
 
+
+        // HISA operators (Hierarchical Indexed Sparse Attention)
+        GGML_OP_HISA_BLOCK_POOL,    // HISA: mean-pool K rows into blocks
+        GGML_OP_HISA_GATHER,        // HISA: gather rows by index list
+        GGML_OP_HISA_BLOCK_GATHER,  // HISA: gather full blocks by block index list
+        GGML_OP_HISA_GATHER_MASK,   // HISA: gather mask rows via two-level index mapping
+
+        // Residual checkpoint operators (Bounded KV cache)
+        GGML_OP_RESIDUAL_STORE,     // Bounded KV: store residual state to checkpoint buffer
+        GGML_OP_RESIDUAL_RESTORE,   // Bounded KV: load residual state from checkpoint buffer
+
         GGML_OP_COUNT,
     };
 
@@ -2554,6 +2565,42 @@ extern "C" {
             struct ggml_tensor  * g,
             struct ggml_tensor  * beta,
             struct ggml_tensor  * state);
+
+    // HISA operators (Hierarchical Indexed Sparse Attention)
+
+    GGML_API struct ggml_tensor * ggml_hisa_block_pool(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * src,
+            int64_t               n_rows,
+            int                   block_size);
+
+    GGML_API struct ggml_tensor * ggml_hisa_gather(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * src,
+            struct ggml_tensor  * idx);
+
+    GGML_API struct ggml_tensor * ggml_hisa_block_gather(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * src,
+            struct ggml_tensor  * idx,
+            int                   block_size);
+
+    GGML_API struct ggml_tensor * ggml_hisa_gather_mask(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * src,
+            struct ggml_tensor  * idx,
+            struct ggml_tensor  * idx2,
+            int64_t               n_indices);
+
+    // Residual checkpoint operators (Bounded KV cache)
+
+    GGML_API struct ggml_tensor * ggml_residual_store(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * src);
+
+    GGML_API struct ggml_tensor * ggml_residual_restore(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * src);
 
     // custom operators
 

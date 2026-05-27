@@ -581,8 +581,7 @@ struct llm_graph_params {
             ubatch.n_seqs_unq   == other.ubatch.n_seqs_unq &&
             (
                 (!ubatch.token && !other.ubatch.token) ||
-                (!ubatch.embd  && !other.ubatch.embd)  ||
-                (ubatch.token && other.ubatch.token && ubatch.embd && other.ubatch.embd)
+                (!ubatch.embd  && !other.ubatch.embd)
             );
 
         // when we split the batch using "equal_seqs" we have to verify that the participating sequences are the same
@@ -724,6 +723,16 @@ struct llm_graph_context {
     const llama_hparams & hparams;
     const llama_cparams & cparams;
     const llama_ubatch  & ubatch;
+
+    // HISA parameters
+    bool    hisa;
+    int32_t hisa_block_size;
+    int32_t hisa_min_tokens;
+    float   hisa_sparsity;
+    bool    hisa_sink_protect;
+    float   hisa_sparsity_scale;
+    bool    hisa_per_head;
+    int32_t kv_cache_bounded;
 
     const int64_t n_embd;
     const int64_t n_layer;

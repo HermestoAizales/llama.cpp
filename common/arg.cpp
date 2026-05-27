@@ -536,11 +536,7 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
                 throw std::invalid_argument(string_format("error: invalid argument: %s", arg.c_str()));
             }
             if (!seen_args.insert(arg).second) {
-                const bool skip = (arg == "--spec-type");
-
-                if (!skip) {
-                    LOG_WRN("DEPRECATED: argument '%s' specified multiple times, use comma-separated values instead (only last value will be used)\n", arg.c_str());
-                }
+                LOG_WRN("DEPRECATED: argument '%s' specified multiple times, use comma-separated values instead (only last value will be used)\n", arg.c_str());
             }
             auto & tmp = arg_to_options[arg];
             auto opt = *tmp.first;
@@ -897,11 +893,7 @@ bool common_params_to_map(int argc, char ** argv, llama_example ex, std::map<com
             throw std::invalid_argument(string_format("error: invalid argument: %s", arg.c_str()));
         }
         if (!seen_args.insert(arg).second) {
-            const bool skip = (arg == "--spec-type");
-
-            if (!skip) {
-                LOG_WRN("DEPRECATED: argument '%s' specified multiple times, use comma-separated values instead (only last value will be used)\n", arg.c_str());
-            }
+            LOG_WRN("DEPRECATED: argument '%s' specified multiple times, use comma-separated values instead (only last value will be used)\n", arg.c_str());
         }
         auto opt = *arg_to_options[arg];
         std::string val;
@@ -1334,15 +1326,12 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_CTX_CHECKPOINTS").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
     add_opt(common_arg(
-        {"-cms", "--checkpoint-min-step"}, "N",
-        string_format("minimum spacing between context checkpoints in tokens (default: %d, 0 = no minimum)", params.checkpoint_min_step),
+        {"-cpent", "--checkpoint-every-n-tokens"}, "N",
+        string_format("create a checkpoint every n tokens during prefill (processing), -1 to disable (default: %d)", params.checkpoint_min_step),
         [](common_params & params, int value) {
-            if (value < 0) {
-                throw std::invalid_argument("checkpoint-min-step must be non-negative");
-            }
             params.checkpoint_min_step = value;
         }
-    ).set_env("LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT").set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_env("LLAMA_ARG_CHECKPOINT_EVERY_NT").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
     add_opt(common_arg(
         {"-cram", "--cache-ram"}, "N",
         string_format("set the maximum cache size in MiB (default: %d, -1 - no limit, 0 - disable)"
@@ -1523,12 +1512,62 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
-        {"-sp", "--special"},
-        string_format("special tokens output enabled (default: %s)", params.special ? "true" : "false"),
+        {"--hisa"},
+        "use Hierarchical Indexed Sparse Attention",
         [](common_params & params) {
-            params.special = true;
+            params.hisa = true;
         }
-    ).set_examples({LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_SERVER}));
+    ).set_env("LLAMA_ARG_HISA"));
+    add_opt(common_arg(
+        {"--hisa-min-tokens"}, "N",
+        string_format("minimum tokens for HISA to be active (default: %d)", params.hisa_min_tokens),
+        [](common_params & params, int value) {
+            params.hisa_min_tokens = value;
+        }
+    ).set_env("LLAMA_ARG_HISA_MIN_TOKENS"));
+    add_opt(common_arg(
+        {"--hisa-block-size"}, "N",
+        string_format("HISA block size (default: hisa_min_tokens * 4, min 16, max 256)", 64),
+        [](common_params & params, int value) {
+            params.hisa_block_size = value;
+        }
+    ).set_env("LLAMA_ARG_HISA_BLOCK_SIZE"));
+    add_opt(common_arg(
+        {"--hisa-sparsity"}, "F",
+        string_format("HISA sparsity: fraction of blocks to select, 0.0=all, 0.5=half, 0.9=top 10%% (default: %.1f)", (double)params.hisa_sparsity),
+        [](common_params & params, const std::string & value) {
+            params.hisa_sparsity = std::stof(value);
+        }
+    ).set_env("LLAMA_ARG_HISA_SPARSITY"));
+    add_opt(common_arg(
+        {"--hisa-sink-protect"}, "0|1",
+        string_format("protect attention sink tokens from eviction (default: %d)", params.hisa_sink_protect),
+        [](common_params & params, const std::string & value) {
+            params.hisa_sink_protect = (value == "1" || value == "true");
+        }
+    ).set_env("LLAMA_ARG_HISA_SINK_PROTECT"));
+    add_opt(common_arg(
+        {"--hisa-sparsity-scale"}, "F",
+        string_format("HISA layer-adaptive sparsity scale, 0.0=uniform, 1.0=pyramid (default: %.1f)", (double)params.hisa_sparsity_scale),
+        [](common_params & params, const std::string & value) {
+            params.hisa_sparsity_scale = std::stof(value);
+        }
+    ).set_env("LLAMA_ARG_HISA_SPARSITY_SCALE"));
+    add_opt(common_arg(
+        {"--hisa-per-head"},
+        "enable per-head sparse attention (SnapKV-inspired)",
+        [](common_params & params) {
+            params.hisa_per_head = true;
+        }
+    ).set_env("LLAMA_ARG_HISA_PER_HEAD"));
+
+    add_opt(common_arg(
+        {"--kv-cache-bounded"}, "N",
+        "bounded KV cache: max active tokens (0 = unlimited, default: 0)",
+        [](common_params & params, int value) {
+            params.kv_cache_bounded = value;
+        }
+    ).set_env("LLAMA_ARG_KV_CACHE_BOUNDED"));
     add_opt(common_arg(
         {"-cnv", "--conversation"},
         {"-no-cnv", "--no-conversation"},
@@ -2051,6 +2090,22 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_NO_HOST"));
     add_opt(common_arg(
+        {"-pp", "--pipeline-partial"}, "[0|1]",
+        string_format("enable pipeline parallelism for partial offload (0=off, 1=on, default: %d), "
+                      "allows overlapping GPU compute with CPU compute at the cost of additional VRAM",
+                      params.pipeline_partial),
+        [](common_params & params, const std::string & value) {
+            if (is_truthy(value)) {
+                params.pipeline_partial = true;
+            } else if (is_falsey(value)) {
+                params.pipeline_partial = false;
+            } else {
+                throw std::invalid_argument(
+                    string_format("error: unknown value for --pipeline-partial: '%s' (allowed: 0, 1, on, off, true, false)\n", value.c_str()));
+            }
+        }
+    ).set_env("LLAMA_ARG_PIPELINE_PARTIAL"));
+    add_opt(common_arg(
         {"-ctk", "--cache-type-k"}, "TYPE",
         string_format(
             "KV cache data type for K\n"
@@ -2336,6 +2391,30 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_CPU_MOE"));
     add_opt(common_arg(
+        {"--fused-moe"}, "[on|off]",
+        "use fused MoE kernel with async weight prefetch (default: off)",
+        [](common_params & params, const std::string & value) {
+            if (value == "on")  params.fused_moe = true;
+            if (value == "off") params.fused_moe = false;
+        }
+    ).set_env("LLAMA_ARG_FUSED_MOE"));
+    add_opt(common_arg(
+        {"--moe-prefetch-streams"}, "N",
+        string_format("number of parallel prefetch streams for expert weights (default: %d)", params.moe_prefetch_streams),
+        [](common_params & params, int value) {
+            if (value < 1) throw std::invalid_argument("moe-prefetch-streams must be >= 1");
+            params.moe_prefetch_streams = value;
+        }
+    ).set_env("LLAMA_ARG_MOE_PREFETCH_STREAMS"));
+    add_opt(common_arg(
+        {"--moe-max-vram"}, "N",
+        string_format("max VRAM in MB for expert weight ring buffer (default: %d)", params.moe_max_vram_mb),
+        [](common_params & params, int value) {
+            if (value < 0) throw std::invalid_argument("moe-max-vram must be >= 0");
+            params.moe_max_vram_mb = value;
+        }
+    ).set_env("LLAMA_ARG_MOE_MAX_VRAM"));
+    add_opt(common_arg(
         {"-ncmoe", "--n-cpu-moe"}, "N",
         "keep the Mixture of Experts (MoE) weights of the first N layers in the CPU",
         [](common_params & params, int value) {
@@ -2613,6 +2692,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.model.url = value;
         }
     ).set_env("LLAMA_ARG_MODEL_URL"));
+    add_opt(common_arg(
+        {"-mp", "--model-preset"}, "FILENAME",
+        "path to an INI preset file with pre-configured runtime parameters (generated by llama-optimizer)",
+        [](common_params & params, const std::string & value) {
+            params.model_preset = value;
+        }
+    ).set_env("LLAMA_ARG_MODEL_PRESET"));
     add_opt(common_arg(
         { "-dr", "--docker-repo" }, "[<repo>/]<model>[:quant]",
         "Docker Hub model repository. repo is optional, default to ai/. quant is optional, default to :latest.\n"
@@ -3026,7 +3112,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 params.default_template_kwargs[item.key()] = item.value().dump();
             }
         }
-    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_CHAT_TEMPLATE_KWARGS"));
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_CHAT_TEMPLATE_KWARGS"));
     add_opt(common_arg(
         {"-to", "--timeout"}, "N",
         string_format("server read/write timeout in seconds (default: %d)", params.timeout_read),
@@ -3327,7 +3413,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params &, const std::string & value) {
             common_log_set_file(common_log_main(), value.c_str());
         }
-    ).set_env("LLAMA_ARG_LOG_FILE"));
+    ).set_env("LLAMA_LOG_FILE"));
     add_opt(common_arg(
         {"--log-colors"}, "[on|off|auto]",
         "Set colored logging ('on', 'off', or 'auto', default: 'auto')\n"
@@ -3344,7 +3430,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                     string_format("error: unknown value for --log-colors: '%s'\n", value.c_str()));
             }
         }
-    ).set_env("LLAMA_ARG_LOG_COLORS"));
+    ).set_env("LLAMA_LOG_COLORS"));
     add_opt(common_arg(
         {"-v", "--verbose", "--log-verbose"},
         "Set verbosity level to infinity (i.e. log all messages, useful for debugging)",
@@ -3359,7 +3445,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params) {
             params.offline = true;
         }
-    ).set_env("LLAMA_ARG_OFFLINE"));
+    ).set_env("LLAMA_OFFLINE"));
     add_opt(common_arg(
         {"-lv", "--verbosity", "--log-verbosity"}, "N",
         string_format("Set the verbosity threshold. Messages with a higher verbosity will be ignored. Values:\n"
@@ -3367,14 +3453,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             " - 1: error\n"
             " - 2: warning\n"
             " - 3: info\n"
-            " - 4: trace (more info)\n"
-            " - 5: debug\n"
+            " - 4: debug\n"
             "(default: %d)\n", params.verbosity),
         [](common_params & params, int value) {
             params.verbosity = value;
             common_log_set_verbosity_thold(value);
         }
-    ).set_env("LLAMA_ARG_LOG_VERBOSITY"));
+    ).set_env("LLAMA_LOG_VERBOSITY"));
     add_opt(common_arg(
         {"--log-prefix"},
         {"--no-log-prefix"},
@@ -3594,15 +3679,6 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.speculative.draft.p_min = std::stof(value);
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_P_MIN"));
-    add_opt(common_arg(
-        {"--spec-draft-backend-sampling"},
-        {"--no-spec-draft-backend-sampling"},
-        string_format("offload draft sampling to the backend (default: %s)",
-                      params.speculative.draft.backend_sampling ? "enabled" : "disabled"),
-        [](common_params & params, bool value) {
-            params.speculative.draft.backend_sampling = value;
-        }
-    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_BACKEND_SAMPLING"));
     add_opt(common_arg(
         {"--spec-draft-device", "-devd", "--device-draft"}, "<dev1,dev2,..>",
         "comma-separated list of devices to use for offloading the draft model (none = don't offload)\n"
@@ -4138,12 +4214,6 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.speculative.ngram_mod.n_match = 24;
             params.speculative.ngram_mod.n_min = 48;
             params.speculative.ngram_mod.n_max = 64;
-
-            // TODO: not sure if this is a good config - explore more settings and potentially enable it
-            //params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V);
-            //params.speculative.ngram_map_k4v.size_n = 8;
-            //params.speculative.ngram_map_k4v.size_m = 24;
-            //params.speculative.ngram_map_k4v.min_hits = 2;
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
 

@@ -296,6 +296,7 @@ extern "C" {
         const struct llama_model_tensor_buft_override * tensor_buft_overrides;
 
         int32_t n_gpu_layers; // number of layers to store in VRAM, a negative value means all layers
+        int32_t n_cpu_moe;     // number of MoE layers to keep on CPU (0 = all on GPU)
         enum llama_split_mode split_mode; // how to split the model across multiple GPUs
 
         // the GPU that is used for the entire model when split_mode is LLAMA_SPLIT_MODE_NONE
@@ -381,6 +382,27 @@ extern "C" {
         bool kv_unified;  // use a unified buffer across the input sequences when computing the attention
                           // try to disable when n_seq_max > 1 for improved performance when the sequences do not share a large prefix
                           // ref: https://github.com/ggml-org/llama.cpp/pull/14363
+
+        // HISA (Hierarchical Indexed Sparse Attention) [EXPERIMENTAL]
+        bool hisa;                      // enable HISA
+        int32_t hisa_block_size;         // block size for HISA (0 = auto)
+        int32_t hisa_min_tokens;         // min tokens before HISA activates (0 = always on)
+        float hisa_sparsity;             // fraction of blocks to select (0.0 = all, 0.9 = top 10%)
+        bool hisa_sink_protect;          // protect attention sink tokens from eviction
+        float hisa_sparsity_scale;       // layer-adaptive sparsity (0.0 = uniform, 1.0 = pyramid)
+        bool hisa_per_head;              // per-head sparse attention
+
+        // Bounded KV cache with residual checkpoints [EXPERIMENTAL]
+        int32_t kv_cache_bounded;         // max active tokens (0 = unlimited)
+
+        // Pipeline partial offload [EXPERIMENTAL]
+        bool pipeline_partial;           // pipeline parallelism for partial offload
+
+        // Fused MoE [EXPERIMENTAL]
+        bool     fused_moe;              // use fused MoE kernel
+        int32_t  moe_prefetch_streams;   // number of async prefetch streams
+        int32_t  moe_max_vram_mb;        // VRAM budget for expert cache (0 = auto)
+        int32_t  n_cpu_moe;              // number of MoE layers to keep on CPU (0 = all on GPU)
 
         // [EXPERIMENTAL]
         // backend sampler chain configuration (make sure the caller keeps the sampler chains alive)
@@ -561,6 +583,9 @@ extern "C" {
     LLAMA_API int32_t llama_model_n_head     (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_head_kv  (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_swa      (const struct llama_model * model);
+
+    // Get the number of experts (only valid for MoE models, returns 0 otherwise) [EXPERIMENTAL]
+    LLAMA_API int32_t llama_model_n_expert    (const struct llama_model * model);
 
     // Get the model's RoPE frequency scaling factor
     LLAMA_API float llama_model_rope_freq_scale_train(const struct llama_model * model);

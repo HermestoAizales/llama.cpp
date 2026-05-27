@@ -55,6 +55,8 @@ set(TARGET llama-common)
 
 add_library(${TARGET}
     arg.cpp
+    optimizer_preset.cpp
+    optimizer_preset.h
     arg.h
     base64.hpp
     chat-auto-parser-generator.cpp

@@ -42,6 +42,19 @@ struct llama_cparams {
     bool op_offload;
     bool kv_unified;
     bool pipeline_parallel;
+    bool fused_moe;
+    int32_t moe_prefetch_streams;
+    int32_t moe_max_vram_mb;
+    int32_t n_cpu_moe;
+    bool hisa;
+    int32_t hisa_block_size;
+    int32_t hisa_min_tokens;
+    float hisa_sparsity;
+    bool hisa_sink_protect;
+    float hisa_sparsity_scale;
+    bool hisa_per_head;
+    int32_t kv_cache_bounded;
+    bool pipeline_partial;
 
     enum llama_context_type ctx_type;
     enum llama_pooling_type pooling_type;
