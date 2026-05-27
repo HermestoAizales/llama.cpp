@@ -590,6 +590,65 @@ automatically. For example:
 $ echo "source ~/.llama-completion.bash" >> ~/.bashrc
 ```
 
+## Fork Features
+
+This fork adds several experimental features on top of upstream llama.cpp:
+
+### HISA (Hierarchical Indexed Sparse Attention)
+
+Reduces attention cost by selectively attending to KV blocks.
+
+```sh
+llama-cli -m model.gguf --hisa --hisa-sparsity 0.5
+```
+
+| Flag | Description |
+|------|-------------|
+| `--hisa` | Enable HISA |
+| `--hisa-sparsity F` | Fraction of blocks to select (0.0=all, 0.9=top 10%) |
+| `--hisa-block-size N` | Block size (0=auto) |
+| `--hisa-min-tokens N` | Min tokens before HISA activates |
+| `--hisa-sink-protect 0\|1` | Protect attention sink tokens |
+| `--hisa-sparsity-scale F` | Layer-adaptive sparsity (0=uniform, 1=pyramid) |
+| `--hisa-per-head` | Per-head sparse attention |
+
+### Fused MoE
+
+Fused CUDA kernel for Mixture of Experts with async weight prefetch.
+
+| Flag | Description |
+|------|-------------|
+| `--fused-moe` | Enable fused MoE kernel |
+| `--moe-prefetch-streams N` | Async prefetch streams (default: 2) |
+| `--moe-max-vram N` | VRAM budget for expert cache in MB (0=auto) |
+| `--n-cpu-moe N` | Keep last N MoE layers on CPU (0=all on GPU) |
+
+### Bounded KV Cache
+
+Limit KV cache size with residual checkpoints for reconstruction.
+
+| Flag | Description |
+|------|-------------|
+| `--kv-cache-bounded N` | Max active tokens (0=unlimited) |
+
+### Pipeline Partial Offload
+
+Enable pipeline parallelism for partial offload:
+
+```sh
+llama-cli -m model.gguf --pipeline-partial 1
+```
+
+### Optimizer
+
+Benchmark-driven runtime parameter tuning:
+
+```sh
+llama-optimizer -m model.gguf --priority speed --non-interactive
+```
+
+---
+
 ## Dependencies
 
 - [yhirose/cpp-httplib](https://github.com/yhirose/cpp-httplib) - Single-header HTTP server, used by `llama-server` - MIT license
