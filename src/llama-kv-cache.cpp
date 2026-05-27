@@ -2599,35 +2599,40 @@ void llama_kv_cache::residual_store(int32_t pos, const void * data, ggml_type ty
     const size_t res_bytes_per_token = (size_t) n_embd_res * sizeof(ggml_fp16_t);
     const size_t offset = (size_t) pos * res_bytes_per_token;
 
-    if (type == GGML_TYPE_F16) {
-        memcpy(res_buffer.data() + offset, data, res_bytes_per_token);
-    } else if (type == GGML_TYPE_F32) {
-        // Convert F32 to F16
-        const float * src = (const float *) data;
-        ggml_fp16_t * dst = (ggml_fp16_t *) (res_buffer.data() + offset);
-        for (int64_t i = 0; i < n_embd_res; ++i) {
-            dst[i] = ggml_fp32_to_fp16(src[i]);
-        }
-    } else {
-        LLAMA_LOG_WARN("%s: residual store for type %d not fully supported\n", __func__, type);
-        return;
-    }
+    {
+        std::lock_guard<std::mutex> lock(ckpt_mutex);
 
-    if (!res_valid[pos]) {
-        res_valid[pos] = true;
-        n_res_checkpoints++;
+        if (type == GGML_TYPE_F16) {
+            memcpy(res_buffer.data() + offset, data, res_bytes_per_token);
+        } else if (type == GGML_TYPE_F32) {
+            const float * src = (const float *) data;
+            ggml_fp16_t * dst = (ggml_fp16_t *) (res_buffer.data() + offset);
+            for (int64_t i = 0; i < n_embd_res; ++i) {
+                dst[i] = ggml_fp32_to_fp16(src[i]);
+            }
+        } else {
+            LLAMA_LOG_WARN("%s: residual store for type %d not fully supported\n", __func__, type);
+            return;
+        }
+
+        if (!res_valid[pos]) {
+            res_valid[pos] = true;
+            n_res_checkpoints++;
+        }
     }
 }
 
 bool llama_kv_cache::residual_exists(int32_t pos) const {
     if (!bounded_kv) return false;
     if (pos < 0 || pos >= (int32_t) res_valid.size()) return false;
+    std::lock_guard<std::mutex> lock(ckpt_mutex);
     return res_valid[pos];
 }
 
 const ggml_fp16_t * llama_kv_cache::residual_data(int32_t pos) const {
     if (!bounded_kv) return nullptr;
     if (pos < 0 || pos >= (int32_t) res_valid.size()) return nullptr;
+    std::lock_guard<std::mutex> lock(ckpt_mutex);
     if (!res_valid[pos]) return nullptr;
     const size_t res_bytes_per_token = (size_t) n_embd_res * sizeof(ggml_fp16_t);
     return (const ggml_fp16_t *) (res_buffer.data() + (size_t) pos * res_bytes_per_token);
@@ -2635,6 +2640,7 @@ const ggml_fp16_t * llama_kv_cache::residual_data(int32_t pos) const {
 
 void llama_kv_cache::residual_invalidate(llama_pos p0, llama_pos p1) {
     if (!bounded_kv) return;
+    std::lock_guard<std::mutex> lock(ckpt_mutex);
     for (llama_pos p = p0; p <= p1; ++p) {
         if (p >= 0 && p < (int32_t) res_valid.size() && res_valid[p]) {
             res_valid[p] = false;

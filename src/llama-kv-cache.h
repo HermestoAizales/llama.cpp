@@ -5,6 +5,8 @@
 #include "llama-kv-cells.h"
 #include "llama-memory.h"
 
+#include <future>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -234,11 +236,15 @@ public:
     // Access residual data for position (FP16). Returns nullptr if not available.
     const ggml_fp16_t * residual_data(int32_t pos) const;
     // Check if we have exceeded the bounded budget
-    bool residual_budget_exceeded() const { return bounded_kv && n_res_checkpoints > max_bounded; }
+    bool residual_budget_exceeded() const { return bounded_kv && n_res_checkpoints > max_bounded; } // n_res_checkpoints may be slightly stale due to async store
     // Evict oldest KV entries to make room for n_new_tokens
     void evict_bounded(uint32_t n_new_tokens);
+    // Set the async checkpoint store future (called from process_ubatch)
+    void set_checkpoint_future(std::future<void> fut) { ckpt_future = std::move(fut); }
 
 private:
+    std::future<void> ckpt_future; ///< Background checkpoint store task
+    mutable std::mutex ckpt_mutex; ///< Protects checkpoint buffer access
     const llama_model & model;
     const llama_hparams & hparams;
 

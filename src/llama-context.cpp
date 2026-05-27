@@ -1327,21 +1327,26 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         return nullptr;
     }
 
-    // Store residual checkpoints for bounded KV cache
-    // Uses async GPU→CPU transfers to avoid blocking the device.
-    // Each layer's checkpoint is copied via a separate async call,
-    // then we synchronize once before checkpoint conversion+store.
+    // Store residual checkpoints for bounded KV cache.
+    //
+    // Strategy:
+    //   1. Kick off async GPU→CPU copies for all layer checkpoint tensors.
+    //      The graph was launched asynchronously via ggml_backend_sched_graph_compute_async,
+    //      so the GPU is still running while we prepare the copies.
+    //   2. Synchronize once to ensure all copies completed.
+    //   3. Offload the FP16 conversion + checkpoint store to a background thread
+    //      via std::async so the host thread can return immediately.
+    //
+    // This ensures maximum overlap between GPU compute and checkpoint extraction.
     if (cparams.kv_cache_bounded > 0) {
         auto * kv = dynamic_cast<llama_kv_cache *>(memory.get());
         if (kv) {
             const auto & hparams = model.hparams;
             const uint32_t n_layer = hparams.n_layer;
 
-            // Collect async copy jobs first
             struct ckpt_job {
                 ggml_tensor * src;
                 std::vector<uint8_t> tmp;
-                uint32_t layer;
             };
             std::vector<ckpt_job> jobs;
 
@@ -1353,28 +1358,34 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
                     ckpt_job job;
                     job.src = t;
                     job.tmp.resize(ggml_nbytes(t));
-                    job.layer = il;
                     ggml_backend_t backend = ggml_backend_sched_get_tensor_backend(sched.get(), t);
                     ggml_backend_tensor_get_async(backend, t, job.tmp.data(), 0, ggml_nbytes(t));
                     jobs.push_back(std::move(job));
                 }
             }
 
-            // Single synchronize for all async copies
             if (!jobs.empty()) {
+                // Synchronize to ensure all async copies completed
                 ggml_backend_sched_synchronize(sched.get());
 
-                // Convert and store checkpoints
-                for (auto & job : jobs) {
-                    const ggml_tensor * t = job.src;
-                    for (uint32_t i = 0; i < ubatch.n_tokens; i++) {
-                        const llama_pos pos = ubatch.pos[i];
-                        if (pos >= 0 && pos < (int32_t) kv->res_valid.size()) {
-                            const size_t src_stride = t->ne[0] * ggml_type_size(t->type);
-                            kv->residual_store(pos, (char *)job.tmp.data() + i * src_stride, t->type);
+                // Offload FP16 conversion + store to background thread
+                // so the host thread can proceed without waiting.
+                auto async_store = std::async(std::launch::async, [kv, jobs = std::move(jobs), &ubatch]() mutable {
+                    for (auto & job : jobs) {
+                        const ggml_tensor * t = job.src;
+                        const size_t src_stride = t->ne[0] * ggml_type_size(t->type);
+                        for (uint32_t i = 0; i < ubatch.n_tokens; i++) {
+                            const llama_pos pos = ubatch.pos[i];
+                            if (pos >= 0 && pos < (int32_t) kv->res_valid.size()) {
+                                kv->residual_store(pos, (char *)job.tmp.data() + i * src_stride, t->type);
+                            }
                         }
                     }
-                }
+                });
+
+                // Store the future so the destructor waits for completion
+                // before the context (and kv cache) is destroyed.
+                kv->set_checkpoint_future(std::move(async_store));
             }
         }
     }
