@@ -1328,29 +1328,50 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     }
 
     // Store residual checkpoints for bounded KV cache
-    LLAMA_LOG_DEBUG("%s: kv_cache_bounded=%d\n", __func__, cparams.kv_cache_bounded);
+    // Uses async GPU→CPU transfers to avoid blocking the device.
+    // Each layer's checkpoint is copied via a separate async call,
+    // then we synchronize once before checkpoint conversion+store.
     if (cparams.kv_cache_bounded > 0) {
         auto * kv = dynamic_cast<llama_kv_cache *>(memory.get());
         if (kv) {
             const auto & hparams = model.hparams;
             const uint32_t n_layer = hparams.n_layer;
 
-            // Find and store residual checkpoint tensors for each layer
+            // Collect async copy jobs first
+            struct ckpt_job {
+                ggml_tensor * src;
+                std::vector<uint8_t> tmp;
+                uint32_t layer;
+            };
+            std::vector<ckpt_job> jobs;
+
             for (uint32_t il = 0; il < n_layer; ++il) {
                 char name_buf[64];
                 snprintf(name_buf, sizeof(name_buf), "res_ckpt_%u", il);
                 ggml_tensor * t = ggml_graph_get_tensor(res->get_gf(), name_buf);
                 if (t) {
-                    // Get tensor data into a temporary buffer
-                    std::vector<uint8_t> tmp(ggml_nbytes(t));
-                    ggml_backend_tensor_get(t, tmp.data(), 0, ggml_nbytes(t));
+                    ckpt_job job;
+                    job.src = t;
+                    job.tmp.resize(ggml_nbytes(t));
+                    job.layer = il;
+                    ggml_backend_t backend = ggml_backend_sched_get_tensor_backend(sched.get(), t);
+                    ggml_backend_tensor_get_async(backend, t, job.tmp.data(), 0, ggml_nbytes(t));
+                    jobs.push_back(std::move(job));
+                }
+            }
 
-                    // Store for each position in the ubatch
+            // Single synchronize for all async copies
+            if (!jobs.empty()) {
+                ggml_backend_sched_synchronize(sched.get());
+
+                // Convert and store checkpoints
+                for (auto & job : jobs) {
+                    const ggml_tensor * t = job.src;
                     for (uint32_t i = 0; i < ubatch.n_tokens; i++) {
                         const llama_pos pos = ubatch.pos[i];
                         if (pos >= 0 && pos < (int32_t) kv->res_valid.size()) {
                             const size_t src_stride = t->ne[0] * ggml_type_size(t->type);
-                            kv->residual_store(pos, (char *)tmp.data() + i * src_stride, t->type);
+                            kv->residual_store(pos, (char *)job.tmp.data() + i * src_stride, t->type);
                         }
                     }
                 }
