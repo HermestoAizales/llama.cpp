@@ -27,66 +27,21 @@ Model (qwen35moe.cpp)
 
 ## Phase 1: Quick Wins (this session)
 
-### 1.1 ✅ Fix cparams transfer (DONE)
-Fork flags (`fused_moe`, `pipeline_partial`, `hisa_sink_protect`, etc.) were never copied from `common_params` to `llama_cparams`.
-`src/llama-context.cpp:common_context_params_to_lama()`
+### 1.1 ✅ Fix cparams transfer (DONE 2026-05-26)
+All fork flags transferred from `common_params` to `llama_cparams` in `common_context_params_to_llama()`.
 
-### 1.2 Wire Up Fused MoE Dispatch
-**File**: `ggml/src/ggml-cuda/ggml-cuda.cu:ggml_cuda_op_mul_mat()`
+### 1.2 ✅ Wire Up Fused MoE Dispatch (DONE 2026-05-27)
+- `ggml_cuda_fused_moe_forward()` dispatched in `ggml_cuda_mul_mat_id()` when `g_fused_moe_enabled[device]`
+- `down_exps` MUL_MAT_ID skipped in graph when `fused_moe && gate_up_exps` (fused kernel handles down)
+- Dynamic function loading via `ggml_backend_reg_get_proc_address()`
 
-The function `ggml_cuda_op_mul_mat()` already has the routing logic for `mmf` (fused) vs `mmid` (standard). We need to add our `fused-moe.cu` path.
+### 1.3 ✅ Add `n_cpu_moe` Internal Parameter (DONE 2026-05-27)
+Implemented: `n_cpu_moe` in `llama_cparams`, `llama_model_params`, `llama_context_params`, load_tensors() dispatch keeps last N MoE layers on CPU.
 
-**Current logic** (simplified):
-```cpp
-if (is_moe && should_use_mmf) {
-    ggml_cuda_mul_mat_f(...);  // mmf.cu — upstream fused
-} else {
-    ggml_cuda_mul_mat_id(...); // mmid.cu — standard
-}
-```
-
-**Our addition**:
-```cpp
-if (is_moe && g_fused_moe_enabled[device]) {
-    ggml_cuda_fused_moe_forward(ctx, dst, is_gate_up);  // our kernel
-} else if (is_moe && should_use_mmf) {
-    ggml_cuda_mul_mat_f(...);  // mmf.cu — upstream fused
-} else {
-    ggml_cuda_mul_mat_id(...); // mmid.cu — standard
-}
-```
-
-Plus initialization in `ggml_cuda_init()`:
-```cpp
-ggml_cuda_fused_moe_init(device, n_expert, max_vram_mb, n_streams);
-```
-
-**Expected impact**: 2-4× MoE decode speedup (fewer launches + async prefetch)
-**Complexity**: ~100 LOC
-**Risk**: Medium — need correctness testing + benchmarking
-
-### 1.3 Add `n_cpu_moe` Internal Parameter
-**Problem**: `n_cpu_moe` exists in `common_params` (CLI) but NOT in `llama_cparams` (internal).
-
-**Solution**:
-1. Add `int32_t n_cpu_moe = 0;` to `llama-cparams.h`
-2. Copy in `common_context_params_to_llama()`: `cparams.n_cpu_moe = params.n_cpu_moe;`
-3. Add to designated initializer in `llama_context_default_params()`
-4. In the model-specific FFN construction: skip GPU offload for MoE layers where `layer_idx >= n_gpu_layers - n_cpu_moe` → use CPU `mul_mat_id`
-
-**Expected impact**:
-- Mixtral-8x7B Q4_K: 5-10× decode speed (GPU attention + CPU experts vs all-CPU)
-- Qwen3-35B: Enables running on 16GB GPU (partial offload)
-
-**Complexity**: ~80 LOC
-**Risk**: Low
-
-### 1.4 Fix Bounded KV Cache Eviction
-**Problem**: `kv_cache_bounded` is set and checkpoints are STORED, but never EVICTED → OOM on long context.
-
-**Solution**: Add eviction after checkpoint storage:
-```cpp
-// In process_ubatch(), after storing checkpoint:
+### 1.4 ✅ Bounded KV Cache Eviction + Async Checkpoint (DONE 2026-05-27)
+- Eviction logic (`evict_bounded()`) implemented and called in `init_batch()`
+- Checkpoint extraction uses `ggml_backend_tensor_get_async` + `std::async` background thread
+- Thread-safe checkpoint buffer access via `std::mutex`
 if (cparams.kv_cache_bounded > 0 && kv->n_res_checkpoints > kv->max_bounded) {
     kv->evict_bounded(n_evict);
 }
