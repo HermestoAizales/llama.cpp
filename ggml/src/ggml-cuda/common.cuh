@@ -1454,6 +1454,8 @@ struct ggml_backend_cuda_context {
         name(GGML_CUDA_NAME + std::to_string(device)) {
     }
 
+    bool fused_moe = false; ///< Fused MoE kernel enabled (gate_up + activation + down)
+
     ggml_cuda_stream_context concurrent_stream_context;
 
     ~ggml_backend_cuda_context();
