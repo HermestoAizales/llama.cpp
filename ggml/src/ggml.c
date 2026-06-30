@@ -1086,9 +1086,12 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
 
     "RESIDUAL_STORE",
     "RESIDUAL_RESTORE",
+
+    "KV_LORA_PROJECT",
+    "KV_LORA_RECONSTRUCT",
 };
 
-static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 102");
+static_assert(GGML_OP_COUNT == 104, "GGML_OP_COUNT != 104");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1201,9 +1204,12 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "sgd(x)",
 
     "glu(x)",
+
+    "kv_lora_project(kv, rank)",
+    "kv_lora_reconstruct(lora_a, lora_b)",
 };
 
-static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 102");
+static_assert(GGML_OP_COUNT == 104, "GGML_OP_COUNT != 104");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -5536,6 +5542,57 @@ struct ggml_tensor * ggml_hisa_gather_mask(
     result->src[0] = src;
     result->src[1] = idx;
     result->src[2] = idx2;
+
+    return result;
+}
+
+// ggml_kv_lora_project
+// Project KV cache to low-rank representation via QR decomposition approximation.
+// kv: [n_embd, n_tokens, 1, 1] -> returns tensor for lora_b: [rank, n_tokens, 1, 1]
+// The lora_a matrix [n_embd, rank, 1, 1] is stored in op params
+struct ggml_tensor * ggml_kv_lora_project(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * kv,
+        int                   rank) {
+    GGML_ASSERT(kv->type == GGML_TYPE_F32 || kv->type == GGML_TYPE_F16);
+    GGML_ASSERT(rank > 0 && rank <= kv->ne[0]);
+
+    const int64_t n_embd  = kv->ne[0];
+    const int64_t n_tokens = kv->ne[1];
+
+    // Output: lora_b [rank, n_tokens, 1, 1]
+    int64_t ne[4] = { rank, n_tokens, 1, 1 };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    result->op     = GGML_OP_KV_LORA_PROJECT;
+    result->src[0] = kv;
+    // Store rank in op_params
+    GGML_ASSERT(rank < INT32_MAX);
+    result->op_params[0] = (uint32_t)rank;
+
+    return result;
+}
+
+// ggml_kv_lora_reconstruct
+// Reconstruct KV cache from low-rank representation.
+// lora_a: [n_embd, rank], lora_b: [rank, n_tokens] -> kv: [n_embd, n_tokens]
+struct ggml_tensor * ggml_kv_lora_reconstruct(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * lora_a,
+        struct ggml_tensor  * lora_b) {
+    GGML_ASSERT(lora_a->type == GGML_TYPE_F32);
+    GGML_ASSERT(lora_b->type == GGML_TYPE_F32);
+    GGML_ASSERT(lora_a->ne[1] == lora_b->ne[0]); // rank must match
+
+    const int64_t n_embd = lora_a->ne[0];
+    const int64_t n_tokens = lora_b->ne[1];
+
+    int64_t ne[4] = { n_embd, n_tokens, 1, 1 };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    result->op     = GGML_OP_KV_LORA_RECONSTRUCT;
+    result->src[0] = lora_a;
+    result->src[1] = lora_b;
 
     return result;
 }

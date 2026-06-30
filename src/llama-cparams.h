@@ -54,6 +54,8 @@ struct llama_cparams {
     float hisa_sparsity_scale;
     bool hisa_per_head;
     int32_t kv_cache_bounded;
+    int32_t kv_lora_rank;
+    bool kv_lora_cpu;
     bool pipeline_partial;
 
     enum llama_context_type ctx_type;

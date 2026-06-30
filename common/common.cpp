@@ -1672,6 +1672,8 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.hisa_sparsity_scale = params.hisa_sparsity_scale;
     cparams.hisa_per_head       = params.hisa_per_head;
     cparams.kv_cache_bounded    = params.kv_cache_bounded;
+    cparams.kv_lora_rank          = params.kv_lora_rank;
+    cparams.kv_lora_cpu           = params.kv_lora_cpu;
 
     // fused MoE params
     cparams.fused_moe           = params.fused_moe;

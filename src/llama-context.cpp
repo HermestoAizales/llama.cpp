@@ -193,6 +193,8 @@ llama_context::llama_context(
     cparams.hisa_sparsity_scale = params.hisa_sparsity_scale;
     cparams.hisa_per_head      = params.hisa_per_head;
     cparams.kv_cache_bounded   = params.kv_cache_bounded;
+    cparams.kv_lora_rank       = params.kv_lora_rank;
+    cparams.kv_lora_cpu        = params.kv_lora_cpu;
     cparams.fused_moe          = params.fused_moe;
     cparams.moe_prefetch_streams = params.moe_prefetch_streams;
     cparams.moe_max_vram_mb    = params.moe_max_vram_mb;
@@ -3449,6 +3451,8 @@ llama_context_params llama_context_default_params() {
         /*.hisa_sparsity_scale         =*/ 0.0f,
         /*.hisa_per_head               =*/ false,
         /*.kv_cache_bounded            =*/ 0,
+        /*.kv_lora_rank                =*/ 0,
+        /*.kv_lora_cpu                 =*/ false,
         /*.pipeline_partial            =*/ false,
         /*.fused_moe                   =*/ false,
         /*.moe_prefetch_streams        =*/ 2,

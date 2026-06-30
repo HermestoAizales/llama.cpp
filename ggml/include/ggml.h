@@ -594,6 +594,10 @@ extern "C" {
         GGML_OP_RESIDUAL_STORE,     // Bounded KV: store residual state to checkpoint buffer
         GGML_OP_RESIDUAL_RESTORE,   // Bounded KV: load residual state from checkpoint buffer
 
+        // KV-LoRA compression operators
+        GGML_OP_KV_LORA_PROJECT,    // KV-LoRA: project KV cache to low-rank representation (A, B)
+        GGML_OP_KV_LORA_RECONSTRUCT, // KV-LoRA: reconstruct KV cache from low-rank (A, B)
+
         GGML_OP_COUNT,
     };
 
@@ -2591,6 +2595,20 @@ extern "C" {
             struct ggml_tensor  * idx,
             struct ggml_tensor  * idx2,
             int64_t               n_indices);
+
+    // KV-LoRA compression operators
+    // Project KV cache to low-rank representation (for VRAM savings)
+    GGML_API struct ggml_tensor * ggml_kv_lora_project(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * kv,
+            int                   rank);
+
+    // Reconstruct KV cache from low-rank representation
+    // lora_b: [n_tokens, rank], lora_a: [n_embd, rank]
+    GGML_API struct ggml_tensor * ggml_kv_lora_reconstruct(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * lora_a,
+            struct ggml_tensor  * lora_b);
 
     // Residual checkpoint operators (Bounded KV cache)
 

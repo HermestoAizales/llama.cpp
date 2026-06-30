@@ -1569,6 +1569,20 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_KV_CACHE_BOUNDED"));
     add_opt(common_arg(
+        {"--kv-lora-rank"}, "N",
+        "KV-LoRA compression rank: project KV cache to low-rank for VRAM savings (0=off, default: 0, recommended: 8-16)",
+        [](common_params & params, int value) {
+            params.kv_lora_rank = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+    add_opt(common_arg(
+        {"--kv-lora-cpu"},
+        "store LoRA matrices in CPU RAM instead of VRAM (for extreme memory savings)",
+        [](common_params & params) {
+            params.kv_lora_cpu = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+    add_opt(common_arg(
         {"-cnv", "--conversation"},
         {"-no-cnv", "--no-conversation"},
         "whether to run in conversation mode:\n"

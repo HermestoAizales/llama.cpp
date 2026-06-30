@@ -395,6 +395,10 @@ extern "C" {
         // Bounded KV cache with residual checkpoints [EXPERIMENTAL]
         int32_t kv_cache_bounded;         // max active tokens (0 = unlimited)
 
+        // KV-LoRA compression [EXPERIMENTAL]
+        int32_t kv_lora_rank;              // LoRA rank for KV compression (0 = off)
+        bool    kv_lora_cpu;              // store LoRA in CPU RAM instead of VRAM
+
         // Pipeline partial offload [EXPERIMENTAL]
         bool pipeline_partial;           // pipeline parallelism for partial offload
 

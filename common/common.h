@@ -463,6 +463,10 @@ struct common_params {
     // Bounded KV cache [EXPERIMENTAL]
     int32_t kv_cache_bounded       = 0;     // bounded KV cache: max active tokens (0 = unlimited)
 
+    // KV-LoRA compression [EXPERIMENTAL]
+    int32_t kv_lora_rank           = 0;     // KV-LoRA compression rank (0 = off, default: 0)
+    bool    kv_lora_cpu            = false; // store LoRA matrices in CPU RAM instead of VRAM
+
     // Pipeline partial offload [EXPERIMENTAL]
     bool pipeline_partial = false; // enable pipeline parallelism for partial offload (default: off, saves VRAM)
 

@@ -497,6 +497,12 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
             {
                 n_fuse = ggml_metal_op_residual_restore(ctx, idx);
             } break;
+        // KV-LoRA ops - use existing mul_mat kernels
+        case GGML_OP_KV_LORA_PROJECT:
+        case GGML_OP_KV_LORA_RECONSTRUCT:
+            {
+                n_fuse = ggml_metal_op_mul_mat(ctx, idx);
+            } break;
         default:
             {
                 GGML_LOG_ERROR("%s: error: node %3d, op = %8s not implemented\n", __func__, idx, ggml_op_name(node->op));

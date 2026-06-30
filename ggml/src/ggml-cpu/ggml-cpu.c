@@ -2047,6 +2047,12 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_gated_delta_net(params, tensor);
             } break;
+        case GGML_OP_KV_LORA_PROJECT:
+        case GGML_OP_KV_LORA_RECONSTRUCT:
+            {
+                // KV-LoRA: use existing mul_mat for low-rank ops
+                ggml_compute_forward_mul_mat(params, tensor);
+            } break;
         case GGML_OP_MAP_CUSTOM1:
             {
                 ggml_compute_forward_map_custom1(params, tensor);
@@ -2946,6 +2952,12 @@ struct ggml_cplan ggml_graph_plan(
                         const int64_t K   = node->src[5]->ne[1];  // state is (D, K, n_seqs)
                         const int64_t per_thread = S_v + (K > 1 ? S_v * S_v : 0);
                         cur = per_thread * sizeof(float) * n_tasks;
+                    } break;
+                case GGML_OP_KV_LORA_PROJECT:
+                case GGML_OP_KV_LORA_RECONSTRUCT:
+                    {
+                        // KV-LoRA uses mul_mat internally - estimate similar to MUL_MAT
+                        cur = 4 * n_tasks * (node->src[0]->ne[0] + node->src[0]->ne[1]);
                     } break;
                 case GGML_OP_COUNT:
                     {

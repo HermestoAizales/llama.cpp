@@ -31,6 +31,9 @@
 #include "ggml-cuda/mmvf.cuh"
 #include "ggml-cuda/mmvq.cuh"
 
+// KV-LoRA Compression
+#include "ggml-cuda/kv-lora.cuh"
+
 // Fused MoE — variable defined in fused-moe.cu
 extern bool g_fused_moe_enabled[];
 extern void ggml_cuda_fused_moe_set_enabled(int device, bool enable);
@@ -3145,6 +3148,13 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
         case GGML_OP_GATED_DELTA_NET:
             ggml_cuda_op_gated_delta_net(ctx, dst);
             break;
+
+        case GGML_OP_KV_LORA_PROJECT:
+        case GGML_OP_KV_LORA_RECONSTRUCT:
+            // KV-LoRA uses standard mul_mat internally
+            ggml_cuda_op_mul_mat(ctx, dst);
+            break;
+
         case GGML_OP_RWKV_WKV7:
             ggml_cuda_op_rwkv_wkv7(ctx, dst);
             break;
