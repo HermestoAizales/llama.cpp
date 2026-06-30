@@ -1164,6 +1164,18 @@ ggml_tensor * llama_kv_cache::get_k(ggml_context * ctx, int32_t il, uint32_t n_k
 
     const uint32_t ns = sinfo.s1 - sinfo.s0 + 1;
 
+    // KV-LoRA Reconstruction: if enabled, reconstruct from low-rank factors
+    if (kv_lora_enabled && layers[ikv].k_lora_a && layers[ikv].k_lora_b) {
+        // Reconstruct: kv = lora_b @ lora_a^T
+        ggml_tensor * k_recon = ggml_kv_lora_reconstruct(ctx, layers[ikv].k_lora_a, layers[ikv].k_lora_b);
+        return ggml_view_4d(ctx, k_recon,
+                hparams.n_embd_head_k(il), hparams.n_head_kv(il), n_kv, ns,
+                ggml_row_size(k_recon->type, hparams.n_embd_head_k(il)),
+                ggml_row_size(k_recon->type, n_embd_k_gqa),
+                ggml_row_size(k_recon->type, n_embd_k_gqa*kv_size),
+                ggml_row_size(k_recon->type, n_embd_k_gqa*kv_size)*sinfo.s0);
+    }
+
     return ggml_view_4d(ctx, k,
             hparams.n_embd_head_k(il), hparams.n_head_kv(il), n_kv, ns,
             ggml_row_size(k->type, hparams.n_embd_head_k(il)),
@@ -1184,6 +1196,26 @@ ggml_tensor * llama_kv_cache::get_v(ggml_context * ctx, int32_t il, uint32_t n_k
     assert(n_embd_v_gqa >= hparams.n_embd_v_gqa(il));
 
     const uint32_t ns = sinfo.s1 - sinfo.s0 + 1;
+
+    // KV-LoRA Reconstruction: if enabled, reconstruct from low-rank factors
+    if (kv_lora_enabled && layers[ikv].v_lora_a && layers[ikv].v_lora_b) {
+        ggml_tensor * v_recon = ggml_kv_lora_reconstruct(ctx, layers[ikv].v_lora_a, layers[ikv].v_lora_b);
+        if (!v_trans) {
+            return ggml_view_4d(ctx, v_recon,
+                    hparams.n_embd_head_v(il), hparams.n_head_kv(il), n_kv, ns,
+                    ggml_row_size(v_recon->type, hparams.n_embd_head_v(il)),
+                    ggml_row_size(v_recon->type, n_embd_v_gqa),
+                    ggml_row_size(v_recon->type, n_embd_v_gqa*kv_size),
+                    ggml_row_size(v_recon->type, n_embd_v_gqa*kv_size)*sinfo.s0);
+        }
+        // note: v->nb[1] > v->nb[2]
+        return ggml_view_4d(ctx, v_recon,
+                n_kv, hparams.n_head_kv(il), hparams.n_embd_head_v(il), ns,
+                ggml_row_size(v_recon->type, kv_size*hparams.n_embd_head_v(il)),
+                ggml_row_size(v_recon->type, kv_size),
+                ggml_row_size(v_recon->type, kv_size*n_embd_v_gqa),
+                ggml_row_size(v_recon->type, kv_size*n_embd_v_gqa)*sinfo.s0);
+    }
 
     if (!v_trans) {
         // note: v->nb[1] <= v->nb[2]
