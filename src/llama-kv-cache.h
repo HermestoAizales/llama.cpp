@@ -258,6 +258,12 @@ private:
 
         std::vector<ggml_tensor *> k_stream;
         std::vector<ggml_tensor *> v_stream;
+
+        // KV-LoRA compression (nullable when kv_lora_rank == 0)
+        ggml_tensor * k_lora_a = nullptr;  // [n_embd, rank] - stored per layer
+        ggml_tensor * k_lora_b = nullptr;  // [rank, n_tokens] - projected
+        ggml_tensor * v_lora_a = nullptr;
+        ggml_tensor * v_lora_b = nullptr;
     };
 
     bool v_trans = true;  // the value tensor is transposed
@@ -279,6 +285,11 @@ private:
     // otherwise the value is -1
     int32_t n_embd_head_k_all = 0;
     int32_t n_embd_head_v_all = 0;
+
+    // KV-LoRA compression
+    bool kv_lora_enabled = false;  // enable KV-LoRA compression
+    int32_t kv_lora_rank = 0;      // LoRA rank (0 = disabled)
+    bool kv_lora_cpu = false;      // store LoRA in CPU RAM instead of VRAM
 
     // pre-computed hadamard martrices
     std::unordered_map<int64_t, std::vector<float>> attn_rot_hadamard;

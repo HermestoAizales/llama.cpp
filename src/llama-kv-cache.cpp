@@ -2512,6 +2512,15 @@ void llama_kv_cache_context::set_input_v_rot(ggml_tensor * dst) const {
 }
 
 void llama_kv_cache::init_bounded_kv(const llama_cparams & cparams, const llama_hparams & hparams, uint32_t kv_size) {
+    // KV-LoRA Initialization
+    if (cparams.kv_lora_rank > 0) {
+        kv_lora_enabled = true;
+        kv_lora_rank = cparams.kv_lora_rank;
+        kv_lora_cpu = cparams.kv_lora_cpu;
+        LLAMA_LOG_INFO("%s: KV-LoRA initialized: rank=%d, cpu=%s\n",
+                __func__, kv_lora_rank, kv_lora_cpu ? "true" : "false");
+    }
+
     if (cparams.kv_cache_bounded <= 0) {
         bounded_kv = false;
         return;
